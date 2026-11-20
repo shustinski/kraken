@@ -170,14 +170,29 @@ def settle_sparse_layer(
             if name not in layers:
                 layers.append(name)
     changed: dict[str, object] = {}
+    # With a bank of normal cells both layers of a frame hold one and the same result object: the
+    # step (it reads the masks of neighbour frames to find their seams) is then done once.
+    done: list[tuple[dict[str, object], dict[str, object], dict[str, object]]] = []
     for layer in layers:
         if layer is None:
             results = {key: value for key, value in payloads.items() if not isinstance(value, dict)}
         else:
             results = {key: value.get(layer) for key, value in payloads.items() if isinstance(value, dict)}
-        updated, info = mark_sparse_cells(
-            results, frames, reach_sites=reach_sites, min_free_sides=min_free_sides, cancelled=cancelled
+        same = next(
+            (
+                (updated, info)
+                for earlier, updated, info in done
+                if earlier.keys() == results.keys() and all(earlier[key] is results[key] for key in results)
+            ),
+            None,
         )
+        if same is not None:
+            updated, info = same[0], dict(same[1])
+        else:
+            updated, info = mark_sparse_cells(
+                results, frames, reach_sites=reach_sites, min_free_sides=min_free_sides, cancelled=cancelled
+            )
+            done.append((results, updated, info))
         _LOGGER.info("sparse cells layer=%s/%s %s", model_id, layer or "", info)
         if info_out is not None and info.get("pitch") and (layer in (None, "binary") or model_id not in info_out):
             info_out[model_id] = dict(info)

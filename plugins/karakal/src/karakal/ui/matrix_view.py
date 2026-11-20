@@ -477,6 +477,17 @@ def _build_subpixel_grid_for_record(
     )
 
 
+def _set_record_subpixel_grid(record, grid) -> None:
+    """Keep the tile grid on a record that can hold it. FrameRecord has slots: the grid then lives
+    only on the matrix item and in the tile caches (setting it raised AttributeError, which broke
+    the end of every validation run: the matrix never took the new metric)."""
+
+    try:
+        record.subpixel_grid = grid
+    except AttributeError:
+        pass
+
+
 class _MatrixCellItem(QGraphicsRectItem):
     """Represent one visible matrix cell bound to one frame record."""
 
@@ -1618,6 +1629,10 @@ class MatrixListWidget(QGraphicsView):
         self._subpixel_grid_cache: OrderedDict[tuple[object, ...], SubpixelGrid] = OrderedDict()
         self._subpixel_grid_cache_bytes = 0
         self._item_by_key: dict[str, _MatrixCellItem] = {}
+        # Visibility of the items under the overview layer as last applied: (overview on, overlay
+        # keys), and the keys to apply again (new items, items set one by one since).
+        self._visibility_state: tuple[bool, frozenset[str]] | None = None
+        self._visibility_pending: set[str] = set()
         self._record_by_position: dict[tuple[int, int], FrameRecord] = {}
         self._record_positions: dict[str, tuple[int, int]] = {}
         self._grid_targets_version = 0
@@ -1768,7 +1783,7 @@ class MatrixListWidget(QGraphicsView):
 
     def _clear_record_subpixel_grids(self) -> None:
         for record in self._records:
-            record.subpixel_grid = None
+            _set_record_subpixel_grid(record, None)
 
     def _invalidate_grid_inspection_requests(self, *, clear_cache: bool = False) -> None:
         self._grid_inspection_request_generation += 1
@@ -2020,7 +2035,7 @@ class MatrixListWidget(QGraphicsView):
         if disk_cached is not None:
             self._tile_disk_cache_hits += 1
             self._subpixel_cache_put(cache_key, disk_cached)
-            record.subpixel_grid = disk_cached
+            _set_record_subpixel_grid(record, disk_cached)
             return disk_cached
         self._tile_cache_misses += 1
         grid = _build_subpixel_grid_for_record(
@@ -2032,7 +2047,7 @@ class MatrixListWidget(QGraphicsView):
         )
         self._subpixel_cache_put(cache_key, grid)
         _store_subpixel_grid_to_disk(cache_key, grid, max_bytes=self._tile_cache_limit_bytes())
-        record.subpixel_grid = grid
+        _set_record_subpixel_grid(record, grid)
         return grid
 
     def set_dirt_marks(self, marks: dict[str, QColor] | None) -> None:
@@ -2644,7 +2659,7 @@ class MatrixListWidget(QGraphicsView):
     @staticmethod
     def _apply_subpixel_grid_to_item(item: _MatrixCellItem, grid: SubpixelGrid, *, update: bool = True) -> None:
         item.subpixel_grid = grid
-        item.record.subpixel_grid = grid
+        _set_record_subpixel_grid(item.record, grid)
         if update:
             item.update()
 
@@ -2677,6 +2692,7 @@ class MatrixListWidget(QGraphicsView):
         item.setToolTip(self._tooltip_for_record(record))
         self._scene.addItem(item)
         self._item_by_key[str(record.key)] = item
+        self._visibility_pending.add(str(record.key))
         self._apply_item_style(item, sync_tile_state=False)
         self._sync_tile_state_for_keys({record.key})
         return item
@@ -3440,6 +3456,8 @@ class MatrixListWidget(QGraphicsView):
         self._selected_subpixel_selection = None
         self._hovered_subpixel_selection = None
         self._item_by_key.clear()
+        self._visibility_state = None
+        self._visibility_pending.clear()
         self._record_by_position.clear()
         self._record_positions.clear()
         self._touch_grid_targets()
@@ -3594,8 +3612,22 @@ class MatrixListWidget(QGraphicsView):
             self._overview_layer_item.setVisible(use_overview)
         if force or use_overview != previous:
             overlay_keys = self._overview_overlay_keys() if use_overview else set()
-            for key, item in self._item_by_key.items():
-                item.setVisible((not use_overview) or (key in overlay_keys))
+            applied = self._visibility_state
+            state = (bool(use_overview), frozenset(overlay_keys))
+            if applied is not None and applied[0] == state[0]:
+                # Only the keys that joined or left the overlay since, and items made since: every
+                # other item already shows what it should. (Every item on every change of a frame's
+                # state was tens of thousands of Qt calls per frame on a big run.)
+                keys = (applied[1] ^ state[1]) | self._visibility_pending
+                for key in keys:
+                    item = self._item_by_key.get(key)
+                    if item is not None:
+                        item.setVisible((not use_overview) or (key in overlay_keys))
+            else:
+                for key, item in self._item_by_key.items():
+                    item.setVisible((not use_overview) or (key in overlay_keys))
+            self._visibility_state = state
+            self._visibility_pending.clear()
         return use_overview != previous
 
     def _sync_low_zoom_visibility_for_keys(self, keys) -> None:
@@ -3609,6 +3641,8 @@ class MatrixListWidget(QGraphicsView):
             item = self._ensure_item_for_key(key) if key in overlay_keys else self._item_by_key.get(key)
             if item is not None:
                 item.setVisible(key in overlay_keys)
+        # Set against today's overlay: the next full pass looks at them again.
+        self._visibility_pending.update(normalized_keys)
 
     def _item_from_scene_pos(self, scene_pos) -> _MatrixCellItem | None:
         x = float(scene_pos.x()) - float(self._scene_padding)

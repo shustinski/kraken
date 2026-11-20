@@ -2266,11 +2266,13 @@ def classify_confidence_map_kind(image: np.ndarray) -> str:
     """Classify a grayscale map as class probability (bimodal) or confidence (mostly high)."""
 
     gray = _normalize_grayscale(image)
-    values = np.asarray(gray, dtype=np.float64).reshape(-1)
-    if values.size == 0:
+    flat = gray.reshape(-1)
+    if flat.size == 0:
         return "confidence"
-    step = max(1, int(values.size // 120_000))
-    sample = values[::step]
+    step = max(1, int(flat.size // 120_000))
+    # Sample first, then widen: the same values as widening the whole frame to float64 and
+    # sampling it, without a 32 MB copy per map (this runs for every confidence map of a run).
+    sample = flat[::step].astype(np.float64)
     p10, p50, p90 = (float(v) for v in np.percentile(sample, [10, 50, 90]))
     low_share = float(np.mean(sample < 40.0))
     high_share = float(np.mean(sample > 200.0))

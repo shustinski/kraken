@@ -34,12 +34,20 @@ class Translator:
 
     def tr(self, key: str, **kwargs) -> str:
         language = self.language or "en"
-        dictionary: dict[str, str] = {}
-        dictionary.update(_TRANSLATIONS.get("en", {}))
-        dictionary.update(_EXTEND_TRANSLATIONS.get("en", {}))
-        dictionary.update(_TRANSLATIONS.get(language, {}))
-        dictionary.update(_EXTEND_TRANSLATIONS.get(language, {}))
-        text = dictionary.get(key) or key
+        # The tables in the order they override each other (the language's extension first, English
+        # last): the first one that has the key gives the text. The same text as merging the four
+        # tables, which was done on every call (thousands of entries, for every label of a list).
+        text = None
+        for table in (
+            _EXTEND_TRANSLATIONS.get(language, {}),
+            _TRANSLATIONS.get(language, {}),
+            _EXTEND_TRANSLATIONS.get("en", {}),
+            _TRANSLATIONS.get("en", {}),
+        ):
+            if key in table:
+                text = table[key]
+                break
+        text = text or key
         if kwargs:
             try:
                 return text.format(**kwargs)

@@ -215,18 +215,45 @@ def confidence_uncertainty(confidence: np.ndarray, shape: tuple[int, int], foreg
     return np.clip((norm - values) / (2.0 * span), 0.0, 1.0), kind
 
 
+def _quantile_linear(values: np.ndarray, q: float) -> float:
+    """float(np.quantile(values, q)) for a 1-D float array and a Python float q, the same numbers
+    (numpy's «linear» method: a partition, then its lerp in the array's dtype) without the
+    per-call overhead of np.quantile; it runs for every cell of every frame."""
+
+    n = int(values.size)
+    virtual = (n - 1) * q
+    if virtual >= n - 1:
+        low = high = n - 1
+        previous = -1
+    else:
+        previous = math.floor(virtual)
+        low, high = previous, previous + 1
+    part = np.partition(values, sorted({0, low, high, n - 1}))
+    if np.isnan(part[-1]):
+        return float("nan")
+    a, b = part[low], part[high]
+    gamma = float(virtual - previous)
+    diff = b - a
+    if gamma >= 0.5:
+        return float(b - diff * (1 - gamma))
+    return float(a + diff * gamma)
+
+
+_ERODE_3X3 = np.ones((3, 3), np.uint8)
+
+
 def _confidence_features(uncertainty: np.ndarray, piece: np.ndarray, x0: int, y0: int) -> dict[str, float]:
     region = uncertainty[y0 : y0 + piece.shape[0], x0 : x0 + piece.shape[1]]
     values = region[piece]
     if values.size == 0:
         return {}
-    eroded = cv2.erode(piece.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    eroded = cv2.erode(piece.view(np.uint8) if piece.dtype == bool else piece.astype(np.uint8), _ERODE_3X3).view(bool)
     border = piece & ~eroded
-    border_values = region[border] if np.any(border) else values
+    border_values = region[border] if border.any() else values
     return {
         "confidence_uncertainty_mean": float(values.mean()),
-        "confidence_uncertainty_p90": float(np.quantile(values, 0.90)),
-        "confidence_uncertain_share": float(np.mean(values >= 0.5)),
+        "confidence_uncertainty_p90": _quantile_linear(values, 0.90),
+        "confidence_uncertain_share": float(np.count_nonzero(values >= 0.5)) / float(values.size),
         "confidence_border_uncertainty": float(border_values.mean()),
     }
 

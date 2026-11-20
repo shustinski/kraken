@@ -227,11 +227,21 @@ def grid_inspection_error_type_color(error_type: str) -> QColor:
     return QColor(GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8"))
 
 
+_ERROR_TYPE_ICONS: dict[tuple[str, int], QIcon] = {}
+
+
 def grid_inspection_error_type_icon(error_type: str, *, size: int = 12) -> QIcon:
+    """A square of the type's colour. Made once per type and size: the error list sets one on each
+    of up to a thousand rows at every refresh."""
+
     side = max(8, int(size))
-    pixmap = QPixmap(side, side)
-    pixmap.fill(grid_inspection_error_type_color(error_type))
-    return QIcon(pixmap)
+    key = (str(error_type), side)
+    icon = _ERROR_TYPE_ICONS.get(key)
+    if icon is None:
+        pixmap = QPixmap(side, side)
+        pixmap.fill(grid_inspection_error_type_color(error_type))
+        icon = _ERROR_TYPE_ICONS[key] = QIcon(pixmap)
+    return icon
 
 
 def apply_class_conflict_checkbox(checkbox, *, available: bool, user_wants: bool, tooltip: str) -> None:

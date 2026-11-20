@@ -323,15 +323,6 @@ def _boundary(mask: np.ndarray) -> np.ndarray:
     return mask & (eroded == 0)
 
 
-def _object_boundary_flat(objects: _Objects, label: int, shape: tuple[int, int]) -> np.ndarray:
-    """Flat indices (in the frame) of the boundary pixels of one object."""
-
-    x, y, w, h = _crop(objects, label, shape)
-    inside = np.pad(objects.labels[y : y + h, x : x + w] == label, 1)
-    ys, xs = np.nonzero(_boundary(inside))
-    return (ys - 1 + y) * shape[1] + (xs - 1 + x)
-
-
 def _shift_events(
     mask: np.ndarray,
     reference: np.ndarray,
@@ -358,9 +349,15 @@ def _shift_events(
         return np.bincount(tile, minlength=tiles * tiles)
 
     edge = tile_counts(np.flatnonzero(_boundary(reference)))
-    for other in difference.touched_theirs:
-        if other not in one_to_one_theirs:
-            edge = edge - tile_counts(_object_boundary_flat(theirs, other, mask.shape))
+    excluded = [other for other in difference.touched_theirs if other not in one_to_one_theirs]
+    if excluded:
+        # The boundary of each object alone (its crop padded, eroded) is the boundary of all the
+        # objects cut to that object: 8-connected objects never touch, so a pixel's 3x3
+        # neighbourhood holds only its own object. One erosion of the frame instead of one per
+        # object (hundreds per frame); the counts are whole numbers, subtracted all at once.
+        boundary = np.flatnonzero(_boundary(theirs.labels > 0))
+        owners = theirs.labels.ravel()[boundary]
+        edge = edge - tile_counts(boundary[np.isin(owners, np.asarray(excluded, dtype=owners.dtype))])
     total_edge = int(edge.sum())
     if total_edge <= 0:
         return [], [], 0.0

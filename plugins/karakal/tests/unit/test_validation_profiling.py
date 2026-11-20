@@ -47,7 +47,7 @@ def _stage_calls(profiler: ProfilerRun, name: str) -> int:
 
 
 def test_model_comparison_stages_are_counted_in_pool_threads(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(analytics, "_use_thread_pool_for_analytics", lambda: True)
+    monkeypatch.setattr(analytics, "_use_thread_pool_for_analytics", lambda *_args: True)
     monkeypatch.setattr(analytics, "_analytics_worker_count", lambda *args, **kwargs: 3)
     profiler = ProfilerRun("test", PerformanceConfig(profiling_mode=ProfilingMode.DETAILED))
     with activate_profiler(profiler):

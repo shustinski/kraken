@@ -2005,7 +2005,15 @@ class KarakalPresenter(QObject):
 
         from ..core.project_store import stable_model_id
 
-        return stable_model_id(mask_folder, confidence_folder)
+        # Asked many times per batch of streamed results (pairs, cell classes, checked layers);
+        # resolving a path asks the file system each time, which added up to seconds of a frozen
+        # window on big runs. A folder path gives the same id for the whole session.
+        key = (str(mask_folder or ""), str(confidence_folder or ""))
+        cache = self.__dict__.setdefault("_stable_model_ids", {})
+        found = cache.get(key)
+        if found is None:
+            found = cache[key] = stable_model_id(mask_folder, confidence_folder)
+        return found
 
     def _analysis_preflight_signature_value(self) -> tuple[object, ...]:
         specs = self._checked_model_specs()
@@ -3860,6 +3868,30 @@ class KarakalPresenter(QObject):
             self._active_processing_keys.add(normalized_key)
         else:
             self._active_processing_keys.discard(normalized_key)
+        self._schedule_processing_visuals(state)
+
+    PROCESSING_VISUALS_INTERVAL_MS = 100
+
+    def _schedule_processing_visuals(self, state: ExtendMatrixTabState) -> None:
+        """The frames being worked on, shown at most ten times a second: workers report every frame
+        twice (started, done), and each showing walked the matrix (seconds on big runs)."""
+
+        self._processing_visuals_state = state
+        timer = self.__dict__.get("_processing_visuals_timer")
+        if timer is None:
+            timer = self._processing_visuals_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self.PROCESSING_VISUALS_INTERVAL_MS)
+            timer.timeout.connect(self._flush_processing_visuals)
+        if not timer.isActive():
+            timer.start()
+
+    def _flush_processing_visuals(self) -> None:
+        state = getattr(self, "_processing_visuals_state", None)
+        self._processing_visuals_state = None
+        # A run that ended meanwhile has already shown its last state.
+        if state is None or state is not self._active_compute_state:
+            return
         self._update_processing_visuals(state)
         if self.build_progress.isVisible():
             self.build_progress.setFormat(
@@ -5302,10 +5334,15 @@ class KarakalPresenter(QObject):
         from time import monotonic
 
         if not visible:
+            self._pending_progress = None
+            timer = self.__dict__.get("_progress_bar_timer")
+            if timer is not None:
+                timer.stop()
             self.build_progress.hide()
             self.build_progress.setRange(0, 1)
             self.build_progress.setValue(0)
             self._active_progress_started_at = 0.0
+            self._run_buttons_progress_mark = None
             return
         if not getattr(self, "_active_progress_started_at", 0.0):
             self._active_progress_started_at = monotonic()
@@ -5324,9 +5361,19 @@ class KarakalPresenter(QObject):
         self.build_progress.setToolTip(key)
         self.build_progress.show()
         worker = getattr(self, "_worker", None)
-        if worker is not None and bool(getattr(worker, "paused", False)):
+        paused = worker is not None and bool(getattr(worker, "paused", False))
+        if paused:
             self.build_progress.setFormat(self._t("run.paused_progress", progress=self.build_progress.text()))
-        self._sync_run_buttons()
+        # The run buttons show only the percent of a running job: they are synced when it or the
+        # job's state changes, or after a second, not on every progress tick of every worker
+        # (thousands per run, each restyling the buttons).
+        percent = int(round(100.0 * current / total)) if total > 0 else None
+        mark = (percent, paused, id(worker))
+        now = monotonic()
+        if mark != getattr(self, "_run_buttons_progress_mark", None) or now - float(getattr(self, "_run_buttons_synced_at", 0.0)) >= 1.0:
+            self._run_buttons_progress_mark = mark
+            self._run_buttons_synced_at = now
+            self._sync_run_buttons()
 
     def _compact_folder_label(self, folder: FolderSpec | None) -> tuple[str, str]:
         if folder is None:
@@ -5564,7 +5611,7 @@ class KarakalPresenter(QObject):
 
         return grid_display_error_type(reasons) or str(status or "broken")
 
-    def _grid_inspection_error_type_label(self, error_type: str) -> str:
+    def _grid_inspection_error_type_labels(self) -> dict[str, str]:
         labels = {str(value): self._t(label_key) for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
         labels.update(
             {
@@ -5573,6 +5620,13 @@ class KarakalPresenter(QObject):
                 "artifact": self._t("grid_status.broken"),
             }
         )
+        return labels
+
+    def _grid_inspection_error_type_label(self, error_type: str, labels: dict[str, str] | None = None) -> str:
+        """``labels``: _grid_inspection_error_type_labels() made once for a whole list (it translates
+        every type, which per row of a list of hundreds was most of a refresh)."""
+
+        labels = self._grid_inspection_error_type_labels() if labels is None else labels
         return labels.get(str(error_type), str(error_type or self._t("grid_error.defect")))
 
     def _grid_inspection_error_filter(self) -> str:
@@ -5588,7 +5642,9 @@ class KarakalPresenter(QObject):
         reasons = {str(reason) for reason in payload.get("reasons", ()) or ()}
         return error_type == filter_key or str(filter_key) in reasons
 
-    def _iter_grid_inspection_error_payloads(self, state: ExtendMatrixTabState | None):
+    def _iter_grid_inspection_error_rows(self, state: ExtendMatrixTabState | None):
+        """(record key, record name, cell row of _grid_error_cells) of every listed defect cell."""
+
         if state is None or not bool(getattr(state, "grid_inspection_results_ready", False)):
             return
         excluded_keys = self._excluded_record_keys_for_state(state)
@@ -5601,14 +5657,18 @@ class KarakalPresenter(QObject):
         shown_keys = getattr(state, "frame_set_participating", None)
         if shown_keys is not None:
             visible_keys = set(shown_keys) if visible_keys is None else visible_keys & set(shown_keys)
-        sources = sorted(
-            (getattr(state, "grid_inspection_payload_by_key", {}) or {}).items(), key=lambda item: str(item[0])
-        )
+        sources = [
+            (0, key, result)
+            for key, result in sorted(
+                (getattr(state, "grid_inspection_payload_by_key", {}) or {}).items(), key=lambda item: str(item[0])
+            )
+        ]
         marks = (getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get(PAIR_MARKS_LAYER) or {}
         if marks and self._class_conflict_selected():
             # Conflicts with the other network of the shown layer's pairs.
-            sources.extend(sorted(marks.items(), key=lambda item: str(item[0])))
-        for record_key, result in sources:
+            sources.extend((1, key, result) for key, result in sorted(marks.items(), key=lambda item: str(item[0])))
+        self._prune_grid_error_cells_cache(len(sources))
+        for source, record_key, result in sources:
             if str(record_key) in excluded_keys:
                 continue
             if visible_keys is not None and str(record_key) not in visible_keys:
@@ -5616,29 +5676,78 @@ class KarakalPresenter(QObject):
             record = records_by_key.get(str(record_key))
             if record is None:
                 continue
-            for index, cell in enumerate(getattr(result, "per_cell_results", getattr(result, "cells", ())) or ()):
-                status = str(getattr(cell, "status", "") or "")
-                if status == "normal":
-                    continue
-                reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
-                error_type = self._grid_inspection_error_type(status, reasons)
-                bbox = tuple(int(value) for value in (getattr(cell, "bbox", (0, 0, 1, 1)) or (0, 0, 1, 1))[:4])
-                feature_cluster_id = getattr(cell, "feature_cluster_id", None)
-                feature_cluster_label = str(getattr(cell, "feature_cluster_label", "") or "")
-                yield {
-                    "record_key": str(record_key),
-                    "record_name": str(getattr(record, "display_name", "") or record_key),
-                    "cell_index": int(index),
-                    "row": int(getattr(cell, "row", -1)),
-                    "col": int(getattr(cell, "col", getattr(cell, "column", -1))),
-                    "bbox": bbox,
-                    "score": float(getattr(cell, "score", 0.0)),
-                    "status": status,
-                    "reasons": reasons,
-                    "error_type": error_type,
-                    "feature_cluster_id": None if feature_cluster_id is None else int(feature_cluster_id),
-                    "feature_cluster_label": feature_cluster_label,
-                }
+            record_name = str(getattr(record, "display_name", "") or record_key)
+            for row in self._grid_error_cells(result, (source, str(record_key))):
+                yield str(record_key), record_name, row
+
+    @staticmethod
+    def _grid_error_payload(record_key: str, record_name: str, row: tuple) -> dict[str, object]:
+        index, cell_row, col, bbox, score, status, reasons, error_type, cluster_id, cluster_label = row
+        return {
+            "record_key": record_key,
+            "record_name": record_name,
+            "cell_index": index,
+            "row": cell_row,
+            "col": col,
+            "bbox": bbox,
+            "score": score,
+            "status": status,
+            "reasons": reasons,
+            "error_type": error_type,
+            "feature_cluster_id": cluster_id,
+            "feature_cluster_label": cluster_label,
+        }
+
+    def _iter_grid_inspection_error_payloads(self, state: ExtendMatrixTabState | None):
+        for record_key, record_name, row in self._iter_grid_inspection_error_rows(state):
+            yield self._grid_error_payload(record_key, record_name, row)
+
+    def _grid_error_cells(self, result, slot: tuple | None = None) -> tuple:
+        """The cells of one frame result that are not normal, as the error list reads them.
+
+        Results are not changed in place (a new result replaces an old one), so this is kept per
+        result object: the list is rebuilt every second or two while a run streams in, and walking
+        every cell of every frame (thousands of frames, hundreds of cells each) froze the window.
+        ``slot`` (list, frame) is where the result is shown: a new result there replaces the old
+        one in the cache, which then holds no result the window no longer has.
+        """
+
+        cache = self.__dict__.setdefault("_grid_error_cells_by_result", {})
+        key = slot if slot is not None else ("id", id(result))
+        entry = cache.get(key)
+        if entry is not None and entry[0] is result:
+            return entry[1]
+        items = []
+        for index, cell in enumerate(getattr(result, "per_cell_results", getattr(result, "cells", ())) or ()):
+            status = str(getattr(cell, "status", "") or "")
+            if status == "normal":
+                continue
+            reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
+            feature_cluster_id = getattr(cell, "feature_cluster_id", None)
+            items.append(
+                (
+                    int(index),
+                    int(getattr(cell, "row", -1)),
+                    int(getattr(cell, "col", getattr(cell, "column", -1))),
+                    tuple(int(value) for value in (getattr(cell, "bbox", (0, 0, 1, 1)) or (0, 0, 1, 1))[:4]),
+                    float(getattr(cell, "score", 0.0)),
+                    status,
+                    reasons,
+                    self._grid_inspection_error_type(status, reasons),
+                    None if feature_cluster_id is None else int(feature_cluster_id),
+                    str(getattr(cell, "feature_cluster_label", "") or ""),
+                )
+            )
+        found = tuple(items)
+        cache[key] = (result, found)
+        return found
+
+    def _prune_grid_error_cells_cache(self, live: int) -> None:
+        """Drop the cache once it outgrows the results shown (frames of an earlier run)."""
+
+        cache = self.__dict__.get("_grid_error_cells_by_result")
+        if cache and len(cache) > 2 * int(live) + 4096:
+            cache.clear()
 
     def _grid_inspection_error_payloads(self, state: ExtendMatrixTabState | None) -> list[dict[str, object]]:
         items = list(self._iter_grid_inspection_error_payloads(state))
@@ -5658,25 +5767,32 @@ class KarakalPresenter(QObject):
             return
         if state is None:
             state = self._current_tab_state()
-        filter_key = self._grid_inspection_error_filter()
+        filter_key = str(self._grid_inspection_error_filter() or "all")
         total_count = 0
-        ranked: list[tuple[float, int, dict[str, object]]] = []
-        for index, payload in enumerate(self._iter_grid_inspection_error_payloads(state)):
+        ranked: list[tuple[float, int, str, str, tuple]] = []
+        # Rows, not payload dicts: a big run lists tens of thousands of defects, and only the shown
+        # ones (GRID_INSPECTION_ERROR_LIST_LIMIT) need a dict. The filter is the one of
+        # _grid_inspection_error_filter_matches: the type, or one of the reasons.
+        for index, (record_key, record_name, row) in enumerate(self._iter_grid_inspection_error_rows(state)):
             total_count += 1
-            if not self._grid_inspection_error_filter_matches(payload, filter_key):
+            if filter_key != "all" and row[7] != filter_key and filter_key not in row[6]:
                 continue
-            entry = (float(payload.get("score", 0.0)), -index, payload)
+            entry = (row[4], -index, record_key, record_name, row)
             if len(ranked) < GRID_INSPECTION_ERROR_LIST_LIMIT:
                 heappush(ranked, entry)
             elif entry[:2] > ranked[0][:2]:
                 heapreplace(ranked, entry)
-        visible_items = [entry[2] for entry in sorted(ranked, key=lambda entry: (-entry[0], -entry[1]))]
+        visible_items = [
+            self._grid_error_payload(entry[2], entry[3], entry[4])
+            for entry in sorted(ranked, key=lambda entry: (-entry[0], -entry[1]))
+        ]
+        labels = self._grid_inspection_error_type_labels()
         error_list.blockSignals(True)
         try:
             error_list.clear()
             for payload in visible_items:
                 bbox = tuple(payload.get("bbox", (0, 0, 1, 1)) or (0, 0, 1, 1))
-                label = self._grid_inspection_error_type_label(str(payload.get("error_type") or ""))
+                label = self._grid_inspection_error_type_label(str(payload.get("error_type") or ""), labels)
                 cluster_label = str(payload.get("feature_cluster_label") or "")
                 cluster_text = f" | {cluster_label}" if cluster_label else ""
                 text = (
@@ -8167,15 +8283,22 @@ class KarakalPresenter(QObject):
         self._grid_errors_refresh_pending = True
 
         def _refresh(s=state) -> None:
+            from time import perf_counter
+
             self._grid_errors_refresh_pending = False
+            started = perf_counter()
             try:
                 if s.widget in self._tab_states:
                     self._refresh_grid_inspection_errors_panel(s)
             except RuntimeError:
                 # The window was closed before this deferred refresh ran.
                 return
+            self._grid_errors_refresh_cost_ms = 1000.0 * (perf_counter() - started)
 
-        self._later(self.GRID_ERRORS_STREAM_REFRESH_MS, _refresh)
+        # The list walks every finished frame: on a big run one rebuild takes a while, and the next
+        # waits ten times as long, so streaming keeps the window free (the run's end rebuilds it).
+        delay = max(self.GRID_ERRORS_STREAM_REFRESH_MS, int(10.0 * float(getattr(self, "_grid_errors_refresh_cost_ms", 0.0))))
+        self._later(delay, _refresh)
 
     def _apply_multi_model_finished_payloads(
         self,
@@ -8248,6 +8371,42 @@ class KarakalPresenter(QObject):
                 for view in self._grid_inspection_views().values():
                     view.set_processing_keys(fallback_keys)
         format_text = self._progress_format_text(current, total, str(key or ""))
+        self._queue_progress_bar(current, total, str(key or ""), format_text)
+
+    PROGRESS_BAR_INTERVAL_MS = 100
+
+    def _queue_progress_bar(self, current: int, total: int, key: str, format_text: str) -> None:
+        """Progress shown at most ten times a second, the latest value always.
+
+        QProgressBar.setValue repaints at once; workers report every frame (and several workers
+        at a time), which kept the window busy repainting the bar for seconds on a big run."""
+
+        from time import monotonic
+
+        self._pending_progress = (int(current), int(total), str(key), str(format_text))
+        timer = self.__dict__.get("_progress_bar_timer")
+        if timer is None:
+            timer = self._progress_bar_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self.PROGRESS_BAR_INTERVAL_MS)
+            timer.timeout.connect(self._apply_pending_progress)
+        if timer.isActive():
+            return
+        if monotonic() - float(getattr(self, "_progress_bar_applied_at", 0.0)) >= self.PROGRESS_BAR_INTERVAL_MS / 1000.0:
+            self._apply_pending_progress()
+        else:
+            timer.start()
+
+    def _apply_pending_progress(self) -> None:
+        from time import monotonic
+
+        pending = getattr(self, "_pending_progress", None)
+        self._pending_progress = None
+        # A run that finished meanwhile hid the bar: a late value does not show it again.
+        if pending is None or self.build_progress.isHidden():
+            return
+        self._progress_bar_applied_at = monotonic()
+        current, total, key, format_text = pending
         self._show_progress_bar(visible=True, current=current, total=total, key=key, format_text=format_text)
 
     def _on_build_finished(self, result: BuildResult, *, generation: int | None = None) -> None:

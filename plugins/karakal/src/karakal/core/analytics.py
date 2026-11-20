@@ -140,10 +140,39 @@ def _analytics_batch_size(total_items: int, worker_count: int) -> int:
     return max(1, min(ANALYTICS_MAX_BATCH_SIZE, math.ceil(total / target_batches)))
 
 
-def _use_thread_pool_for_analytics() -> bool:
-    # ProcessPoolExecutor is fragile inside a PyQt worker thread on Windows:
-    # child process spawn/import or pickle stalls look like a frozen progress bar.
-    return os.name == "nt"
+# On Windows a run of at least this many frames is analysed in worker processes.
+ANALYTICS_WINDOWS_PROCESS_MIN_RECORDS = 48
+ANALYTICS_THREAD_POOL_ENV = "KARAKAL_ANALYTICS_THREAD_POOL"
+
+
+def _use_thread_pool_for_analytics(record_count: int | None = None) -> bool:
+    """Threads or processes for the per-frame analysis.
+
+    The per-frame work (topology findings, metrics) is mostly Python: threads share one interpreter
+    lock and a validation run used one core whatever the worker count. Small runs stay in threads
+    (starting processes costs seconds); big runs on Windows use processes too, as the cell check and
+    the dirt search already do from their Qt worker threads. A pool that does not start or breaks
+    hands its frames back to threads (_iter_record_payloads). KARAKAL_ANALYTICS_THREAD_POOL=1 keeps
+    threads, =0 forces processes.
+    """
+
+    override = str(os.environ.get(ANALYTICS_THREAD_POOL_ENV, "") or "").strip().lower()
+    if override:
+        return override not in {"0", "false", "no", "off"}
+    if os.name != "nt":
+        return False
+    return record_count is None or int(record_count) < ANALYTICS_WINDOWS_PROCESS_MIN_RECORDS
+
+
+def _analytics_process_init() -> None:
+    """Worker process start: one OpenCV thread per process (the processes share the cores)."""
+
+    try:
+        import cv2 as _cv2
+
+        _cv2.setNumThreads(1)
+    except Exception:  # pragma: no cover - OpenCV is a hard dependency
+        pass
 
 
 def _analytics_worker_env_override() -> int | None:
@@ -200,6 +229,7 @@ def _estimated_analytics_worker_memory_bytes(
     include_model_confidence: bool,
     include_model_output_confidence: bool,
     include_pairwise_metrics: bool,
+    source_side: int | None = None,
 ) -> int:
     side = int(analysis_max_side or 2048)
     side = max(64, min(side, 8192))
@@ -212,7 +242,15 @@ def _estimated_analytics_worker_memory_bytes(
         layer_factor += min(models * 3, 16)
     if include_model_output_confidence:
         layer_factor += min(models, 8)
-    return max(64 * 1024 * 1024, int(pixels * layer_factor * 4))
+    analysis_bytes = int(pixels * layer_factor * 4)
+    # Model comparison reads every mask at full size (topology), not at analysis_max_side.
+    # Three 2000px layers in one process per core exhaust an 8 GB machine and the window dies.
+    full_side = int(source_side or 0)
+    topology_bytes = 0
+    if include_pairwise_metrics and models >= 2 and full_side > side:
+        full_side = min(full_side, 8192)
+        topology_bytes = int(full_side * full_side * 4 * (3 * models + 2))
+    return max(64 * 1024 * 1024, analysis_bytes + topology_bytes)
 
 
 def _memory_limited_worker_count(
@@ -222,6 +260,7 @@ def _memory_limited_worker_count(
     include_model_confidence: bool,
     include_model_output_confidence: bool,
     include_pairwise_metrics: bool,
+    source_side: int | None = None,
 ) -> int | None:
     available = _available_memory_bytes()
     if available is None or available <= 0:
@@ -232,6 +271,7 @@ def _memory_limited_worker_count(
         include_model_confidence=include_model_confidence,
         include_model_output_confidence=include_model_output_confidence,
         include_pairwise_metrics=include_pairwise_metrics,
+        source_side=source_side,
     )
     budget = max(per_worker, int(float(available) * ANALYTICS_MEMORY_FRACTION))
     return max(1, int(budget // max(1, per_worker)))
@@ -265,6 +305,7 @@ def _analytics_worker_count(
     include_pairwise_metrics: bool = True,
     model_count: int = 1,
     use_thread_pool: bool,
+    source_side: int | None = None,
 ) -> int:
     requested = max(1, int(max_workers))
     override = _analytics_worker_env_override()
@@ -285,15 +326,24 @@ def _analytics_worker_count(
             include_model_confidence=include_model_confidence,
             include_model_output_confidence=include_model_output_confidence,
             include_pairwise_metrics=include_pairwise_metrics,
+            source_side=source_side,
         )
         if memory_limit is not None:
             safe_limit = min(safe_limit, memory_limit)
         return min(requested, max(1, safe_limit))
-    safe_limit = min(cpu_limit, WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS)
-    side_limit = int(analysis_max_side or 0)
-    if include_model_confidence and side_limit > 0 and side_limit <= 768:
-        safe_limit = min(cpu_limit, 5)
-    return min(requested, max(1, safe_limit))
+    # Processes: one core stays for the window; memory bounds the count as for threads.
+    safe_limit = max(WINDOWS_PROCESS_ANALYTICS_MAX_WORKERS, cpu_limit - 1)
+    memory_limit = _memory_limited_worker_count(
+        analysis_max_side=analysis_max_side,
+        model_count=model_count,
+        include_model_confidence=include_model_confidence,
+        include_model_output_confidence=include_model_output_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        source_side=source_side,
+    )
+    if memory_limit is not None:
+        safe_limit = min(safe_limit, memory_limit)
+    return min(requested, cpu_limit, max(1, safe_limit))
 
 
 def _remember_analytics_worker_plan(
@@ -593,15 +643,82 @@ def _frame_photo_findings(
 _ENCODING_BY_MODEL: dict[str, str] = {}
 
 
-def _model_encoding(model_id: str, setting: str, values: np.ndarray, mask: np.ndarray | None) -> str:
+# Frames looked at, in the run's order, for a model's first frame with objects (run_confidence_encodings).
+ENCODING_SCAN_MAX_RECORDS = 200
+
+
+def _model_encoding(
+    model_id: str, setting: str, values: np.ndarray, mask: np.ndarray | None, run_encoding: str | None = None
+) -> str:
     if setting in ("probability", "confidence"):
         return setting
+    if run_encoding in ("probability", "confidence"):
+        return run_encoding
     known = _ENCODING_BY_MODEL.get(model_id)
     if known is not None:
         return known
     found = resolve_confidence_encoding(setting, values, mask)
-    if mask is not None:
+    # An empty frame says nothing about the encoding (it reads as probability): it is not kept.
+    if mask is not None and np.any(mask):
         _ENCODING_BY_MODEL[model_id] = found
+    return found
+
+
+def run_confidence_encodings(
+    records: list[FrameRecord],
+    model_specs: tuple[ModelSpec, ...],
+    analysis_max_side: int | None,
+    setting: str,
+) -> dict[str, str]:
+    """How each model's confidence maps are written, decided once for the run before its frames are
+    analysed: from the model's first frame (in the run's order) whose mask has objects.
+
+    It used to be decided by whichever frame a worker happened to analyse first. That depended on
+    the number of threads or processes and on their timing, and an empty frame (outside the array:
+    most frames of a ones layer) read as probability and set it for the whole run.
+    """
+
+    if str(setting or "auto") in ("probability", "confidence"):
+        return {}
+    found: dict[str, str] = {}
+    wanted = [spec for spec in model_specs if spec.model_id]
+    for record in records[:ENCODING_SCAN_MAX_RECORDS]:
+        todo = tuple(
+            spec
+            for spec in wanted
+            if str(spec.model_id) not in found
+            and (record.model_prob_paths or {}).get(spec.model_id)
+            and (record.model_mask_paths or {}).get(spec.model_id)
+        )
+        if not todo:
+            if len(found) == len(wanted):
+                break
+            continue
+        try:
+            payloads = _build_model_payloads(
+                record,
+                todo,
+                analysis_max_side=analysis_max_side,
+                include_confidence_objects=False,
+                include_original_gray=False,
+                include_model_confidence=False,
+                include_pairwise_metrics=False,
+                include_boundary_distance=False,
+                include_model_diagnostics=False,
+                include_structure_details=False,
+                include_model_output_probabilities=True,
+                include_source_grays=False,
+            )
+        except Exception:
+            continue
+        output_probabilities, masks = payloads[1], payloads[2]
+        for spec in todo:
+            model_id = str(spec.model_id)
+            probability = output_probabilities.get(spec.model_id, output_probabilities.get(model_id))
+            mask = masks.get(spec.model_id, masks.get(model_id))
+            if probability is None or mask is None or mask.shape != probability.shape or not np.any(mask):
+                continue
+            found[model_id] = resolve_confidence_encoding(setting, probability, mask)
     return found
 
 
@@ -1042,6 +1159,7 @@ def _analyze_record_payload(
                     str(extra.get("confidence_encoding") or "auto"),
                     probability,
                     mask_for_encoding if mask_for_encoding is not None and mask_for_encoding.shape == probability.shape else None,
+                    run_encoding=dict(extra.get("confidence_encodings") or ()).get(str(model_id)),
                 )
                 model_confidence_output[str(model_id)] = _model_output_confidence_metrics(probability, encoding)
     timings_ms["metrics"] = 1000.0 * (perf_counter() - metrics_started)
@@ -1215,6 +1333,26 @@ def _analyze_record_payload_batch_for_executor(
     return tuple(results)
 
 
+def _source_mask_side(records: list[FrameRecord], model_specs: tuple[ModelSpec, ...]) -> int:
+    """Longest side of one source mask. Comparison keeps full-size masks, so the worker
+    budget has to see 2000px frames and not only the 1024px analysis copy."""
+
+    for record in records[:4]:
+        paths = getattr(record, "model_mask_paths", None) or {}
+        for spec in model_specs:
+            path = paths.get(spec.model_id)
+            if not path:
+                continue
+            try:
+                image = load_grayscale_image(Path(path))
+            except Exception:
+                continue
+            if image is None or int(getattr(image, "size", 0) or 0) <= 0:
+                continue
+            return int(max(int(image.shape[0]), int(image.shape[1])))
+    return 0
+
+
 def _iter_record_payloads(
     records: list[FrameRecord],
     model_specs: tuple[ModelSpec, ...],
@@ -1241,7 +1379,12 @@ def _iter_record_payloads(
 ):
     """Yield per-record analytics payloads without retaining the whole dataset in RAM."""
 
-    use_thread_pool = _use_thread_pool_for_analytics()
+    use_thread_pool = _use_thread_pool_for_analytics(len(records))
+    source_side = (
+        _source_mask_side(records, model_specs)
+        if include_pairwise_metrics and len(model_specs) >= 2
+        else 0
+    )
     worker_count = _analytics_worker_count(
         max_workers,
         geometry_mode=geometry_mode,
@@ -1251,6 +1394,7 @@ def _iter_record_payloads(
         include_pairwise_metrics=include_pairwise_metrics,
         model_count=len(model_specs),
         use_thread_pool=use_thread_pool,
+        source_side=source_side,
     )
     _remember_analytics_worker_plan(
         requested=max_workers,
@@ -1299,10 +1443,10 @@ def _iter_record_payloads(
         yield from run_sequential()
         return
 
-    try:
-        executor_cls = ThreadPoolExecutor if use_thread_pool else ProcessPoolExecutor
-        total_records = len(records)
-        batch_size = 1 if use_thread_pool else _analytics_batch_size(total_records, worker_count)
+    def run_pool(pool_records: list[FrameRecord], threads: bool, workers: int, offset: int):
+        executor_cls = ThreadPoolExecutor if threads else ProcessPoolExecutor
+        total_records = len(pool_records)
+        batch_size = 1 if threads else _analytics_batch_size(total_records, workers)
         batch_count = int(math.ceil(float(total_records) / float(batch_size)))
 
         def make_work_item(record: FrameRecord):
@@ -1329,15 +1473,19 @@ def _iter_record_payloads(
         def make_batch(order_index: int):
             start = int(order_index) * int(batch_size)
             stop = min(total_records, start + int(batch_size))
-            return tuple(make_work_item(records[index]) for index in range(start, stop))
+            return tuple(make_work_item(pool_records[index]) for index in range(start, stop))
 
         run_profiler = current_profiler()
-        executor = executor_cls(max_workers=worker_count)
+        executor = (
+            executor_cls(max_workers=workers)
+            if threads
+            else executor_cls(max_workers=workers, initializer=_analytics_process_init)
+        )
         shutdown_wait = True
         executor_shutdown = False
         try:
-            completed = 0
-            max_in_flight = max(1, worker_count)
+            completed = int(offset)
+            max_in_flight = max(1, workers)
             next_index = 0
             future_to_batch: dict[object, tuple[tuple[object, ...], ...]] = {}
             last_result_at = perf_counter()
@@ -1345,7 +1493,7 @@ def _iter_record_payloads(
 
             def submit_work_item(order_index: int) -> None:
                 batch = make_batch(order_index)
-                if use_thread_pool:
+                if threads:
                     future = executor.submit(_analyze_record_payload_in_thread, run_profiler, batch[0])
                 else:
                     future = executor.submit(_analyze_record_payload_batch_for_executor, batch)
@@ -1398,7 +1546,7 @@ def _iter_record_payloads(
                 for future in done:
                     future_to_batch.pop(future)
                     result = future.result()
-                    batch_result = (result,) if use_thread_pool else tuple(result)
+                    batch_result = (result,) if threads else tuple(result)
                     if state_callback is not None:
                         for record_key, _payload in batch_result:
                             state_callback(record_key, "done")
@@ -1425,8 +1573,54 @@ def _iter_record_payloads(
         finally:
             if not executor_shutdown:
                 executor.shutdown(wait=shutdown_wait, cancel_futures=not shutdown_wait)
-    except (PermissionError, OSError):
+
+    if use_thread_pool:
+        try:
+            yield from run_pool(records, True, worker_count, 0)
+        except (PermissionError, OSError):
+            yield from run_sequential()
+        return
+
+    from concurrent.futures.process import BrokenProcessPool
+
+    finished: set[str] = set()
+    try:
+        for record_key, payload in run_pool(records, False, worker_count, 0):
+            finished.add(str(record_key))
+            yield record_key, payload
+        return
+    except (BrokenProcessPool, PermissionError, OSError, TimeoutError) as error:
+        _LOGGER.warning("Analytics worker processes failed (%s); the rest of the frames go to threads", error)
+    remaining = [record for record in records if str(record.key) not in finished]
+    if not remaining:
+        return
+    thread_workers = _analytics_worker_count(
+        max_workers,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        include_model_confidence=include_model_confidence,
+        include_model_output_confidence=include_model_output_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+        model_count=len(model_specs),
+        use_thread_pool=True,
+        source_side=source_side,
+    )
+    _remember_analytics_worker_plan(
+        requested=max_workers,
+        selected=thread_workers,
+        use_thread_pool=True,
+        geometry_mode=geometry_mode,
+        analysis_max_side=analysis_max_side,
+        model_count=len(model_specs),
+        include_model_confidence=include_model_confidence,
+        include_model_output_confidence=include_model_output_confidence,
+        include_pairwise_metrics=include_pairwise_metrics,
+    )
+    if thread_workers <= 1 or len(remaining) <= 1:
+        records = remaining
         yield from run_sequential()
+        return
+    yield from run_pool(remaining, True, thread_workers, len(finished))
 
 
 def _compute_record_payloads(
@@ -1905,6 +2099,16 @@ def compute_build_result_analytics(
     payloads_received = 0
     payloads_null = 0
     payloads_unmatched = 0
+    encoding_setting = str(getattr(build_result.options, "confidence_encoding", "auto") or "auto")
+    run_encodings: tuple[tuple[str, str], ...] = ()
+    if include_model_output_confidence:
+        run_encodings = tuple(
+            sorted(
+                run_confidence_encodings(
+                    records_to_analyze, tuple(build_result.model_specs), build_result.options.analysis_max_side, encoding_setting
+                ).items()
+            )
+        )
     try:
         begin_analysis_cache_run()
         payload_iter = _iter_record_payloads(
@@ -1935,7 +2139,10 @@ def compute_build_result_analytics(
             include_attention_issues=bool(include_attention_issues),
             extras=(
                 ("photo_check", bool(getattr(build_result.options, "photo_check", False)) or _metric_requires_photo(active_metric)),
-                ("confidence_encoding", str(getattr(build_result.options, "confidence_encoding", "auto") or "auto")),
+                ("confidence_encoding", encoding_setting),
+                # Decided once for the run (part of the cache key, so a frame cached under another
+                # decision is computed again).
+                ("confidence_encodings", run_encodings),
             ),
             progress_callback=progress_callback,
             state_callback=state_callback,

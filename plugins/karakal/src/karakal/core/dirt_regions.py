@@ -235,30 +235,52 @@ def _round_kernel(radius: float) -> np.ndarray:
     return ((x * x + y * y) <= radius * radius).astype(np.uint8)
 
 
+def _as_bool(flags: np.ndarray) -> np.ndarray:
+    """A 0/255 OpenCV mask as a bool array (0/1 bytes viewed as bool, no extra pass of numpy logic)."""
+
+    return np.ascontiguousarray(cv2.min(flags, 1)).view(bool)
+
+
 def dirt_layers(mask: np.ndarray, confidence: np.ndarray | None = None, config: DirtConfig | None = None) -> DirtLayers:
+    """Per-pixel layers of one frame.
+
+    The same sets as plain numpy logic (``mid = (m > 55) & (m < 200)``, ``blur = mid & ~(near
+    white & near black)``, ``nicks = close(hi) > hi``, ...), computed with OpenCV on 0/255 bytes:
+    a frame holds millions of pixels and this runs for every frame of a run.
+    """
+
     cfg = (config or DirtConfig()).normalized()
-    m = np.asarray(mask, dtype=np.uint8)
-    hi = (m >= 128).astype(np.uint8)
-    mid = (m > 55) & (m < 200)
+    m = np.ascontiguousarray(np.asarray(mask, dtype=np.uint8))
+    # hi = m >= 128 (0/1), the binary the shape operations work on.
+    hi = cv2.threshold(m, 127, 1, cv2.THRESH_BINARY)[1]
+    mid = cv2.inRange(m, 56, 199)
     margin = _round_kernel(cfg.blur_margin)
-    near_white = cv2.dilate((m >= 200).astype(np.uint8), margin) > 0
-    near_black = cv2.dilate((m <= 55).astype(np.uint8), margin) > 0
-    blur = mid & ~(near_white & near_black)
-    nicks = cv2.morphologyEx(hi, cv2.MORPH_CLOSE, np.ones((cfg.nick_size, cfg.nick_size), np.uint8)) > hi
-    crumbs = hi > cv2.morphologyEx(hi, cv2.MORPH_OPEN, np.ones((cfg.crumb_size, cfg.crumb_size), np.uint8))
+    near_white = cv2.dilate(cv2.threshold(m, 199, 255, cv2.THRESH_BINARY)[1], margin)
+    near_black = cv2.dilate(cv2.threshold(m, 55, 255, cv2.THRESH_BINARY_INV)[1], margin)
+    blur = cv2.bitwise_and(mid, cv2.bitwise_not(cv2.bitwise_and(near_white, near_black)))
+    nicks = cv2.compare(cv2.morphologyEx(hi, cv2.MORPH_CLOSE, np.ones((cfg.nick_size, cfg.nick_size), np.uint8)), hi, cv2.CMP_GT)
+    crumbs = cv2.compare(hi, cv2.morphologyEx(hi, cv2.MORPH_OPEN, np.ones((cfg.crumb_size, cfg.crumb_size), np.uint8)), cv2.CMP_GT)
     if confidence is not None and np.asarray(confidence).shape == m.shape:
-        certainty = confidence_certainty(confidence)
+        certainty = np.ascontiguousarray(confidence_certainty(confidence))
         edge = cv2.morphologyEx(hi, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
-        near_edge = cv2.dilate(edge, _round_kernel(cfg.edge_ring)) > 0
-        unsure = (certainty < cfg.unsure_below) & ~near_edge
+        near_edge = cv2.dilate(edge, _round_kernel(cfg.edge_ring))
+        below = cv2.threshold(certainty, float(cfg.unsure_below) - 1.0, 255, cv2.THRESH_BINARY_INV)[1]
+        # near_edge > 0 is not «unsure»: below where the edge ring is zero.
+        unsure = cv2.bitwise_and(below, cv2.compare(near_edge, 0, cv2.CMP_EQ))
     else:
-        unsure = np.zeros(m.shape, dtype=bool)
-    strong = blur | unsure
-    dirt = strong.astype(np.float32) + float(cfg.defect_weight) * ((nicks | crumbs) & ~strong).astype(np.float32)
+        unsure = np.zeros(m.shape, dtype=np.uint8)
+    strong = cv2.bitwise_or(blur, unsure)
+    weak = cv2.bitwise_and(cv2.bitwise_or(nicks, crumbs), cv2.bitwise_not(strong))
+    # dirt = 1 on strong pixels, defect_weight on weak ones (they never overlap), else 0; the same
+    # float32 values the sum strong + defect_weight * weak gives.
+    code = cv2.add(cv2.min(strong, 2), cv2.min(weak, 1))
+    lut = np.zeros(256, dtype=np.float32)
+    lut[1], lut[2] = float(cfg.defect_weight), 1.0
+    dirt = cv2.LUT(code, lut)
     wx = int(round(cfg.window_cells * cfg.pitch_x)) | 1
     wy = int(round(cfg.window_cells * cfg.pitch_y)) | 1
     density = cv2.boxFilter(dirt, -1, (wx, wy), borderType=cv2.BORDER_REFLECT)
-    return DirtLayers(blur=blur, unsure=unsure, nicks=nicks, crumbs=crumbs, density=density)
+    return DirtLayers(blur=_as_bool(blur), unsure=_as_bool(unsure), nicks=_as_bool(nicks), crumbs=_as_bool(crumbs), density=density)
 
 
 def _outline(mask: np.ndarray, offset: tuple[int, int], scale: tuple[float, float], size: tuple[int, int]) -> tuple[tuple[int, int], ...]:

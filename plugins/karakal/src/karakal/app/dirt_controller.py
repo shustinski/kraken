@@ -111,7 +111,7 @@ class DirtController(QObject):
         self._partial_timer = QTimer(self)
         self._partial_timer.setSingleShot(True)
         self._partial_timer.setInterval(PARTIAL_REFRESH_MS)
-        self._partial_timer.timeout.connect(self.refresh_views)
+        self._partial_timer.timeout.connect(self._refresh_partial)
         controls.runRequested.connect(lambda: self.run())
         controls.cancelRequested.connect(self.cancel)
         controls.settingsChanged.connect(self._settings_changed)
@@ -246,6 +246,7 @@ class DirtController(QObject):
         self._thread = None
         self._controls.set_running(False)
         self._partial_timer.stop()
+        self._partial_timer.setInterval(PARTIAL_REFRESH_MS)
         self._update_title()
         if thread is not None:
             thread.deleteLater()
@@ -453,6 +454,18 @@ class DirtController(QObject):
             worst = max(result.regions, key=lambda region: region.dirtiness)
             marks[key] = QColor(LEVEL_COLORS.get(worst.level, LEVEL_COLORS[LEVEL_LIGHT]))
         return marks
+
+    def _refresh_partial(self) -> None:
+        """Views refreshed while the search runs. Each refresh lists every dirty frame found so far;
+        the next one waits ten times as long as it took (a big run stays responsive, the end of the
+        run refreshes everything anyway)."""
+
+        from time import perf_counter
+
+        started = perf_counter()
+        self.refresh_views()
+        spent_ms = 1000.0 * (perf_counter() - started)
+        self._partial_timer.setInterval(max(PARTIAL_REFRESH_MS, int(10.0 * spent_ms)))
 
     def refresh_views(self) -> None:
         """Matrix marks of the shown layer and the frame windows that are open."""

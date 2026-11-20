@@ -106,17 +106,20 @@ def estimate_size_bytes(value: object, *, _seen: set[int] | None = None) -> int:
 
 
 def atomic_pickle_dump(path: Path, payload: object) -> None:
-    """Serialize, verify readability, and atomically replace one cache entry."""
+    """Serialize and atomically replace one cache entry.
 
+    A reader sees the old entry or the whole new one (temporary file + replace). There is no
+    fsync and no read-back: these are caches, written for every frame of a run (tens of thousands),
+    and every reader drops an entry it cannot load and computes the frame again. The fsync and
+    the second unpickling of each entry cost more than many of the analyses they stored.
+    """
+
+    data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("wb") as handle:
-            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            handle.flush()
-            os.fsync(handle.fileno())
-        with temporary.open("rb") as handle:
-            pickle.load(handle)
+            handle.write(data)
         os.replace(temporary, path)
     finally:
         try:

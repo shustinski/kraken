@@ -2956,7 +2956,11 @@ def _recover_binary_dirt_components(
 
 
 def _foreground_count_tables(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Integral image plus column/row prefixes of a nonzero mask."""
+    """Integral image plus column/row prefixes of a nonzero mask.
+
+    Column/row prefixes are differences of the integral (same integers as a cumsum of the
+    binary mask). Building them that way avoids a second full-frame scan on large images.
+    """
 
     binary = np.asarray(mask > 0, dtype=np.uint8)
     height, width = binary.shape[:2]
@@ -2969,11 +2973,13 @@ def _foreground_count_tables(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, 
         integral = np.zeros((height + 1, width + 1), dtype=np.int64)
         if binary.size:
             integral[1:, 1:] = np.cumsum(np.cumsum(binary, axis=0, dtype=np.int64), axis=1)
-    column_prefix = np.zeros((height + 1, width), dtype=np.int64)
-    row_prefix = np.zeros((height, width + 1), dtype=np.int64)
-    if height and width:
-        np.cumsum(binary, axis=0, out=column_prefix[1:], dtype=np.int64)
-        np.cumsum(binary, axis=1, out=row_prefix[:, 1:], dtype=np.int64)
+    if height and width and integral.size:
+        column_prefix = integral[:, 1:] - integral[:, :-1]
+        row_prefix = integral[1:, :] - integral[:-1, :]
+    else:
+        dtype = integral.dtype if getattr(integral, "size", 0) else np.int64
+        column_prefix = np.zeros((height + 1, width), dtype=dtype)
+        row_prefix = np.zeros((height, width + 1), dtype=dtype)
     return integral, column_prefix, row_prefix
 
 

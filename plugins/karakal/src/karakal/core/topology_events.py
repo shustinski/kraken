@@ -168,7 +168,16 @@ def _difference(mask: np.ndarray, reference: np.ndarray, mine: _Objects, theirs:
     flat = np.flatnonzero(differ)
     if flat.size == 0:
         return None
-    near = np.flatnonzero(cv2.dilate(differ.view(np.uint8), np.ones((3, 3), np.uint8)))
+    height, width = differ.shape
+    # Dilate only the disagreement box (plus one pixel): same 8-neighbourhood as a full-frame dilate.
+    rows, columns = np.divmod(flat, width)
+    y0 = max(0, int(rows.min()) - 1)
+    y1 = min(height, int(rows.max()) + 2)
+    x0 = max(0, int(columns.min()) - 1)
+    x1 = min(width, int(columns.max()) + 2)
+    crop = np.ascontiguousarray(_as_uint8(differ[y0:y1, x0:x1]))
+    near_ys, near_xs = np.nonzero(cv2.dilate(crop, np.ones((3, 3), np.uint8)))
+    near = (near_ys.astype(np.int64, copy=False) + y0) * width + (near_xs.astype(np.int64, copy=False) + x0)
     mine_labels = mine.labels.ravel()[near]
     theirs_labels = theirs.labels.ravel()[near]
     return _Difference(
@@ -464,6 +473,9 @@ def compare_to_reference(
     if mask_bool.shape != reference_bool.shape:
         raise ValueError(f"mask and reference differ in shape: {mask_bool.shape} != {reference_bool.shape}")
     shape = mask_bool.shape
+    # Identical masks have no events: skip connected-components on the whole frame.
+    if not np.any(mask_bool ^ reference_bool):
+        return ()
     mine = mine if mine is not None else _objects(mask_bool)
     theirs = theirs if theirs is not None else _objects(reference_bool)
     difference = _difference(mask_bool, reference_bool, mine, theirs)

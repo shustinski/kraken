@@ -185,3 +185,102 @@ def test_cache_entry_is_written_whole(tmp_path) -> None:
         atomic_pickle_dump(target, {"bad": lambda: None})
     assert pickle.loads(target.read_bytes()) == {"values": list(range(1000))}
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def _reference_foreground_count_tables(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pre-speedup tables: OpenCV integral plus independent int64 cumsums."""
+
+    binary = np.asarray(mask > 0, dtype=np.uint8)
+    height, width = binary.shape[:2]
+    integral = cv2.integral(binary)
+    if isinstance(integral, tuple):
+        integral = integral[0]
+    integral = np.asarray(integral)
+    column_prefix = np.zeros((height + 1, width), dtype=np.int64)
+    row_prefix = np.zeros((height, width + 1), dtype=np.int64)
+    if height and width:
+        np.cumsum(binary, axis=0, out=column_prefix[1:], dtype=np.int64)
+        np.cumsum(binary, axis=1, out=row_prefix[:, 1:], dtype=np.int64)
+    return integral, column_prefix, row_prefix
+
+
+def test_foreground_count_tables_match_cumsum_reference() -> None:
+    from karakal.core.grid_anomaly import (
+        _foreground_count_tables,
+        _outline_side_coverages_from_tables,
+        _rect_nonzero_count,
+    )
+
+    rng = np.random.default_rng(11)
+    masks = [
+        np.zeros((1, 1), dtype=np.uint8),
+        np.zeros((17, 23), dtype=np.uint8),
+        np.ones((32, 48), dtype=np.uint8) * 255,
+        (rng.random((96, 128)) > 0.7).astype(np.uint8) * 255,
+        (rng.random((200, 180)) > 0.55).astype(np.uint8) * 255,
+    ]
+    for frame in _masks():
+        masks.append((frame[0] >= 128).astype(np.uint8) * 255)
+    for mask in masks:
+        got_integral, got_col, got_row = _foreground_count_tables(mask)
+        ref_integral, ref_col, ref_row = _reference_foreground_count_tables(mask)
+        assert np.array_equal(got_integral, ref_integral)
+        assert np.array_equal(got_col.astype(np.int64, copy=False), ref_col)
+        assert np.array_equal(got_row.astype(np.int64, copy=False), ref_row)
+        height, width = mask.shape[:2]
+        if height < 8 or width < 8:
+            continue
+        for _ in range(40):
+            x = int(rng.integers(0, max(1, width - 8)))
+            y = int(rng.integers(0, max(1, height - 8)))
+            bw = int(rng.integers(2, min(16, width - x + 1)))
+            bh = int(rng.integers(2, min(16, height - y + 1)))
+            assert _rect_nonzero_count(got_integral, x, y, bw, bh) == _rect_nonzero_count(
+                ref_integral, x, y, bw, bh
+            )
+            assert _outline_side_coverages_from_tables(got_col, got_row, x, y, bw, bh) == (
+                _outline_side_coverages_from_tables(ref_col, ref_row, x, y, bw, bh)
+            )
+
+
+def test_identical_masks_skip_topology_without_changing_findings() -> None:
+    from karakal.core.synthetic_chip import LayerStyle
+    from karakal.core.synthetic_validation import make_case
+    from karakal.core.topology_events import compare_to_reference, topology_findings
+
+    for case in ("clean", "open", "bridge", "boundary_jitter", "extra_blob"):
+        frame = make_case(case, 3, LayerStyle())
+        masks = {model_id: mask > 0 for model_id, mask in frame.masks.items()}
+        first = next(iter(masks.values()))
+        assert compare_to_reference(first, first.copy(), model_id="a", reference_id="a") == ()
+        found = topology_findings(masks)
+        # Two-model path still mirrors; re-running must be stable.
+        assert topology_findings(masks) == found
+
+
+def test_topology_difference_bbox_dilate_matches_full_frame() -> None:
+    """Touched labels from a bbox dilate must match a full-frame 3×3 dilate."""
+
+    from karakal.core.synthetic_chip import LayerStyle
+    from karakal.core.synthetic_validation import make_case
+    from karakal.core.topology_events import _as_uint8, _difference, _objects
+
+    for case in ("open", "bridge", "edge_shift", "extra_blob", "boundary_jitter"):
+        frame = make_case(case, 7, LayerStyle())
+        mask = frame.masks["a"] > 0
+        reference = frame.masks["b"] > 0
+        mine = _objects(mask)
+        theirs = _objects(reference)
+        got = _difference(mask, reference, mine, theirs)
+        differ = mask ^ reference
+        flat = np.flatnonzero(differ)
+        if flat.size == 0:
+            assert got is None
+            continue
+        near = np.flatnonzero(cv2.dilate(_as_uint8(differ), np.ones((3, 3), np.uint8)))
+        mine_labels = mine.labels.ravel()[near]
+        theirs_labels = theirs.labels.ravel()[near]
+        assert got is not None
+        assert np.array_equal(got.flat, flat)
+        assert got.touched_mine == np.unique(mine_labels[mine_labels > 0]).tolist()
+        assert got.touched_theirs == np.unique(theirs_labels[theirs_labels > 0]).tolist()

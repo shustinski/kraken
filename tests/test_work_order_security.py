@@ -171,7 +171,7 @@ def test_server_cancel_enforces_revision_and_retry_is_idempotent(setup):
     ("assignee_id", str(uuid4())),
     ("instructions", "altered"),
     ("placement", WorkPlacement.SERVER),
-])
+], ids=["destination", "assignee_id", "instructions", "placement"])  # stable for pytest-xdist
 def test_registered_record_cannot_overwrite_existing_work_metadata(setup, field, value):
     setup.record(lambda _projections: setup.order)
     tampered = replace(setup.order.mark_running(), **{field: value})

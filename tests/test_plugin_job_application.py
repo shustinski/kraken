@@ -532,7 +532,7 @@ class PluginJobApplicationTests(unittest.TestCase):
                 self._assert_terminal_result(outcome, state, parameters)
 
     def _assert_terminal_result(self, outcome, state, parameters):
-        with self.subTest(outcome=outcome, parameters=parameters):
+        with self.subTest(outcome=outcome.value, parameters=parameters):
             fixture = Fixture()
             job = fixture.submit()
             manifest = PluginResultManifestV1(

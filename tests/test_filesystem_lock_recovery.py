@@ -120,6 +120,8 @@ def test_competing_processes_and_instances_never_share_critical_section(tmp_path
         b"partial legacy record",
         json.dumps(dict(schema_version=1, pid=os.getpid(), host="another-host", token="foreign")).encode(),
     ],
+    # Stable ids: pytest-xdist workers must collect identical test names.
+    ids=["partial-record", "foreign-host-owner"],
 )
 def test_unknown_legacy_owner_is_never_stolen(tmp_path, data):
     path = tmp_path / "lock"

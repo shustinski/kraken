@@ -11,7 +11,6 @@ from kraken_core.plugin_protocol import PluginFrameInput
 from neuralimage.infrastructure.dataset_source import DatasetStreamSource
 from neuralimage.lib.data_interfaces import SamplePrepareSettings
 from neuralimage.lib.images import ImagePreparator
-from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_prepare
 
 
 def make_source(monkeypatch, content: bytes, key: str, media_type: str):
@@ -60,6 +59,9 @@ def test_server_dataset_rejects_unsafe_paths_and_bad_cif_dimensions(monkeypatch,
 def test_recognition_cuts_server_image_without_local_file(monkeypatch, tmp_path):
     path = tmp_path / "virtual" / "a.png"
     source = make_source(monkeypatch, image_bytes(), str(path), "image/png")
+    # Imported here: it pulls in torch (~1.5 GB per pytest-xdist worker at collection).
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_prepare
+
     result = cut_image_prepare(path, (1, 8, 8), 0, asset_source=source)
     assert result["baseim_size"] == (16, 16)
     assert result["cutted_image"].shape == (9, 1, 8, 8)

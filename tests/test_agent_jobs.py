@@ -55,7 +55,7 @@ def manifest() -> PluginJobManifest:
 class AgentJobTests(unittest.TestCase):
     def test_interactive_job_can_record_failure_or_partial_result(self) -> None:
         for outcome in (AgentJobState.FAILED, AgentJobState.PARTIAL):
-            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(outcome=outcome.value), tempfile.TemporaryDirectory() as temporary:
                 store = DurableJobStore(Path(temporary) / "jobs.sqlite3")
                 job = store.enqueue(manifest())
                 for state in (AgentJobState.STAGING, AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER, outcome):

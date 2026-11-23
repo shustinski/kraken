@@ -136,7 +136,7 @@ class PetUnlockUpgradeTests(unittest.TestCase):
             (Rarity.EPIC, Rarity.LEGENDARY, Rarity.EPIC, 100, "fallback"),
         ]
         for current, target, fragment_rarity, amount, method in cases:
-            with self.subTest(current=current, method=method):
+            with self.subTest(current=current.value, method=method):  # pytest-xdist cannot send enums
                 profile = _profile()
                 profile.pet_progress[PetType.CAT].unlocked = True
                 profile.pet_progress[PetType.CAT].rarity = current

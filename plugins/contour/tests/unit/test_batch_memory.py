@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
 import unittest
+from unittest import mock
 
 from contour.application.processing import BatchFrameTiming, BatchImageMetadata
-from contour.batch_processor import BatchRunSummary, memory_limited_worker_count
+from contour.batch_processor import (
+    BatchRunSummary,
+    limit_worker_native_threads,
+    memory_limited_worker_count,
+)
 from contour.batch_worker import BatchChunkDiagnostics, BatchChunkResult
 
 _MB = 1024 * 1024
@@ -41,6 +48,32 @@ class MemoryLimitedWorkerCountTests(unittest.TestCase):
     def test_unknown_memory_keeps_requested_count(self) -> None:
         count = memory_limited_worker_count(6, available_bytes=None)
         self.assertEqual(count, 6)
+
+
+def _child_blas_threads(queue) -> None:  # type: ignore[no-untyped-def]
+    queue.put(os.environ.get("OPENBLAS_NUM_THREADS"))
+
+
+class WorkerNativeThreadTests(unittest.TestCase):
+    def test_spawned_workers_inherit_single_blas_thread(self) -> None:
+        # numpy's OpenBLAS commits a buffer per thread at import time; spawned
+        # workers import numpy before any initializer runs, so the limit must
+        # already be in the environment they inherit.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENBLAS_NUM_THREADS", None)
+            limit_worker_native_threads()
+            context = mp.get_context("spawn")
+            queue = context.Queue()
+            process = context.Process(target=_child_blas_threads, args=(queue,))
+            process.start()
+            value = queue.get(timeout=30)
+            process.join(timeout=30)
+        self.assertEqual(value, "1")
+
+    def test_explicit_user_setting_is_kept(self) -> None:
+        with mock.patch.dict(os.environ, {"OPENBLAS_NUM_THREADS": "3"}, clear=False):
+            limit_worker_native_threads()
+            self.assertEqual(os.environ["OPENBLAS_NUM_THREADS"], "3")
 
 
 class BatchRunSummaryTests(unittest.TestCase):

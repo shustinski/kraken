@@ -32,8 +32,30 @@ from .pipeline import PreprocessingPipeline
 _LOGGER = logging.getLogger(__name__)
 
 _MB = 1024 * 1024
-# A spawned contour worker settles around 1.1 GB private memory on real frames.
-_DEFAULT_WORKER_MEMORY_MB = 1536
+# With BLAS limited to one thread a worker commits ~70 MB after import and
+# peaks near 220 MB on a 2000x2000 frame; leave room for heavier pipelines.
+_DEFAULT_WORKER_MEMORY_MB = 512
+# Thread-pool sizes read by numpy's OpenBLAS (and other native math libraries)
+# when they load. OpenBLAS commits a buffer per thread at import, ~750 MB per
+# process on a 32-core machine, which workers never use: they run one frame
+# at a time and parallelism comes from the process pool.
+_WORKER_NATIVE_THREAD_VARS = (
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+
+
+def limit_worker_native_threads() -> None:
+    """Make spawned batch workers load native math libraries single-threaded.
+
+    Spawned workers inherit this process's environment and import numpy while
+    unpickling their task, before any pool initializer runs, so the limit has
+    to be set here before the pool starts. Values the user set are kept.
+    """
+    for name in _WORKER_NATIVE_THREAD_VARS:
+        os.environ.setdefault(name, "1")
 # Headroom left for the UI process, the multiprocessing manager and the OS.
 _DEFAULT_MEMORY_RESERVE_MB = 2048
 
@@ -98,6 +120,7 @@ class BatchRunSummary:
 
 
 def configure_batch_runtime() -> None:
+    limit_worker_native_threads()
     cv2.setNumThreads(1)
     try:
         cv2.ocl.setUseOpenCL(False)

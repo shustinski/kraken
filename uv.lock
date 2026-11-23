@@ -896,11 +896,6 @@ postgres = [
 registration = [
     { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-stitching = [
-    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "pillow", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "shapely", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
 reports = [
     { name = "openpyxl", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "reportlab", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -910,8 +905,14 @@ server = [
     { name = "cryptography", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "fastapi", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "httpx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "ldap3", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pydantic", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "uvicorn", extra = ["standard"], marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+stitching = [
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pillow", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "shapely", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [package.metadata]
@@ -924,6 +925,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'server'", specifier = ">=0.27" },
     { name = "keyring", marker = "extra == 'desktop'", specifier = ">=25.0" },
+    { name = "ldap3", marker = "extra == 'server'", specifier = ">=2.9" },
     { name = "numpy", marker = "extra == 'electrical'", specifier = ">=2.2" },
     { name = "numpy", marker = "extra == 'registration'", specifier = ">=2.2" },
     { name = "numpy", marker = "extra == 'stitching'", specifier = ">=2.2" },
@@ -932,7 +934,6 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'desktop'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'electrical'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'stitching'", specifier = ">=10.0" },
-    { name = "shapely", marker = "extra == 'stitching'", specifier = ">=2.1" },
     { name = "psutil", marker = "extra == 'agent'", specifier = ">=7.2.2" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.9" },
@@ -944,6 +945,7 @@ requires-dist = [
     { name = "reportlab", marker = "extra == 'reports'", specifier = ">=4.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "scipy", marker = "extra == 'electrical'", specifier = ">=1.14" },
+    { name = "shapely", marker = "extra == 'stitching'", specifier = ">=2.1" },
     { name = "sqlalchemy", marker = "extra == 'postgres'", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
     { name = "websocket-client", marker = "extra == 'desktop'", specifier = ">=1.8" },

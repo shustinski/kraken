@@ -9,16 +9,15 @@ from updater.client import fetch_update_info
 from contour.updater import CONTOUR_UPDATE_APP_ID, contour_update_client_config_path, load_contour_update_client_config
 
 
-def test_contour_update_manifest_points_at_program_store_folder() -> None:
+def test_contour_update_manifest_points_at_kraken_server() -> None:
     payload = json.loads(contour_update_client_config_path().read_text(encoding="utf-8"))
-    manifest = Path(str(payload["manifest_url"]))
-    assert manifest.as_posix() == "W:/ProgramStore/Contour"
+    assert payload["channels"]["stable"] == "http://127.0.0.1:8080/api/v1/updates/contour/stable/version.json"
 
 
 def test_contour_update_app_id_matches_neuralimage_style() -> None:
     assert CONTOUR_UPDATE_APP_ID == "Contour"
     config = load_contour_update_client_config()
-    assert config.get_manifest_url().replace("\\", "/") == "W:/ProgramStore/Contour"
+    assert config.get_manifest_url() == "http://127.0.0.1:8080/api/v1/updates/contour/stable/version.json"
 
 
 def test_contour_update_config_uses_pyinstaller_onedir_resources(tmp_path: Path, monkeypatch) -> None:

@@ -397,8 +397,9 @@ def start_task(
         try:
             artifact_dir = runtime.artifact_dir
             if artifact_dir is None:
-                if getattr(presenter, 'kraken_dataset_source', None) is not None:
-                    artifact_dir = Path(task.main_window_state.result_folder)
+                kraken_output = getattr(presenter, 'kraken_training_output_directory', None)
+                if kraken_output is not None or getattr(presenter, 'kraken_dataset_source', None) is not None:
+                    artifact_dir = Path(kraken_output or task.main_window_state.result_folder)
                     artifact_dir.mkdir(parents=True, exist_ok=True)
                 else:
                     artifact_dir = artifact_dir_builder(

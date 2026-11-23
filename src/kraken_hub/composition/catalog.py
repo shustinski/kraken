@@ -15,7 +15,7 @@ from kraken_manager.application.project_application import ProjectApplication
 from kraken_manager.application.project_operations import ProjectOperations
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal
-from kraken_manager.domain.project import GridOrientation, Project
+from kraken_manager.domain.project import GridOrientation, Layer, Project
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
 from kraken_hub.domain.catalog_route import storage_label
@@ -200,6 +200,16 @@ class DualCatalogService(ProjectApplication):
                 self._remote_ids.add(str(remote.id))
             return remote
         return None
+
+    def list_layers(
+        self,
+        project_id: ProjectId | str,
+        *,
+        as_of: datetime | None = None,
+        include_archived: bool = False,
+    ) -> tuple[Layer, ...]:
+        backend = self._backend(project_id) if self.is_remote_project(project_id) else self.local
+        return backend.list_layers(project_id, as_of=as_of, include_archived=include_archived)
 
     def create_project(
         self,

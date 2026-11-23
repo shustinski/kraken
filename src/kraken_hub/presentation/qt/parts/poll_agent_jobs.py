@@ -1,6 +1,7 @@
 """manager_app: poll agent jobs."""
 from __future__ import annotations
 import logging
+from PyQt6 import sip
 from kraken_core.frame_matrix import (
     MatrixSession,
 )
@@ -8,20 +9,26 @@ from kraken_manager.domain.identity import Permission
 from kraken_manager.presentation.qt.models import ProjectListItem
 from kraken_hub.application.workspace import ProjectEventWake
 from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
+from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
 
 
 class PollAgentJobsMixin:
+    def _emit_remote_signal(self, signal: str, value: object) -> None:
+        bridge = self._remote_bridge
+        if not sip.isdeleted(bridge):
+            getattr(bridge, signal).emit(value)
+
     def _wire_live_sync(self) -> None:
         add_wake = getattr(self.service, "add_wake_handler", None)
         add_catalog = getattr(self.service, "add_catalog_handler", None)
         add_status = getattr(self.service, "add_status_handler", None)
         start_sync = getattr(self.service, "start_sync", None)
         if callable(add_wake):
-            add_wake(lambda wake: self._remote_bridge.wakeReceived.emit(wake))
+            add_wake(lambda wake: self._emit_remote_signal("wakeReceived", wake))
         if callable(add_catalog):
-            add_catalog(lambda: self._remote_bridge.wakeReceived.emit(None))
+            add_catalog(lambda: self._emit_remote_signal("wakeReceived", None))
         if callable(add_status):
-            add_status(lambda status: self._remote_bridge.statusChanged.emit(status))
+            add_status(lambda status: self._emit_remote_signal("statusChanged", status))
         if callable(start_sync):
             try:
                 start_sync()
@@ -29,6 +36,8 @@ class PollAgentJobsMixin:
                 logging.getLogger(__name__).exception("Failed to start remote live sync")
 
     def _on_remote_wake(self, wake: ProjectEventWake | None) -> None:
+        if sip.isdeleted(self._sync_timer):
+            return
         if wake is None:
             self._pending_catalog_refresh = True
         else:
@@ -166,38 +175,28 @@ class PollAgentJobsMixin:
             if self.my_work_refresh is not None:
                 self.my_work_refresh()
             return
+        if getattr(self, "_agent_import_worker", None) is not None:
+            return
         try:
             jobs = self.service.synchronize_plugin_jobs(
                 principal=self.session.principal,
                 gateway=gateway,
             )
             file_jobs = _file_work_job_ids(getattr(self.service, "work_orders", lambda: ())())
+            started_import = False
             for job in jobs:
                 if job.state.value != "importing" or str(job.id) in file_jobs:
                     continue
                 remote_project = getattr(self.service, "is_remote_project", lambda _project_id: False)
                 if remote_project(job.project_id):
                     continue
-                publications = gateway.get_publications(job.id)
-                if publications:
-                    imported = self.service.import_agent_publications(
-                        principal=self.session.principal,
-                        publications=publications,
-                        staging_root=self.service.data_dir / "agent" / "staging",
-                    )
-                else:
-                    payload = gateway.get_result(job.id)
-                    imported = self.service.import_agent_result(
-                        principal=self.session.principal,
-                        result_payload=payload,
-                        staging_root=self.service.data_dir / "agent" / "staging",
-                    )
-                if not imported.requires_partial_confirmation:
-                    gateway.complete_import(job.id)
-                    self._refresh_current_matrix()
+                self._import_agent_job_in_background(job.id, gateway)
+                started_import = True
+                break
             if self.my_work_refresh is not None:
                 self.my_work_refresh()
-            self._agent_poll_error = ""
+            if not started_import:
+                self._agent_poll_error = ""
         except Exception as exc:
             message = str(exc)
             if message != self._agent_poll_error:
@@ -206,3 +205,52 @@ class PollAgentJobsMixin:
                     10000,
                 )
                 self._agent_poll_error = message
+
+    def _import_agent_job_in_background(self, job_id, gateway) -> None:
+        service = self.service
+        principal = self.session.principal
+        staging_root = service.data_dir / "agent" / "staging"
+
+        def import_result():
+            publications = gateway.get_publications(job_id)
+            if publications:
+                imported = service.import_agent_publications(
+                    principal=principal,
+                    publications=publications,
+                    staging_root=staging_root,
+                )
+            else:
+                imported = service.import_agent_result(
+                    principal=principal,
+                    result_payload=gateway.get_result(job_id),
+                    staging_root=staging_root,
+                )
+            if not imported.requires_partial_confirmation:
+                gateway.complete_import(job_id)
+            return not imported.requires_partial_confirmation
+
+        worker = _BackgroundCallThread(import_result, parent=self.shell)
+        self._agent_import_worker = worker
+        self._background_workers.add(worker)
+
+        def failed(message):
+            if message != self._agent_poll_error:
+                self.shell.statusBar().showMessage(f"Kraken Agent: {message}")
+                self._agent_poll_error = message
+
+        def succeeded(completed):
+            self._agent_poll_error = ""
+            if completed:
+                self._refresh_current_matrix()
+            if self.my_work_refresh is not None:
+                self.my_work_refresh()
+
+        def finished():
+            self._background_workers.discard(worker)
+            self._agent_import_worker = None
+
+        worker.failed.connect(failed)
+        worker.succeeded.connect(succeeded)
+        worker.finished.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()

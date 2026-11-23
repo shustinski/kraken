@@ -278,13 +278,19 @@ def _my_work_panel(
             for project_id in projects
             for layer in service.list_layers(project_id, include_archived=True)
         }
-        performers = {
-            str(performer.id): performer.name
-            for performer in service.list_performers(include_archived=True)
-        }
+        performer_rows = tuple(service.list_performers(include_archived=True))
+        performers = {str(performer.id): performer.name for performer in performer_rows}
         batches = service.review_batches()
         jobs = service.plugin_jobs()
         orders = service.work_orders() if hasattr(service, "work_orders") else ()
+        principal_id = str(getattr(getattr(session, "principal", None), "id", "") or "")
+        if principal_id:
+            assigned = {
+                str(performer.id)
+                for performer in performer_rows
+                if str(getattr(performer, "principal_id", "") or "") == principal_id
+            }
+            orders = tuple(order for order in orders if str(order.assignee_id) in assigned)
         file_jobs = _file_work_job_ids(orders)
         jobs = tuple(job for job in jobs if str(job.id) not in file_jobs)
         work_states = {

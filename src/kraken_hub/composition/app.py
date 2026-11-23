@@ -187,7 +187,13 @@ def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") ->
     layout.setSpacing(10)
 
     settings = QSettings("Kraken", "KrakenHub")
-    configured_update_url = update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
+    from kraken_hub.presentation.qt.preferences_dialog import program_server_url
+
+    server_url = os.getenv("KRAKEN_SERVER_URL", "") or program_server_url(settings)
+    configured_update_url = (
+        update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
+        or (f"{server_url.rstrip('/')}/api/v1/updates/kraken-hub/stable/version.json" if server_url else "")
+    )
     update_service = UpdateService(configured_update_url, current_version=application_version(), app_id="kraken-hub")
     update_controller = QtUpdateController(window, update_service, application_name="Kraken Hub")
     update_row = QWidget()

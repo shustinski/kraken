@@ -32,6 +32,10 @@ blob_root = "D:/KrakenData/blobs"
 source_root = "D:/KrakenData/source"
 derived_root = "D:/KrakenData/derived"
 
+# Необязательная папка публикации обновлений Hub, Contour и NeuralImage.
+# [updates]
+# root = "D:/KrakenUpdates"
+
 [blob_gateway]
 # Клиенты ходят на public_url напрямую. Вне loopback разрешён только HTTPS.
 enabled = true

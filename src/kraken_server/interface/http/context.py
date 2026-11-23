@@ -227,7 +227,7 @@ def build_http_context(
     @app.exception_handler(ConflictError)
     async def conflict(request: Request, exc: ConflictError) -> JSONResponse:
         detail = str(exc)
-        revision_match = re.search(r"Expected .* revision (\d+), found (\d+)", detail)
+        revision_match = re.search(r"Expected (?:\w+ )?revision (\d+), found (\d+)", detail)
         segments = [segment for segment in request.url.path.split("/") if segment]
         entity_kind = "project"
         entity_id = next(

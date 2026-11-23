@@ -253,7 +253,7 @@ def _render_server_config(args: argparse.Namespace) -> int:
 
 
 def _protect(args: argparse.Namespace) -> int:
-    value = sys.stdin.buffer.read().decode('utf-8').rstrip('\r\n')
+    value = sys.stdin.buffer.read().decode('utf-8').lstrip('\ufeff').rstrip('\r\n')
     if not value:
         raise SystemExit('protect: empty input')
     protect_secret(value, Path(args.destination))
@@ -318,8 +318,12 @@ def _ensure_project(args: argparse.Namespace) -> int:
                                   'status': 'reused'}))
                 return 0
         except RemoteServerError as error:
-            if error.status != 404:
+            if error.status not in (403, 404):
                 raise
+            if error.status == 403:
+                # A re-created beta account cannot access the old principal's
+                # sentinel. Keep it untouched and create a new isolated one.
+                args.name = f"{args.name}-{uuid.uuid4().hex[:8]}"
     known = listed_id()
     if known:
         print(json.dumps({'project_id': known, 'status': 'reused'}))

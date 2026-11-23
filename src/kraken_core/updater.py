@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ class ReleaseInfo:
     notes: str = ""
     channel: str = "stable"
     platform: str = ""
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,10 +116,19 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
                 notes=str(item.get("notes", item.get("release_notes", "")) or "").strip(),
                 channel=str(item.get("channel", channel) or channel).strip().lower(),
                 platform=str(item.get("platform", "") or "").strip().lower(),
+                sha256=str(item.get("sha256", payload.get("sha256", "")) or "").strip().lower(),
             )
         )
     if not releases:
-        releases.append(ReleaseInfo(version=version, download_url=top_download_url, notes=release_notes, channel=channel))
+        releases.append(
+            ReleaseInfo(
+                version=version,
+                download_url=top_download_url,
+                notes=release_notes,
+                channel=channel,
+                sha256=str(payload.get("sha256", "") or "").strip().lower(),
+            )
+        )
     return UpdateInfo(
         version=version,
         download_url=top_download_url,
@@ -173,6 +184,12 @@ def download_update_installer(release: ReleaseInfo, *, app_id: str, manifest_url
         with request.urlopen(source, timeout=30.0) as response:
             with target_path.open("wb") as file:
                 shutil.copyfileobj(response, file)
+    if release.sha256 or "/api/v1/updates/" in source:
+        with target_path.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if not re.fullmatch(r"[0-9a-f]{64}", release.sha256) or actual != release.sha256:
+            target_path.unlink(missing_ok=True)
+            raise ValueError("Installer SHA-256 does not match the update manifest")
     ensure_posix_executable(target_path)
     return target_path
 

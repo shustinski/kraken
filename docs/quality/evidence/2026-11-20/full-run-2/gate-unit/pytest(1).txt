@@ -1,0 +1,76 @@
+﻿........................................................................ [  4%]
+...................................................................... [  8%]
+........................................................................ [ 13%]
+........................................................................ [ 17%]
+.............................ss......................................... [ 21%]
+.......................F...............s......ss........................ [ 26%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 39%]
+........................................................................ [ 44%]
+........................................................... [ 47%]
+........................................................................ [ 52%]
+........................................................................ [ 56%]
+............................................................... [ 60%]
+........................................................................ [ 64%]
+........................................................................ [ 69%]
+................................................................. [ 73%]
+........................................................................ [ 77%]
+........................................................................ [ 82%]
+........................................................................ [ 86%]
+........................................................................ [ 90%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+....                                                                     [100%]
+================================== FAILURES ===================================
+_________________ test_result_import_failure_remains_visible __________________
+
+qtbot = <pytestqt.qtbot.QtBot object at 0x000002590AE01180>
+
+    def test_result_import_failure_remains_visible(qtbot):
+        shell = QMainWindow()
+        qtbot.addWidget(shell)
+        job = SimpleNamespace(id="job", project_id="project", state=SimpleNamespace(value="importing"))
+        controller = PollAgentJobsMixin()
+        controller.service = SimpleNamespace(
+            data_dir=Path("unused"),
+            work_orders=lambda: (),
+            is_remote_project=lambda _id: False,
+            synchronize_plugin_jobs=lambda **_kwargs: (job,),
+            import_agent_result=lambda **_kwargs: pytest.fail("Invalid result was imported"),
+        )
+        controller.session = SimpleNamespace(principal=None)
+        controller._agent_gateway = SimpleNamespace(
+            get_publications=lambda _id: (),
+            get_result=lambda _id: (_ for _ in ()).throw(ValueError("invalid result")),
+        )
+        controller._agent_poll_error = ""
+        controller._background_workers = set()
+        controller.my_work_refresh = None
+        controller.shell = shell
+    
+>       controller._poll_agent_jobs()
+E       assert "Kraken Agent...agent_result'" == 'Kraken Agent: invalid result'
+E         
+E         - Kraken Agent: invalid result
+E         + Kraken Agent: 'types.SimpleNamespace' object has no attribute 'import_agent_result'
+
+tests\test_file_work_agent_routing.py:140: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_plugin_confidence_workflow.py::test_neuralimage_runs_real_model_and_publishes_the_requested_output[frames.binary-segment.v2]
+  D:\code\kraken\tests\test_plugin_confidence_workflow.py:69: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert set(saved.getdata()) <= {0, 255}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_desktop_runtime_smoke.py:113: Set KRAKEN_SMOKE_SERVER_URL and KRAKEN_SMOKE_SERVER_TOKEN for an isolated test server
+SKIPPED [1] tests\test_desktop_runtime_smoke.py:148: Set KRAKEN_SMOKE_AGENT_URL and KRAKEN_SMOKE_AGENT_TOKEN for an isolated test agent
+SKIPPED [1] tests\test_filesystem_event_read_cache.py:102: Requires actual POSIX fork
+SKIPPED [1] tests\test_filesystem_lock_recovery.py:155: Requires actual POSIX fork
+SKIPPED [1] tests\test_filesystem_lock_recovery.py:200: Requires actual POSIX fork
+FAILED tests/test_file_work_agent_routing.py::test_result_import_failure_remains_visible
+1 failed, 1623 passed, 5 skipped, 2 warnings, 31 subtests passed in 527.98s (0:08:47)

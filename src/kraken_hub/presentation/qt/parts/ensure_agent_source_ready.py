@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Callable
 from PyQt6.QtCore import QTimer
+from kraken_manager.domain.project import RepresentationPurpose
 
 from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
 
@@ -47,7 +48,18 @@ class EnsureAgentSourceReadyMixin:
             None,
         )
         prepare = getattr(self.service, "materialize_representation_inputs", None)
-        if layer is None or representation is None or not callable(prepare):
+        if layer is None or representation is None:
+            self._error("Не удалось подготовить изображения для задания")
+            return False
+        if (
+            getattr(representation, "purpose", None) is RepresentationPurpose.BINARY
+            and not getattr(representation, "source", None)
+        ):
+            if existing:
+                return True
+            self._error("Бинарные изображения ещё не опубликованы. Дождитесь завершения бинаризации.")
+            return False
+        if not callable(prepare):
             self._error("Не удалось подготовить изображения для задания")
             return False
         key = (str(project.id), str(representation.id))

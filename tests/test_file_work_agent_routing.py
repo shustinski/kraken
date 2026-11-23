@@ -1,10 +1,12 @@
 """File work packages use their work-order lifecycle instead of Agent controls."""
 
 from datetime import UTC, datetime
+from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
-from PyQt6.QtWidgets import QTableWidget
+from PyQt6.QtWidgets import QMainWindow, QTableWidget, QWidget
 
 from kraken_hub.presentation.qt.parts.gateway_job import GatewayJobMixin
 from kraken_hub.presentation.qt.parts.my_work_panel import _my_work_panel
@@ -64,6 +66,80 @@ def test_poll_does_not_fetch_results_for_file_work():
         shell=SimpleNamespace(statusBar=lambda: SimpleNamespace(showMessage=lambda *args: pytest.fail(str(args)))),
     )
     PollAgentJobsMixin._poll_agent_jobs(controller)
+
+
+def test_result_import_does_not_block_qt_or_start_twice(qtbot):
+    started, release = Event(), Event()
+    calls = []
+    shell = QWidget()
+    qtbot.addWidget(shell)
+    job = SimpleNamespace(id="job", project_id="project", state=SimpleNamespace(value="importing"))
+
+    def get_result(_job_id):
+        started.set()
+        assert release.wait(5)
+        return {"result": True}
+
+    gateway = SimpleNamespace(
+        get_publications=lambda _id: (),
+        get_result=get_result,
+        complete_import=lambda _id: calls.append("complete"),
+    )
+    service = SimpleNamespace(
+        data_dir=Path("unused"),
+        work_orders=lambda: (),
+        is_remote_project=lambda _id: False,
+        synchronize_plugin_jobs=lambda **_kwargs: calls.append("sync") or (job,),
+        import_agent_result=lambda **_kwargs: (
+            calls.append("import") or SimpleNamespace(requires_partial_confirmation=False)
+        ),
+    )
+    controller = PollAgentJobsMixin()
+    controller.service = service
+    controller.session = SimpleNamespace(principal=None)
+    controller._agent_gateway = gateway
+    controller._agent_poll_error = ""
+    controller._background_workers = set()
+    controller.my_work_refresh = lambda: calls.append("refresh")
+    controller._refresh_current_matrix = lambda: calls.append("matrix")
+    controller.shell = shell
+    try:
+        controller._poll_agent_jobs()
+        assert started.wait(5)
+        controller._poll_agent_jobs()
+        assert calls.count("sync") == 1
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: "matrix" in calls and controller._agent_import_worker is None)
+    assert calls.count("import") == 1
+    assert calls.count("complete") == 1
+
+
+def test_result_import_failure_remains_visible(qtbot):
+    shell = QMainWindow()
+    qtbot.addWidget(shell)
+    job = SimpleNamespace(id="job", project_id="project", state=SimpleNamespace(value="importing"))
+    controller = PollAgentJobsMixin()
+    controller.service = SimpleNamespace(
+        data_dir=Path("unused"),
+        work_orders=lambda: (),
+        is_remote_project=lambda _id: False,
+        synchronize_plugin_jobs=lambda **_kwargs: (job,),
+        import_agent_result=lambda **_kwargs: pytest.fail("Invalid result was imported"),
+    )
+    controller.session = SimpleNamespace(principal=None)
+    controller._agent_gateway = SimpleNamespace(
+        get_publications=lambda _id: (),
+        get_result=lambda _id: (_ for _ in ()).throw(ValueError("invalid result")),
+    )
+    controller._agent_poll_error = ""
+    controller._background_workers = set()
+    controller.my_work_refresh = None
+    controller.shell = shell
+
+    controller._poll_agent_jobs()
+    qtbot.waitUntil(lambda: controller._agent_import_worker is None)
+    assert shell.statusBar().currentMessage() == "Kraken Agent: invalid result"
 
 
 def test_file_work_cannot_open_agent_gateway():

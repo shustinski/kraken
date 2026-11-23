@@ -50,6 +50,7 @@ def test_training_window_receives_samples_and_returns_model(qapp, tmp_path, monk
     state = SimpleNamespace()
 
     def execute():
+        assert presenter.kraken_training_output_directory == session.output_directory
         assert Path(values["images"]).is_dir()
         assert Path(values["cif"]).is_dir()
         assert state.sample_folder == values["images"]
@@ -58,13 +59,12 @@ def test_training_window_receives_samples_and_returns_model(qapp, tmp_path, monk
         (session.output_directory / "weights.pth").write_bytes(b"test-model")
         window._kraken_return_action.trigger()
 
+    presenter = SimpleNamespace(view=window, main_window_state=state)
     monkeypatch.setitem(
         sys.modules,
         "neuralimage.controller",
         SimpleNamespace(
-            AppController=lambda **_kwargs: SimpleNamespace(
-                main_window_presenter=SimpleNamespace(view=window, main_window_state=state), exec=execute
-            )
+            AppController=lambda **_kwargs: SimpleNamespace(main_window_presenter=presenter, exec=execute)
         ),
     )
     monkeypatch.setattr(QMessageBox, "information", lambda *_args: QMessageBox.StandardButton.Ok)

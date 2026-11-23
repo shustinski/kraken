@@ -8,18 +8,21 @@ from pathlib import Path
 
 
 def run(job_manifest, result_manifest, staging_root):
-    import cv2
-    import numpy as np
-
-    from contour.application.processing import ContourExtractionSettings, SaveOptions
-    from contour.application.use_cases.processing import process_image_path
     from contour.kraken_bridge import ContourKrakenSession
 
     session = ContourKrakenSession.load(
         job_manifest=job_manifest, result_manifest=result_manifest, staging_root=staging_root
     )
+    if session.manifest.operation == "frames.dataset.prepare.v1":
+        _write_dataset_samples(session)
+        return session.write_result()
     if session.manifest.operation != "frames.vectorize.v1":
         raise ValueError("Headless Contour currently supports frame vectorization")
+    import cv2
+    import numpy as np
+
+    from contour.application.processing import ContourExtractionSettings, SaveOptions
+    from contour.application.use_cases.processing import process_image_path
     parameters = dict(session.manifest.parameters)
     pipeline_config = parameters.get("pipeline_config", {})
     settings_data = parameters.get("contour_settings", {})
@@ -46,6 +49,26 @@ def run(job_manifest, result_manifest, staging_root):
         if result.error:
             raise RuntimeError(f"Contour failed for {source.name}: {result.error}")
     return session.write_result()
+
+
+def _write_dataset_samples(session) -> None:
+    """Place each frame and its paired CIF where the dataset archive expects them."""
+    images = session.output_directory / "images"
+    labels = session.output_directory / "cif"
+    images.mkdir()
+    labels.mkdir()
+    vectors = {path.stem.casefold(): path for path in session.vector_paths}
+    for item, source in zip(session.manifest.inputs, session.input_paths, strict=True):
+        label = vectors.get(Path(item.relative_path).stem.casefold())
+        if label is None:
+            raise ValueError(f"Dataset frame has no CIF: {item.relative_path}")
+        destination = images / Path(item.relative_path).name
+        if session.server_source is not None:
+            with session.server_source.open(item.relative_path) as stream:
+                destination.write_bytes(stream.read())
+        else:
+            destination.write_bytes(Path(source).read_bytes())
+        (labels / f"{destination.stem}.cif").write_bytes(label.read_bytes())
 
 
 def main(argv=None):

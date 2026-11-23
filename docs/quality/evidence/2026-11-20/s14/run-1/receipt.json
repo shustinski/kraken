@@ -1,0 +1,20 @@
+{
+  "arguments": [
+    "-m",
+    "pytest",
+    "tests/test_server_backup.py",
+    "tests/test_server_backup_gateway.py",
+    "-v",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "faulthandler_timeout=60",
+    "--basetemp=D:\\code\\kraken\\.test_runtime\\quality-ef30dd74e5d34abaa24e9c09937efccc\\pytest",
+    "--junitxml=D:\\code\\kraken\\.test_runtime\\quality-ef30dd74e5d34abaa24e9c09937efccc\\junit.xml"
+  ],
+  "block": "backup",
+  "python": "D:\\code\\kraken\\.venv\\Scripts\\python.exe",
+  "exit_code": 0,
+  "git_head": "a83b6fb06878de6b22b92441fbae468d5a15e18a",
+  "results": "D:\\code\\kraken\\.test_runtime\\quality-ef30dd74e5d34abaa24e9c09937efccc"
+}

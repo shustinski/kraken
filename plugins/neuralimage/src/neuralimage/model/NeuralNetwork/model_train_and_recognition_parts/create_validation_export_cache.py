@@ -14,8 +14,6 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validatio
 
 class CreateValidationExportCacheMixin:
     def _create_validation_export_cache(self) -> _ValidationExportCache | None:
-        from neuralimage.model.NeuralNetwork.model_train_and_recognition import ImagePreparator
-
         if (
             not self._save_validation_binary_images
             and not (self._advanced_validation_enabled() and self._advanced_validation_full_frame())
@@ -40,7 +38,10 @@ class CreateValidationExportCacheMixin:
         frame_predictions: dict[int, _ValidationNoCutFrameExportCache] = {}
         estimated_bytes = 0
         for frame_index, (image_path, label_path) in enumerate(getattr(base_dataset, 'samples', [])):
-            prepared_size = ImagePreparator(Path(image_path), getattr(base_dataset, '_prep_settings')).size
+            prepared_size = ImagePreparator(
+                Path(image_path), getattr(base_dataset, '_prep_settings'),
+                asset_source=getattr(base_dataset, '_asset_source', None),
+            ).size
             if len(prepared_size) != 2:
                 return None
             base_width, base_height = int(prepared_size[0]), int(prepared_size[1])

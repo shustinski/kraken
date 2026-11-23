@@ -55,6 +55,22 @@ def _ensure_analysis_operation(
     )
 
 
+def _open_agent_process(command: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+    """Start the agent outside a debugger's `python -m` rewrite.
+
+    pydevd rewrites subprocess command lines so it can attach. On Python 3.14
+    `pkgutil.get_loader` is gone, so that rewrite cannot resolve `-m kraken_agent`
+    and the child exits with `No module named kraken_agent` before it publishes
+    a connection file. The agent is a durable service, not a debuggee.
+    """
+    try:
+        from _pydev_bundle.pydev_monkey import skip_subprocess_arg_patch
+    except ImportError:
+        return subprocess.Popen(command, **kwargs)
+    with skip_subprocess_arg_patch():
+        return subprocess.Popen(command, **kwargs)
+
+
 def _atomic_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -262,7 +278,7 @@ class LocalAgentRuntime:
         log_path = self.data_dir / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = log_path.open("ab")
-        self.process = subprocess.Popen(
+        self.process = _open_agent_process(
             command,
             stdin=subprocess.DEVNULL,
             stdout=self._log_handle,

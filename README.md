@@ -1,5 +1,7 @@
 # Kraken
 
+Документация проекта (открывается как Obsidian vault): [docs/README.md](docs/README.md).
+
 Kraken is a clean-architecture project manager for sparse frame grids. It can
 run as an offline, single-writer Desktop application or as a PostgreSQL-backed
 shared service. Contour, NeuralImage and the remaining applications stay

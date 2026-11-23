@@ -5,92 +5,92 @@
 
 | ID | Поверхность | Статус | Доказательства |
 |---|---|---|---|
-| HUB-BOOTSTRAP-ACCOUNT | HUB | PASS | — |
-| HUB-LOGIN | HUB | PASS | — |
+| HUB-BOOTSTRAP-ACCOUNT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S01/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S01/run-2/junit.xml, docs/quality/evidence/2026-11-19/palette/S01/gui-tier-direct.xml |
+| HUB-LOGIN | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S01/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S01/run-2/junit.xml, docs/quality/evidence/2026-11-19/palette/S01/gui-tier-direct.xml |
 | HUB-DEV-SESSION | HUB | NOT_TESTED | — |
-| HUB-CONNECT-SAVED-SERVER | HUB | NOT_TESTED | — |
-| HUB-PREFERENCES | HUB | NOT_TESTED | — |
-| HUB-UPDATE-SOURCE | HUB | NOT_TESTED | — |
+| HUB-CONNECT-SAVED-SERVER | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-PREFERENCES | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml, docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml |
+| HUB-UPDATE-SOURCE | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml, docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml |
 | HUB-CHECK-UPDATES | HUB | BLOCKED | — |
-| MGR-MATRIX-VISUAL | MGR | NOT_TESTED | — |
+| MGR-MATRIX-VISUAL | MGR | PASS | docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml, docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml |
 | HUB-CREATE-PROJECT | HUB | PASS | — |
-| HUB-REFRESH-CATALOG | HUB | NOT_TESTED | — |
-| HUB-OPEN-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-01/real-project-qt-view.json |
-| HUB-BIND-WORKSPACE | HUB | NOT_TESTED | — |
-| HUB-RENAME-PROJECT | HUB | PASS | — |
-| HUB-ARCHIVE-PROJECT | HUB | PASS | — |
-| HUB-RESTORE-PROJECT | HUB | PASS | — |
-| HUB-DELETE-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
-| HUB-PROJECT-PROPERTIES | HUB | NOT_TESTED | — |
-| HUB-SCAN-INTEGRITY | HUB | PASS | — |
-| HUB-ADMIN-REFRESH | HUB | NOT_TESTED | — |
-| HUB-CONFIGURE-ROOTS | HUB | NOT_TESTED | — |
-| HUB-EXPORT-BACKUP | HUB | PASS | — |
-| HUB-IMPORT-BACKUP | HUB | PASS | — |
+| HUB-REFRESH-CATALOG | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-OPEN-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-BIND-WORKSPACE | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml, docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml |
+| HUB-RENAME-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-ARCHIVE-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-RESTORE-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-DELETE-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-PROJECT-PROPERTIES | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
+| HUB-SCAN-INTEGRITY | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S04/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S04/run-2/junit.xml |
+| HUB-ADMIN-REFRESH | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S04/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S04/run-2/junit.xml |
+| HUB-CONFIGURE-ROOTS | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml, docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml |
+| HUB-EXPORT-BACKUP | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml, docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml |
+| HUB-IMPORT-BACKUP | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml, docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml |
 | HUB-ATTACH-PROJECT | HUB | NOT_TESTED | — |
 | HUB-MIGRATE-LEGACY-WORK | HUB | NOT_TESTED | — |
 | HUB-PROJECT-ROLES | HUB | PASS | — |
 | HUB-ADD-PERFORMER | HUB | PASS | — |
 | HUB-EDIT-PERFORMER | HUB | PASS | — |
 | HUB-DELETE-PERFORMER | HUB | PASS | — |
-| HUB-MATRIX-CONTEXT | HUB | NOT_TESTED | — |
-| HUB-REVIEW-RETURN | HUB | PASS | — |
-| HUB-ADD-LAYER | HUB | PASS | docs/quality/evidence/2026-11-01/png-parity.txt |
-| HUB-REORDER-LAYERS | HUB | NOT_TESTED | — |
-| HUB-LAYER-CONTEXT | HUB | PARTIAL | — |
-| HUB-ADD-REPRESENTATION | HUB | PARTIAL | docs/quality/evidence/2026-11-01/png-parity.txt |
-| HUB-REPRESENTATION-LIFECYCLE | HUB | NOT_TESTED | — |
+| HUB-MATRIX-CONTEXT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
+| HUB-REVIEW-RETURN | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml |
+| HUB-ADD-LAYER | HUB | PASS | docs/quality/evidence/2026-11-01/png-parity.txt, docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
+| HUB-REORDER-LAYERS | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
+| HUB-LAYER-CONTEXT | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
+| HUB-ADD-REPRESENTATION | HUB | PASS | docs/quality/evidence/2026-11-01/png-parity.txt, docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
+| HUB-REPRESENTATION-LIFECYCLE | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml |
 | HUB-LAYER-WORKFLOW | HUB | NOT_TESTED | — |
 | HUB-PIPELINE-STITCH-STEP | HUB | NOT_TESTED | — |
-| HUB-ISSUE-WORK | HUB | PASS | — |
-| HUB-MY-WORK | HUB | NOT_TESTED | — |
-| HUB-WORK-PLAN | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
+| HUB-ISSUE-WORK | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml |
+| HUB-MY-WORK | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml |
+| HUB-WORK-PLAN | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt, docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml |
 | HUB-QUALITY | HUB | PASS | docs/quality/evidence/2026-11-01/quality-clicks.txt |
 | HUB-MULTILAYER | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
 | HUB-ELECTRICAL | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
 | HUB-STITCH-FILES | HUB | NOT_TESTED | — |
 | HUB-COMPUTED-STITCH | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
 | HUB-ANALYSIS | HUB | PASS | — |
-| HUB-PLUGINS | HUB | NOT_TESTED | — |
+| HUB-PLUGINS | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S13/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S13/run-2/junit.xml |
 | HUB-STATISTICS | HUB | PASS | docs/quality/evidence/2026-11-01/statistics-verified.txt |
 | SRV-HEALTH-SESSION | SRV | PASS | docs/quality/evidence/2026-11-01/p0-policy-network.txt |
-| SRV-PROJECTS | SRV | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
+| SRV-PROJECTS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml |
 | SRV-PRINCIPALS | SRV | PASS | — |
-| SRV-LAYERS | SRV | NOT_TESTED | — |
-| SRV-REPRESENTATIONS | SRV | NOT_TESTED | — |
+| SRV-LAYERS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml |
+| SRV-REPRESENTATIONS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml |
 | SRV-ARTIFACTS | SRV | PASS | docs/quality/evidence/2026-11-01/real-project-artifact-verification.json, docs/quality/evidence/2026-11-01/upload-preflight-green.txt |
-| SRV-COMMANDS | SRV | NOT_TESTED | — |
-| SRV-WEBSOCKET | SRV | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
-| SRV-HISTORY-STATISTICS | SRV | PARTIAL | docs/quality/evidence/2026-11-01/real-project-artifact-verification.json |
-| SRV-NOTES-CHECKS-PACKAGES | SRV | PARTIAL | — |
-| SRV-JOBS-AGENT-PROTOCOL | SRV | PASS | docs/quality/evidence/2026-11-01/server-acceptance.txt, docs/quality/evidence/2026-11-01/target-lease-green.txt, docs/quality/evidence/2026-11-01/live-worker-contour-faults.txt |
+| SRV-COMMANDS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
+| SRV-WEBSOCKET | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
+| SRV-HISTORY-STATISTICS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
+| SRV-NOTES-CHECKS-PACKAGES | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
+| SRV-JOBS-AGENT-PROTOCOL | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
 | SRV-ANALYSIS | SRV | PASS | — |
 | SRV-QUALITY | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
 | SRV-LAYER-WORKFLOW | SRV | NOT_TESTED | — |
-| SRV-PLANS | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
+| SRV-PLANS | SRV | PASS | docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml |
 | SRV-PHYSICS | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
 | SRV-ELECTRICAL | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
-| AGT-HEALTH | AGT | PASS | — |
+| AGT-HEALTH | AGT | PASS | docs/quality/evidence/2026-11-19/palette/S09/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S09/run-2/junit.xml |
 | AGT-REGISTRY-CONFIDENCE | AGT | PASS | docs/quality/evidence/2026-11-01/d4-focused.txt, docs/quality/evidence/2026-11-01/d4-confidence.json |
-| PLUGIN-CONTOUR-HELP | PLG | PARTIAL | — |
+| PLUGIN-CONTOUR-HELP | PLG | PASS | docs/quality/evidence/2026-11-19/gate-smoke/junit.xml |
 | PLUGIN-KRONA-HELP | PLG | PARTIAL | — |
 | PLUGIN-CSLISER-CAPABILITIES | PLG | PARTIAL | — |
 | PLUGIN-KATEGB-HELP | PLG | PARTIAL | — |
-| PLUGIN-NEURALIMAGE-VERSION | PLG | PARTIAL | — |
+| PLUGIN-NEURALIMAGE-VERSION | PLG | PASS | docs/quality/evidence/2026-11-19/gate-smoke/junit.xml |
 | PLUGIN-CSLISER-SELF-TEST | PLG | PASS | — |
 | PLUGIN-CSLISER-COPY-CANCEL-RECOVERY | PLG | PASS | docs/quality/evidence/2026-11-01/plugins-acceptance-importlib.txt |
 | PLUGIN-KATEGB-CALCULATION | PLG | PASS | — |
 | PLUGIN-KRONA-LOGIC-VIEWER | PLG | PASS | — |
 | PLUGIN-KARAKAL-COMPARE-MAP | PLG | PASS | — |
-| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PARTIAL | docs/quality/evidence/2026-11-01/server-acceptance.txt |
-| BLOB-PUT-GET-RESTART | GW | PASS | — |
+| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PASS | docs/quality/evidence/2026-11-19/palette/G18/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G18/run-2/junit.xml |
+| BLOB-PUT-GET-RESTART | GW | PASS | docs/quality/evidence/2026-11-19/palette/G16/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G16/run-2/junit.xml |
 | PERSISTENT-GATEWAY-UPLOAD | GW | PASS | docs/quality/evidence/2026-11-01/upload-preflight-green.txt, docs/quality/evidence/2026-11-01/live-contour-worker-receipt.json |
-| HUB-LOGIN-TABBED | HUB | NOT_TESTED | — |
+| HUB-LOGIN-TABBED | HUB | PASS | docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml |
 | ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | — |
-| AGT-OP-VECTORIZE | AGT | NOT_TESTED | — |
-| AGT-OP-DATASET-PREPARE | AGT | NOT_TESTED | — |
-| AGT-OP-TRAIN | AGT | NOT_TESTED | — |
-| AGT-OP-BINARY-SEGMENT | AGT | NOT_TESTED | — |
+| AGT-OP-VECTORIZE | AGT | PASS | docs/quality/evidence/2026-11-19/palette/G16/worker-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G16/worker-2/junit.xml, docs/quality/evidence/2026-11-19/palette/G17/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G17/run-2/junit.xml |
+| AGT-OP-DATASET-PREPARE | AGT | PASS | docs/quality/evidence/2026-11-19/palette/G18/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G18/run-2/junit.xml |
+| AGT-OP-TRAIN | AGT | PASS | docs/quality/evidence/2026-11-19/palette/G19/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G19/run-2/junit.xml, docs/quality/evidence/2026-11-19/palette/G19/run-1/junit-live-train.xml, docs/quality/evidence/2026-11-19/palette/G19/run-2/junit-live-train.xml |
+| AGT-OP-BINARY-SEGMENT | AGT | PASS | docs/quality/evidence/2026-11-19/palette/G19/run-1/junit.xml, docs/quality/evidence/2026-11-19/palette/G19/run-2/junit.xml |
 <!-- quality-registry:generated-end -->
 
 ## Продолжение 2026-11-01 (база `8cf3ea6`, исправления `71ce8dc`)
@@ -105,11 +105,11 @@
 
 | ID / блок | Статус | Подтверждение и граница |
 |---|---|---|
-| LIVE-CONTOUR-MACHINE-WORKER | PASS | 393bca4: новый серверный project2×1, реальные upload tickets/Gateway/Contour subprocess, heartbeat/publication/complete,2CIF versions/hash/size/type/input lineage и2HTTP+Qt reopen. [Receipt](evidence/2026-11-01/live-contour-worker-receipt.json), [JUnit](evidence/2026-11-01/live-contour-worker-junit.xml). User test/jobs unchanged |
+| LIVE-CONTOUR-MACHINE-WORKER | PASS | 393bca4: новый серверный project2×1, реальные upload tickets/Gateway/Contour subprocess, heartbeat/publication/complete,2CIF versions/hash/size/type/input lineage и2HTTP+Qt reopen. [Receipt](evidence/2026-11-01/live-contour-worker-receipt.json), JUnit. User test/jobs unchanged |
 | PERSISTENT-GATEWAY-UPLOAD / D8 | PASS | Реальный HTTP500, PG regressionRED→GREEN; preflight передан зарегистрированному handler. Новая регрессия1PASS, смежные19PASS. [GREEN](evidence/2026-11-01/upload-preflight-green.txt) |
-| MACHINE-TARGETED-LEASE | PASS | be1ca58: unknown/invalid/denied не меняют очередь, конкретный второй job выдаётся без изменения первого. [14PASS](evidence/2026-11-01/target-lease-green.txt); review finding closed |
-| LIVE-WORKER-FAULTS | PASS | 95ec8f2: [6-test block](evidence/2026-11-01/live-worker-contour-faults.txt): unavailable/connection, auth401, CAS409, real Qt cancel/errors, actual plugin failure/bad PNG, real lease expiry/reclaim/fencing, duplicate result, TCP disconnect after commit, no duplicate versions; protected project/jobs unchanged |
-| MACHINE-TOKEN-REVOKE | PASS | Dedicated Contour token revoked after block; [HTTP401](evidence/2026-11-01/machine-token-revocation-check.json). No secret in evidence |
+| MACHINE-TARGETED-LEASE | PASS | be1ca58: unknown/invalid/denied не меняют очередь, конкретный второй job выдаётся без изменения первого. 14PASS; review finding closed |
+| LIVE-WORKER-FAULTS | PASS | 95ec8f2: 6-test block: unavailable/connection, auth401, CAS409, real Qt cancel/errors, actual plugin failure/bad PNG, real lease expiry/reclaim/fencing, duplicate result, TCP disconnect after commit, no duplicate versions; protected project/jobs unchanged |
+| MACHINE-TOKEN-REVOKE | PASS | Dedicated Contour token revoked after block; HTTP401. No secret in evidence |
 | AGT-REGISTRY-CONFIDENCE / D4 | PASS | `test_karakal_agent_headless.py`: headless принимается, worker subprocess завершается, новый DurableJobStore читает результат, result.json и confidence.json перечитаны, SHA-256 совпал. Действие Hub доступно. `d4-focused.log`: 7 PASS вместе с режимами агента |
 | KARAKAL-CONFIDENCE-METRICS | PARTIAL | Выход legacy confidence содержит только operation/job_id/input_count; запуск и JSON не доказывают расчёт уверенности |
 | SRV-BACKUP-RESTORE-ISOLATED | PASS | Собственный временный кластер PostgreSQL 16 на loopback:55439. 20 + 6 PASS в `p0-backup-live.log`, `p0-backup-remaining.log`. Native backup/verify/restore, CLI, защита непустой цели, испорченные архивы, восстановление путей и барьеры шлюза. Рабочая база не использовалась |
@@ -136,9 +136,9 @@
 | WINDOWS-HELLO-CREDENTIALS | BLOCKED | Аппаратное/пользовательское подтверждение Hello невозможно заменить offscreen. Нужен интерактивный пользовательский проход; тесты с подменой проверки не считаются приёмкой Hello |
 | UPDATER-INSTALL / REMOTE-HTTPS | BLOCKED | Не предоставлены отдельный тестовый установщик и удалённый TLS-стенд. Проверки контракта URL/секрета прошли, скачивание/запуск реального установщика и удалённый HTTPS не выполнялись |
 | REAL-PROJECT-SERVER-READ | PASS | Server/Gateway200; 100 PNG + 100 CIF полностью прочитаны через Gateway, hash/размер/декодирование/размеры пар; история и revision2 сохранены. [Результат](evidence/2026-11-01/real-project-artifact-verification.json) |
-| REAL-PROJECT-SERVER-QT | PASS | Реальный Hub/DualCatalog/HTTP, два открытия двойным щелчком после закрытия окна; слой и две репрезентации, нет uncaught/errors, ревизия сохранена. [Квитанция](evidence/2026-11-01/real-project-qt-view.json) |
-| HUB-QUEUE-HTTP-FAILURE / D7 | PASS | Прежний native abort воспроизведён; ошибка plugin_jobs теперь внутри try. [36 PASS](evidence/2026-11-01/hub-resume-green.txt), повторный успешный запрос200, независимое ревью |
-| REAL-SERVER-JOBS-SCHEMA | PASS | После явного согласия0011 применена транзакционно; оба задания сохранены, JSON nullable, очередь HTTP200. [Квитанция](evidence/2026-11-01/schema-upgrade-working.json), [Qt после миграции](evidence/2026-11-01/real-project-qt-after-migration.json) |
+| REAL-PROJECT-SERVER-QT | PASS | Реальный Hub/DualCatalog/HTTP, два открытия двойным щелчком после закрытия окна; слой и две репрезентации, нет uncaught/errors, ревизия сохранена. Квитанция |
+| HUB-QUEUE-HTTP-FAILURE / D7 | PASS | Прежний native abort воспроизведён; ошибка plugin_jobs теперь внутри try. 36 PASS, повторный успешный запрос200, независимое ревью |
+| REAL-SERVER-JOBS-SCHEMA | PASS | После явного согласия0011 применена транзакционно; оба задания сохранены, JSON nullable, очередь HTTP200. Квитанция, Qt после миграции |
 | REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение, очередь и Qt PASS; Contour machine worker PASS на отдельном qualityproject; остальные обязательные worker/plugin/fault/GUI-запуск сценарии этого нового этапа ещё NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
 
 Остальные непройденные части исторических групп сохраняют NOT TESTED/PARTIAL.

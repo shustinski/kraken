@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="12.965" timestamp="2026-11-19T11:16:59.286717+03:00" hostname="DESKTOP-ECDP7QC"><testcase classname="tests.test_beta_palette_hub_plugins" name="test_s13_plugins_dialog_opens_plugin_process" time="12.497" /></testsuite></testsuites>

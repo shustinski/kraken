@@ -135,7 +135,7 @@ def _open_project(qtbot, remote, project, output, attempt):
         from PyQt6.QtWidgets import QApplication
         QFontDatabase.addApplicationFont("C:/Windows/Fonts/arial.ttf")
         QApplication.instance().setFont(QFont("Arial", 10))
-    local = EmbeddedProjectService(output / f"hub-cache-{attempt}")
+    local = EmbeddedProjectService(output / f"hub-cache-{remote.auth.principal.id}-{attempt}")
     local.identities.save(remote.auth.principal)
     dual = DualCatalogService(local, remote)
     shell = ProjectManagerShell()

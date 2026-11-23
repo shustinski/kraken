@@ -45,6 +45,8 @@ $statePath = Join-Path $standDir 'state.json'
 $envJsonPath = Join-Path $repo '.test_runtime\beta-stand.env.json'
 $serverToml = Join-Path $standDir 'server.toml'
 $machineSecret = Join-Path $standDir 'machine.secret'
+$datasetSecret = Join-Path $standDir 'dataset.secret'
+$neuralimageSecret = Join-Path $standDir 'neuralimage.secret'
 $baseDbSecret = Join-Path $repo 'config\local\database-url.secret'
 $serverUrl = 'http://127.0.0.1:8080'
 
@@ -165,6 +167,30 @@ if ($machineTokenId -and (Test-Path -LiteralPath $machineSecret)) {
 else {
     Write-Host 'beta-stand: no machine token recorded; skipping revoke/probe'
 }
+$datasetTokenId = [string]$state.dataset_machine_token_id
+if ($datasetTokenId -and (Test-Path -LiteralPath $datasetSecret)) {
+    $revoke = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'revoke-agent-token', '--config', $serverToml,
+        '--token-id', $datasetTokenId)
+    if ($revoke.Exit -eq 0) {
+        Report 'revoke-dataset-token' $true "revoked $datasetTokenId"
+    }
+    else {
+        Report 'revoke-dataset-token' $false ($revoke.Lines -join ' ')
+    }
+}
+$neuralimageTokenId = [string]$state.neuralimage_machine_token_id
+if ($neuralimageTokenId -and (Test-Path -LiteralPath $neuralimageSecret)) {
+    $revoke = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'revoke-agent-token', '--config', $serverToml,
+        '--token-id', $neuralimageTokenId)
+    if ($revoke.Exit -eq 0) {
+        Report 'revoke-neuralimage-token' $true "revoked $neuralimageTokenId"
+    }
+    else {
+        Report 'revoke-neuralimage-token' $false ($revoke.Lines -join ' ')
+    }
+}
 
 # ---------------------------------------------------- 2. stop owned processes
 # Stand-specific command-line patterns, identical to the ones start-beta-stand
@@ -227,7 +253,7 @@ else {
 }
 
 # ------------------------------------------------- 5. remove stand secrets
-foreach ($file in @($statePath, $machineSecret,
+foreach ($file in @($statePath, $machineSecret, $datasetSecret, $neuralimageSecret,
                     (Join-Path $standDir 'session.secret'),
                     (Join-Path $standDir 'beta-database-url.secret'),
                     (Join-Path $standDir 'live-worker-config.json'),

@@ -66,6 +66,20 @@ def test_note_wraps_and_persists_and_can_be_cleared(qtbot, tmp_path, monkeypatch
     assert view._items["job"].rect().height() == original_height
 
 
+def test_new_pipeline_node_does_not_overlap_saved_job_position(qtbot, tmp_path):
+    source = PipelineNode("source", "Images", "source")
+    job = PipelineNode("job", "Completed", "job")
+    view, _ = graph(qtbot, tmp_path, [source, job])
+    view.set_snapshot(
+        LayerPipelineSnapshot(
+            "project", "layer",
+            (PipelineLane("lane", "Lane", (source, PipelineNode("dataset", "Dataset", "dataset"), job), ()),),
+        )
+    )
+
+    assert not view._items["dataset"].sceneBoundingRect().intersects(view._items["job"].sceneBoundingRect())
+
+
 @pytest.mark.parametrize("state, present", [("waiting_for_user", True), ("succeeded", False)])
 def test_continue_menu_dispatch(qtbot, tmp_path, monkeypatch, state, present):
     view, _ = graph(qtbot, tmp_path, [PipelineNode(

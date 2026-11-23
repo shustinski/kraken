@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ class ReleaseInfo:
     notes: str = ""
     channel: str = ""
     platform: str = ""
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class UpdateInfo:
     mandatory: bool = False
     releases: tuple[ReleaseInfo, ...] = ()
     channel: str = "stable"
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -111,8 +114,24 @@ def load_update_client_config(
         env_channel = normalize_update_channel(os.getenv(f"{prefix}_UPDATE_CHANNEL"))
         return UpdateClientConfig(manifest_urls=((env_channel, env_url),), default_channel=env_channel)
 
+    server_product = {"Contour": "contour", "NeuralImage": "neuralimage"}.get(app_id)
+    server_url = str(os.getenv("KRAKEN_SERVER_URL", "")).strip().rstrip("/")
+    if server_product and server_url.startswith(("http://", "https://")):
+        manifest_urls = tuple(
+            (channel, f"{server_url}/api/v1/updates/{server_product}/{channel}/version.json")
+            for channel in ("stable", "beta")
+        )
+        return UpdateClientConfig(manifest_urls=manifest_urls, default_channel="stable")
+
     resolved_config_path = _resolve_config_path(app_id, config_path)
     if resolved_config_path is None or not resolved_config_path.exists():
+        if server_product:
+            default_server = "http://127.0.0.1:8080"
+            urls = tuple(
+                (channel, f"{default_server}/api/v1/updates/{server_product}/{channel}/version.json")
+                for channel in ("stable", "beta")
+            )
+            return UpdateClientConfig(manifest_urls=urls, default_channel="stable")
         return UpdateClientConfig()
     try:
         payload = json.loads(resolved_config_path.read_text(encoding="utf-8-sig"))
@@ -167,7 +186,8 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
     if not version:
         return None
     channel = normalize_update_channel(str(payload.get("channel", "stable")))
-    top_level_download_url = str(payload.get("download_url", "")).strip()
+    top_level_download_url = _resolve_reference_path(str(payload.get("download_url", "")).strip(), source=source)
+    top_level_sha256 = str(payload.get("sha256", "")).strip().lower()
     release_notes = _resolve_release_notes(payload, source=source)
     releases = _parse_release_entries(payload.get("releases"), source=source, default_channel=channel)
     if releases:
@@ -186,11 +206,20 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
                     notes=notes,
                     channel=release.channel or channel,
                     platform=release.platform,
+                    sha256=release.sha256 or top_level_sha256,
                 )
             )
         releases = tuple(normalized_releases)
     if not releases:
-        releases = (ReleaseInfo(version=version, download_url=top_level_download_url, notes=release_notes, channel=channel),)
+        releases = (
+            ReleaseInfo(
+                version=version,
+                download_url=top_level_download_url,
+                notes=release_notes,
+                channel=channel,
+                sha256=top_level_sha256,
+            ),
+        )
     return UpdateInfo(
         version=version,
         download_url=top_level_download_url,
@@ -198,6 +227,7 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
         mandatory=bool(payload.get("mandatory", False)),
         releases=releases,
         channel=channel,
+        sha256=top_level_sha256,
     )
 
 
@@ -264,10 +294,12 @@ def _resolve_filesystem_downloads(update_info: UpdateInfo, directory: Path) -> U
                 notes=release.notes,
                 channel=release.channel,
                 platform=release.platform,
+                sha256=release.sha256,
             )
             for release in update_info.releases
         ),
         channel=update_info.channel,
+        sha256=update_info.sha256,
     )
 
 
@@ -403,6 +435,7 @@ def download_update_installer(
         if not source_path.is_file():
             raise FileNotFoundError(f"Installer file not found: {source_path}")
         shutil.copyfile(source_path, target_path)
+        _verify_installer_digest(target_path, release_info.sha256, source)
         _ensure_posix_executable(target_path)
         return target_path
     with request.urlopen(source, timeout=30.0) as response:
@@ -412,8 +445,19 @@ def download_update_installer(
                 if not chunk:
                     break
                 file.write(chunk)
+    _verify_installer_digest(target_path, release_info.sha256, source)
     _ensure_posix_executable(target_path)
     return target_path
+
+
+def _verify_installer_digest(path: Path, expected: str, source: str) -> None:
+    if not expected and "/api/v1/updates/" not in source:
+        return
+    with path.open("rb") as stream:
+        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected) or actual != expected:
+        path.unlink(missing_ok=True)
+        raise ValueError("Installer SHA-256 does not match the update manifest")
 
 
 def get_update_staging_dir(app_id: str = "kraken") -> Path:
@@ -470,10 +514,11 @@ def _parse_release_entries(raw_value: Any, *, source: str = "", default_channel:
         entries.append(
             ReleaseInfo(
                 version=version,
-                download_url=str(item.get("download_url", "")).strip(),
+                download_url=_resolve_reference_path(str(item.get("download_url", "")).strip(), source=source),
                 notes=_resolve_release_notes(item, source=source),
                 channel=normalize_update_channel(str(item.get("channel", default_channel))),
                 platform=str(item.get("platform", "") or "").strip().lower(),
+                sha256=str(item.get("sha256", "") or "").strip().lower(),
             )
         )
     return tuple(entries)
@@ -534,7 +579,7 @@ def _resolve_reference_path(reference: str, *, source: str = "") -> str:
             return str(reference_path)
         if _is_filesystem_source(source):
             return str((Path(source).resolve().parent / reference_path).resolve())
-        return normalized_reference
+        return urlparse.urljoin(source, normalized_reference)
     if _is_filesystem_source(source):
         return normalized_reference
     return urlparse.urljoin(source, normalized_reference)

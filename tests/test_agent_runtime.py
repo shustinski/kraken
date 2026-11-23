@@ -176,6 +176,59 @@ def test_concurrent_scheduler_and_ui_share_one_agent_process(tmp_path, monkeypat
         runtime.shutdown()
 
 
+def test_agent_launch_survives_debugger_module_rewrite(tmp_path, monkeypatch):
+    """pydevd on Python 3.14 cannot resolve a rewritten `python -m` child.
+
+    `pkgutil.get_loader` is gone, so an attached debugger prints
+    `No module named kraken_agent` and the Hub reports a missing connection file.
+    The agent process must be spawned outside that rewrite.
+    """
+    import subprocess
+    import sys
+    import types
+    from contextlib import contextmanager
+
+    state = {"hidden": False}
+
+    @contextmanager
+    def skip_subprocess_arg_patch():
+        state["hidden"] = True
+        try:
+            yield
+        finally:
+            state["hidden"] = False
+
+    package = types.ModuleType("_pydev_bundle")
+    monkey = types.ModuleType("_pydev_bundle.pydev_monkey")
+    monkey.skip_subprocess_arg_patch = skip_subprocess_arg_patch
+    monkeypatch.setitem(sys.modules, "_pydev_bundle", package)
+    monkeypatch.setitem(sys.modules, "_pydev_bundle.pydev_monkey", monkey)
+
+    real_popen = subprocess.Popen
+
+    def popen(command, *args, **kwargs):
+        if (
+            isinstance(command, (list, tuple))
+            and "-m" in command
+            and "kraken_agent" in command
+            and not state["hidden"]
+        ):
+            command = [
+                command[0],
+                "-c",
+                "import sys; sys.stderr.write('No module named kraken_agent\\n'); raise SystemExit(1)",
+            ]
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr("kraken_hub.infrastructure.agent.runtime.subprocess.Popen", popen)
+    runtime = LocalAgentRuntime(tmp_path / "agent")
+    try:
+        runtime.ensure_started()
+        assert runtime._request("GET", "/api/v1/health")["status"] == "ok"
+    finally:
+        runtime.shutdown()
+
+
 def test_desktop_private_agent_entry_runs_the_real_control_service(tmp_path):
     import json
     from pathlib import Path

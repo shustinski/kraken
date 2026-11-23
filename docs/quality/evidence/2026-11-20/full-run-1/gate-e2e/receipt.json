@@ -1,0 +1,38 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-20T09:00:10.2062323Z",
+    "tier":  "e2e",
+    "command":  [
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_end_to_end_functional.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-142b1f7b702f431c94d75fc4fa7c5456\\basetemp-e2e --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-e2e\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  1,
+    "passed":  1,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  29.485,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_end_to_end_functional.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-142b1f7b702f431c94d75fc4fa7c5456\\basetemp-e2e --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-e2e\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  1,
+                     "passed":  1,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  29.485,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

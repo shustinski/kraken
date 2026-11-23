@@ -11,6 +11,8 @@
 **Spec:** `docs/superpowers/specs/2026-11-17-beta-stabilization-design.md` (binding: «Палитра действий», «Правило свежести доказательств», exclusions list, `domain_auth=false`).
 **Gap source (W3 backlog):** `docs/quality/checkpoint-2026-11-17-beta.md` — 15 PASS / 45 NOT_TESTED / 1 BLOCKED (HUB-CHECK-UPDATES → W4). Controller ruling stands: the checkpoint verdict table is the sole readiness source; W3 re-binds registry statuses to post-freeze evidence only for scenarios that passed.
 
+**Rebaseline (2026-11-19, `a83b6fb`):** Tasks 1–4 are committed (`9d8ac64`, `23276a8`, `a258fab`, `233ecad`); Task 5's documentation is committed (`e349723`), and the S01 test exists as `tests/quality/test_s01_local_identity.py` (`72f458b`). These tasks are historical, not instructions to recreate files or repeat commits. Before continuing, verify their registry bindings and evidence against the current checkout. The gateway exe is present and the stand runbook records a successful gateway-mode acceptance on 2026-11-19; Task 18 is a configuration audit, not a request for an external kit. The 15/45/1 count is the W2 baseline, not a current verdict; recompute it from the current registry and JUnit before reporting progress. The worktree contains unrelated edits: preserve them.
+
 ## Global Constraints
 
 - Python floor: `requires-python = ">=3.14"` (pyproject.toml) — all tooling runs on the repo venv `.venv\Scripts\python.exe`.
@@ -18,9 +20,10 @@
 - Never touch `uv.lock`, `.venv`, the working database `kraken_local` (schema `public`), or `config/local/*` (read-only templates). `D:\Heggs\Source` is read-only. Stand data lives only in PostgreSQL schema/database `kraken_beta_test` and `.test_runtime\beta-stand*` (git-ignored).
 - PowerShell 5.1 only: native commands run through the `Invoke-Native` pattern; no `python -c` with embedded double quotes; where `-File` mis-binds comma arguments use `powershell -NoProfile -Command "& script.ps1 ..."` (fixed properly in Task 1, canonical form kept everywhere).
 - Qt: `QT_QPA_PLATFORM=offscreen` for all scenario runs (gate sets it; direct pytest runs must set it too).
-- Gate evidence convention: per-tier `receipt.json` + `junit.xml` + `pytest.txt` under `docs/quality/evidence/<date>/gate-<tier>/`; palette scenario evidence under `docs/quality/evidence/<date>/palette/<scenario-id>/`; `--basetemp` under `.test_runtime\` (git-ignored).
+- Gate evidence convention: per-tier `receipt.json` + `junit.xml` + `pytest.txt` under `docs/quality/evidence/<date>/gate-<tier>/`; palette scenario evidence under `docs/quality/evidence/<date>/palette/<scenario-id>/run-1/` and `run-2/`; `--basetemp` under `.test_runtime\` (git-ignored). The two runs must retain separate JUnit, log and receipt files. Use distinct `-OutDir` values for full gate runs because `quality-gates.ps1` clears a tier's previous evidence before each run.
 - **Skip never equals PASS.** A scenario whose mapping skipped is NOT_TESTED, not PASS. PARTIAL tiers need an explicit cause accepted by the owner.
-- **Twice-in-a-row convention:** every palette segment and the final full gate run **twice in a row without manual intervention between runs**; results must match (`docs/quality/beta-stand.md` «Convention: два прогона подряд»).
+- **Twice-in-a-row convention:** every palette segment and the final full gate run **twice in a row without manual intervention between runs**; compare test node ids and outcomes from both preserved JUnit files and tier receipts, including skips, failures and collection errors. A second green run alone does not prove the first one.
+- Each live scenario creates uniquely named state and cleans up its projects, jobs and issued tokens in fixture teardown (including failure paths). Check for active jobs before and after each scenario; never rely on dropping the shared stand database to clean up between runs.
 - Registry and scenario user-facing text in Russian (record fields `expected_behavior`, checkpoint sections, matrix rows). Machine keys (`beta`, `live`, ids) unchanged.
 - Feature freeze in force: only test/acceptance infrastructure and narrow fixes (RED→GREEN with a defect entry, numbering continues from D23).
 - Excluded from W3 entirely (spec «Границы беты»): Karakal chain acceptance, stitch, physical layers, electrical, Krona, CSliser, KateGB, offline exchange, legacy migration, Windows service, Hello, layer workflow, QC dialog, dev-session, attach project. LDAP stays off (`domain_auth=false` on `/api/v1/health`).
@@ -31,9 +34,9 @@ Failure classes the palette could hide — each pinned by a test in the named ta
 
 1. **Silent tier mis-binding** — `-Tier a,b` through `powershell -File` binds one bogus element and validates the wrong tier set. Task 1 pins: `-Tier live,smoke` via `-File` runs both tiers, unknown tier names abort with exit 2.
 2. **False gateway green** — a gateway scenario counting PASS while uploads actually ran in proxy mode. Task 18/19/20 pin: acceptance asserts `transfer["mode"] == "gateway"` and the Rust exe health (`service == "kraken-blob-gateway"`); without the exe the group self-skips to PARTIAL and the final report states it — never PASS.
-3. **Cross-scenario state pollution** — one scenario's leftovers (projects, active jobs, revoked tokens) poison the next. Tasks 10/13/14 pin: unique `palette-<id>-<runid>` project names, the pre-flight assertion `no queued/staging/running/recovery_required jobs` and the protected-project invariance snapshot (`protected_unchanged`) on every live scenario.
+3. **Cross-scenario state pollution** — one scenario's leftovers (projects, active jobs, issued tokens) poison the next. Tasks 10–15 pin: unique `palette-<id>-<runid>` project names, teardown that runs even after assertion failure, pre/post-flight assertion `no queued/staging/running/recovery_required jobs`, and the protected-project invariance snapshot (`protected_unchanged`) on every live scenario.
 4. **Concurrent-user ACL leaks** — the two-user scenario accidentally passes by sharing one session/token. Task 15 pins: two simultaneous `RemoteHttpClient` sessions with distinct principal ids; observer-before-role gets 403/409 (`error_conditions` of SRV-PROJECTS/HUB-PROJECT-ROLES), and only the assigned performer's «Моя работа» lists the job.
-5. **Registry re-bind drift** — statuses flipped to PASS without a fresh JUnit binding (the pre-freeze failure mode). Task 23 pins: a validation test that every `beta: true` PASS row has non-empty `tests` resolving to existing files plus a freshness audit of the relying junit timestamps, and the gate's PASS→FAIL coverage comparison refuses regressions.
+5. **Registry re-bind drift** — statuses flipped to PASS without a fresh JUnit binding (the pre-freeze failure mode). Task 23 extends the existing `resolve_node_id` validation to every `beta: true` PASS row, verifies every mapped node passed in fresh retained JUnit, and checks that coverage comparison refuses PASS→FAIL regressions.
 
 ---
 
@@ -121,12 +124,17 @@ $Tier = @($Tier | Select-Object -Unique)
 - Consumes: stand outputs `.test_runtime\beta-stand.env.json`, `.test_runtime\beta-stand\state.json` (`beta_username`, `beta_password`), the `KRAKEN_UI_TEST_CONFIG` contract from `tests/test_live_ui_workflow.py` (header docstring: `server_url`, `username`, `password`, `source_directory` with 100 numbered images), the plugin-chain contract from `tests/test_live_server_plugin_chain.py` (`f"{stage}_machine_secret"`, `model_reuse_receipt`, `results_directory/receipt.json` chaining — the last two are supplied in Task 18).
 - Produces: a documented, repeatable env recipe used by every live scenario task; `docs/quality/palette-w3.md` as the palette «учёт» block (spec: каждая строка палитры — идентифицируемый блок).
 
-- [ ] **Step 1: Start the stand** — `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-beta-stand.ps1`; expect `BETA STAND RESULT: FAIL` listing exactly one failure `FAIL gateway: kraken-blob-gateway.exe not found ...` while every other line is `PASS` (gateway absent is the accepted W3-start state); env files are still written (core stand is up).
-- [ ] **Step 2: Generate the UI source + config** — write `.test_runtime\make-ui-test-config.py` that (a) with PIL generates 100 grayscale 64×64 PNGs named `001.png`..`100.png` into `.test_runtime\palette-source\`, and (b) writes `.test_runtime\beta-stand\ui-test-config.json` with `{"server_url": "http://127.0.0.1:8080", "username": <state.json beta_username>, "password": <state.json beta_password>, "source_directory": "C:/code/kraken/.test_runtime/palette-source"}`. Run: `.venv\Scripts\python.exe .test_runtime\make-ui-test-config.py`; verify 100 files and a readable JSON.
+- [ ] **Step 1: Inspect the stand** — confirm its existing state and gateway health before deciding whether a restart is needed. The gateway exe is already present; do not assume a missing-exe failure or restart a running shared stand solely for this step.
+- [ ] **Step 2: Verify the UI source + config** — generate 100 numbered 64×64 PNGs and `ui-test-config.json` if absent; derive `source_directory` from the resolved checkout path (`Path.cwd()` when invoked from the repo), never a fixed drive letter. Verify all 100 files, JSON keys and path existence. Reuse existing generated files if valid.
 - [ ] **Step 3: Document the env recipe** in `docs/quality/beta-stand.md` — the canonical caller preamble for the palette (used verbatim by scenario tasks, date-substituted):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_CONFIG='C:\code\kraken\.test_runtime\beta-stand\live-worker-config.json'; $env:KRAKEN_TEST_POSTGRES_URL=(Get-Content .test_runtime\beta-stand.env.json -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL; $env:KRAKEN_UI_TEST_CONFIG='C:\code\kraken\.test_runtime\beta-stand\ui-test-config.json'; $env:QT_QPA_PLATFORM='offscreen'; <command>"
+$repo = (Resolve-Path .).Path
+$env:KRAKEN_LIVE_WORKER_CONFIG = Join-Path $repo '.test_runtime\beta-stand\live-worker-config.json'
+$env:KRAKEN_TEST_POSTGRES_URL = (Get-Content (Join-Path $repo '.test_runtime\beta-stand.env.json') -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL
+$env:KRAKEN_UI_TEST_CONFIG = Join-Path $repo '.test_runtime\beta-stand\ui-test-config.json'
+$env:QT_QPA_PLATFORM = 'offscreen'
+# Run the scenario command in this same PowerShell process.
 ```
 
   State explicitly: the stand provisions ONE account (`beta-stand`); additional users are registered by the scenarios themselves via `POST /api/v1/auth/accounts` on loopback (open registration, `domain_auth=false`; see `src/kraken_server/interface/http/routes/auth.py`).
@@ -138,22 +146,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Covers:** HUB-BOOTSTRAP-ACCOUNT, HUB-LOGIN (+ error branches «A local account already exists», «Неверные учётные данные или аккаунт временно заблокирован.»).
 
 **Files:**
-- Create: `tests/test_beta_palette_hub_local.py` (module docstring: `"""Палитра W3 — локальные действия Hub (офскрин, офлайн). S01/S02/S03/S04."""`)
-- Modify: `scripts/quality-gates.ps1` (`$guiFiles += 'tests/test_beta_palette_hub_local.py'`)
+- Use existing `tests/quality/test_s01_local_identity.py` for S01; add S02–S04 tests alongside it or in focused files under `tests/quality/` according to the current GUI tier registration.
+- Modify: `scripts/quality-gates.ps1` only if the existing `tests/quality/test_s01_local_identity.py` is absent from the GUI tier.
 - Modify: `docs/quality/registry/actions.json` (rows below)
 
 **Interfaces:**
 - Consumes: local account store + login window driven via pytest-qt with `configure_settings_directory(tmp_path)` isolation (pattern used across the gui tier); no stand.
-- Produces: gui-tier JUnit node ids `tests/test_beta_palette_hub_local.py::test_s01_*` bound to the two registry rows.
+- Produces: gui-tier JUnit node ids from `tests/quality/test_s01_local_identity.py` bound to the two registry rows.
 
-- [ ] **Step 1: Write the tests** in `tests/test_beta_palette_hub_local.py`:
+- [x] **Step 1: Write the S01 tests** — implemented in `tests/quality/test_s01_local_identity.py`; inspect actual test names and assertions before binding the registry.
   - `test_s01_bootstrap_creates_first_local_account_and_session` — with an empty settings dir, the bootstrap window creates the first account; assert active local session and persisted account.
   - `test_s01_second_local_account_rejected` — after one account exists, a second creation attempt is rejected with the message containing `A local account already exists` (registry `error_conditions` text).
   - `test_s01_login_wrong_password_blocked_message` — login with a wrong password shows exactly `Неверные учётные данные или аккаунт временно заблокирован.`
   - `test_s01_login_correct_password_opens_session` — happy path.
-- [ ] **Step 2: Run twice** — `.venv\Scripts\python.exe -m pytest tests/test_beta_palette_hub_local.py -q` (fix product code ONLY via RED→GREEN defect if a message/behavior mismatches the registry promise; numbering from D24).
-- [ ] **Step 3: Register in the gui tier** — append the file to `$guiFiles`; run `powershell -NoProfile -ExecutionPolicy Bypass -Command "& scripts\quality-gates.ps1 -Tier gui -SkipCoverage"`; expect exit 0, no FAIL.
-- [ ] **Step 4: Re-bind registry rows** — `HUB-BOOTSTRAP-ACCOUNT` and `HUB-LOGIN`: `status: "PASS"` (only if step 2/3 passed), `tests: ["tests/test_beta_palette_hub_local.py::test_s01_bootstrap_creates_first_local_account_and_session", "tests/test_beta_palette_hub_local.py::test_s01_second_local_account_rejected", "tests/test_beta_palette_hub_local.py::test_s01_login_wrong_password_blocked_message", "tests/test_beta_palette_hub_local.py::test_s01_login_correct_password_opens_session"]`; `evidence: ["docs/quality/evidence/<run-date>/gate-gui/junit.xml"]`.
+- [ ] **Step 2: Verify S01 twice** — run `tests/quality/test_s01_local_identity.py` via the existing `scripts/run_s01_palette.ps1` or its equivalent, preserving separate evidence for each run. Fix product code only via RED→GREEN defect if behavior mismatches the registry promise.
+- [ ] **Step 3: Check GUI tier registration** for the actual S01 file; add it only if absent, then run the GUI tier. Expect exit 0 with no failures and S01 node ids present in JUnit.
+- [ ] **Step 4: Re-bind registry rows** — `HUB-BOOTSTRAP-ACCOUNT` and `HUB-LOGIN` use the actual collected node ids in `tests/quality/test_s01_local_identity.py`; mark PASS only after the two preserved runs and GUI tier confirm them. Evidence points to the corresponding JUnit files.
 - [ ] **Step 5: Regenerate docs + commit** — `.venv\Scripts\python.exe -m tools.quality.generate_quality_docs --write`; `git commit -m "test(quality): palette S01 — локальный вход и создание аккаунта (HUB-BOOTSTRAP-ACCOUNT, HUB-LOGIN re-earned)"`
 
 ### Task 7: Scenario S02 — настройки, источник обновлений, вид матрицы, хранилища (offline GUI)
@@ -161,12 +169,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Covers:** HUB-PREFERENCES, HUB-UPDATE-SOURCE, MGR-MATRIX-VISUAL, HUB-CONFIGURE-ROOTS.
 
 **Files:**
-- Modify: `tests/test_beta_palette_hub_local.py`
+- Modify: the S01 test module under `tests/quality/`, or add a focused sibling module if that keeps the scenarios clearer.
 - Modify: `docs/quality/registry/actions.json`
 
 - [ ] **Step 1: Write the tests** (same isolation idiom): `test_s02_preferences_dialog_persists_server_url_and_theme` (Вид → «Настройки…»: server address, accounts list, theme round-trip into QSettings; secrets go to keyring — assert only that no secret value lands in QSettings), `test_s02_update_source_dialog_stores_manifest_url` (Вид → «Источник обновлений…»: URL/path written to QSettings), `test_s02_matrix_visual_mode_persisted` (Вид → рамка/заливка ячейка → QSettings), `test_s02_configure_roots_writes_settings` («Настроить хранилища…» with two temp roots → QSettings contains both).
-- [ ] **Step 2: Run twice, green** — `.venv\Scripts\python.exe -m pytest tests/test_beta_palette_hub_local.py -q`.
-- [ ] **Step 3: Re-bind registry rows** — HUB-PREFERENCES, HUB-UPDATE-SOURCE, MGR-MATRIX-VISUAL, HUB-CONFIGURE-ROOTS: `status: "PASS"`, `tests: ["tests/test_beta_palette_hub_local.py::test_s02_<each>"]` (all four entries per row's own test), `evidence: ["docs/quality/evidence/<run-date>/gate-gui/junit.xml"]`.
+- [ ] **Step 2: Run twice, green** — run the actual S02 module; retain JUnit and logs for each run.
+- [ ] **Step 3: Re-bind registry rows** — HUB-PREFERENCES, HUB-UPDATE-SOURCE, MGR-MATRIX-VISUAL, HUB-CONFIGURE-ROOTS: PASS only for each action's actual collected test node ids and fresh JUnit evidence.
 - [ ] **Step 4: Regenerate docs + commit** — `git commit -m "test(quality): palette S02 — настройки, источник обновлений, вид матрицы, корни хранилищ"`
 
 ### Task 8: Scenario S03 — привязка хранилища и локальный резервный контур (offline GUI)
@@ -174,7 +182,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Covers:** HUB-BIND-WORKSPACE, HUB-EXPORT-BACKUP, HUB-IMPORT-BACKUP (+ error branch «Испорченная копия отклоняется ошибкой проверки»).
 
 **Files:**
-- Modify: `tests/test_beta_palette_hub_local.py`
+- Modify: the S01 test module under `tests/quality/`, or add a focused sibling module.
 - Modify: `docs/quality/registry/actions.json`
 
 - [ ] **Step 1: Write the tests** — `test_s03_bind_workspace_dialog_attaches_two_roots` (project creation prompts «Настроить хранилище проекта»; two temp roots attach; assert both roots bound), `test_s03_export_backup_creates_kraken_backup_folder` («Создать резервную копию» → `kraken-backup-*` directory with manifest), `test_s03_import_backup_restores_project` (export then import into a clean store → project visible in catalog), `test_s03_import_corrupted_backup_rejected` (corrupt the copied archive's payload file, expect the verification error dialog/error from `error_conditions`, no partially restored project).
@@ -187,7 +195,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Covers:** HUB-SCAN-INTEGRITY (+ error branch «Обнаружены ошибки»), HUB-ADMIN-REFRESH.
 
 **Files:**
-- Modify: `tests/test_beta_palette_hub_local.py`
+- Modify: the S01 test module under `tests/quality/`, or add a focused sibling module.
 - Modify: `docs/quality/registry/actions.json`
 
 - [ ] **Step 1: Write the tests** — `test_s04_scan_integrity_reports_clean` (Администрирование → «Проверить целостность» on a healthy local store → «Проверка завершена»), `test_s04_scan_integrity_reports_errors` (corrupt a stored journal/event file per the store's format → dialog reports «Обнаружены ошибки»), `test_s04_admin_refresh_lists_projects_and_audit` («Обновить каталог» → project list + ≤500 audit rows populated).
@@ -205,14 +213,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 - Modify: `docs/quality/registry/actions.json`
 
 **Interfaces:**
-- Consumes: `_connect(config, directory)` and the protected-project invariance snapshot from `tests/test_live_server_worker_acceptance.py` (import them, as `test_live_server_plugin_chain.py` does); unique project names `palette-s05-<uuid4hex8>`; cleanup by stand teardown (DB drop) + explicit project delete-request at scenario end.
+- Consumes: `_connect(config, directory)` and the protected-project invariance snapshot from `tests/test_live_server_worker_acceptance.py`; unique project names `palette-s05-<uuid4hex8>`. A delete request is a behavior assertion, not cleanup: fixture finalizers must drain jobs and revoke scenario tokens. If physical project removal is unavailable, run the two acceptance passes against a disposable isolated stand/schema and tear it down afterward; do not accumulate projects on the permanent stand.
 - Produces: live JUnit ids `tests/test_beta_palette_server_api.py::test_s05_*` etc.; the `RemoteHttpClient._call` verb/payload/idempotency-key/if-match style of the existing live tests.
 
 - [ ] **Step 1: Write S05** — `test_s05_project_crud_and_revision_conflict`: create project (2×1) → list contains it → read → workspace binding → rename (fresh `If-Match`) → archive → catalog hides unless archived shown → restore → **stale `If-Match` rename → HTTP 409 `revision.conflict`** → delete request (`«Запросить удаление»` semantics: project remains, заявка recorded). Assert `application/problem+json` shape on the 409.
 - [ ] **Step 2: Write S06** — `test_s06_layer_routes_full_surface`: on a `palette-s06-*` project: add layer via scan route (PNG folder), external layer route, import route, rename, reorder, archive, delete-by-name; final project GET still readable. `test_s06_deleted_layer_references_gone`: after layer delete, `GET /layers/{id}` → 404/410-class problem response and project history retains the deletion event (grounded: SRV-LAYERS routes list includes delete; registry error branch for layer delete requires exact name mirrored in S11 GUI).
 - [ ] **Step 3: Write S07** — `test_s07_representations_import_and_viewport`: create representation (image), import plan route, import route, inputs preparation route, frames listing, viewport route; `test_s07_upload_stale_revision_409`: artifact series upload preflight with stale `If-Match` → 409 (SRV-ARTIFACTS error branch; runs in proxy mode — do NOT assert transfer mode here, gateway-mode assertion belongs to G16/G17).
-- [ ] **Step 4: Run twice on the stand** — canonical preamble (Task 5) + `.venv\Scripts\python.exe -m pytest tests/test_beta_palette_server_api.py -q --junitxml=docs/quality/evidence/<run-date>/palette/S05-S07/junit.xml --basetemp=.test_runtime\palette-s05-07`; expect exit 0, 0 skips, identical results both runs; `protected_unchanged` holds.
-- [ ] **Step 5: Re-bind** SRV-PROJECTS, SRV-LAYERS, SRV-REPRESENTATIONS rows → `status: "PASS"`, `tests:` = their `test_s05_/test_s06_/test_s07_` node ids, `evidence:` = `["docs/quality/evidence/<run-date>/palette/S05-S07/junit.xml"]`.
+- [ ] **Step 4: Run twice on the stand** — canonical preamble (Task 5); run pytest with separate `--junitxml=docs/quality/evidence/<run-date>/palette/S05-S07/run-1/junit.xml` and `run-2/junit.xml`, distinct `--basetemp` paths and retained logs. Expect exit 0, 0 skips, identical node outcomes and `protected_unchanged`.
+- [ ] **Step 5: Re-bind** SRV-PROJECTS, SRV-LAYERS, SRV-REPRESENTATIONS rows → PASS only after the mapped node ids pass in both retained S05–S07 JUnit files; reference both evidence paths.
 - [ ] **Step 6: Regenerate docs + commit** — `git commit -m "test(quality): palette S05-S07 — серверные проекты, слои, репрезентации (live)"`
 
 ### Task 11: Scenario S08 — команды, websocket, заметки/пакеты, протокол заданий, планы, статистика (live)
@@ -244,10 +252,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 - Modify: `docs/quality/registry/actions.json`
 
 **Interfaces:**
-- Consumes: stand session + a dedicated agent-token issued for the scenario via `kraken-admin create-agent-token --config .test_runtime\beta-stand\server.toml --name palette-s09 --capability frames.vectorize.v1` (the stand's own machine token must NOT be reused for the agent — one-shot workers rely on it). Agent runs with `--server-url http://127.0.0.1:8080 --plugins-config <temp> --data-dir <results>/s09-agent --independent`, token via env `KRAKEN_AGENT_TOKEN`, started/killed inside the fixture (no `-WithWorkerAgent`, so the shared-queue interference rule is not violated: the scenario asserts the queue is empty on entry and kills the agent in teardown).
+- Consumes: the standalone loopback control mode of `python -m kraken_agent` with `--data-dir <temp> --connection-file <temp>/connection.json --independent`. Do not pass `--server-url`: that selects `ServerAgentWorker.run_forever()` and does not start the HTTP control server or write a connection file. Remote worker authentication is exercised in the separate server/worker scenarios.
 - Produces: AGT-HEALTH binding; documented agent bring-up recipe for W4 smoke.
 
-- [ ] **Step 1: Write the test** — `test_s09_agent_health_ok_with_token_and_rejected_without`: fixture starts the agent (command-line discovery pattern `*kraken_agent*palette-s09*`), polls its loopback health endpoint: with the connection-file token → `status: ok`; without a token → rejected (401/403). Teardown terminates the agent and waits for the port to close; assert stand unaffected (`/api/v1/health` still 200).
+- [ ] **Step 1: Write the test** — `test_s09_agent_health_ok_with_token_and_rejected_without`: fixture starts the standalone agent, waits for its connection file, requests `<connection-file url>/api/v1/health` with its control token → `status: ok`; without a token → 401. Teardown calls authenticated `/api/v1/shutdown`, waits for process exit and verifies the port closes. If retaining the stand assertion, verify `/api/v1/health` still answers independently.
 - [ ] **Step 2: Run twice** on the stand (junit `.../palette/S09/junit.xml`), exit 0, no skips, identical.
 - [ ] **Step 3: Re-bind** AGT-HEALTH → PASS + binding + evidence.
 - [ ] **Step 4: Regenerate docs + commit** — `git commit -m "test(quality): palette S09 — health агента с токеном и без (live)"`
@@ -263,7 +271,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 
 **Interfaces:**
 - Consumes: `KRAKEN_UI_TEST_CONFIG` fixture pattern from `tests/test_live_ui_workflow.py` (`live_ui` equivalents: `DesktopController` over `DualCatalogService`, `modal()` dialog driver, `select_catalog_project()`); `GET /api/v1/health` `domain_auth: false`.
-- Produces: S10 JUnit ids; two named projects `palette-s10-<uuid8>` kept until teardown by design (server projects persist; stand drop cleans).
+- Produces: S10 JUnit ids; scenario projects cleaned by a fixture finalizer, or isolated in a disposable stand for the pair of runs if the API has no physical project removal. Verify no active jobs after teardown.
 
 - [ ] **Step 1: Write the tests** —
   - `test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden`: login window shows tabs «Локальный» and «Сервер»; with health answering `domain_auth: false`, no LDAP tab is present; server-tab login with the stand account creates/uses the mirror account and lands in the catalog (dual catalog: server projects visible).
@@ -355,7 +363,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 
 ### Task 18: Gateway prerequisite (GATE) — поставка `kraken-blob-gateway.exe` + токен-расширение стенда
 
-**This is a prerequisite task, not an acceptance scenario. Everything in Tasks 19–22 is blocked until it passes; Tasks 1–17 complete independently of it.**
+**This is a prerequisite audit, not an acceptance scenario.** The executable is already present in the current checkout; confirm its health and gateway transfer mode before Tasks 19–22. Supply from an external kit only if this check fails.
 
 **Files:**
 - Modify: `scripts/start-beta-stand.ps1` (issue per-capability machine tokens + extend `live-worker-config.json`)
@@ -363,16 +371,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 - Modify: `docs/quality/beta-stand.md` (supply paths)
 
 **Interfaces:**
-- Consumes: offline kit supply — user reconnects `G:\kraken-transfer` or the K: kit; build `cargo build --release --offline --manifest-path blob_gateway\Cargo.toml` into `blob_gateway\target\release\kraken-blob-gateway.exe`, or copy a prebuilt exe to that path. `start-beta-stand.ps1` already auto-enables the gateway when the exe exists (candidate scan at lines ~268–274).
-- Produces: gateway-enabled stand (`GET http://127.0.0.1:8081/health` → `service == "kraken-blob-gateway"`); `live-worker-config.json` extended with `neuralimage_machine_secret` (capability `frames.binary-segment.v2`), `karakal_machine_secret` (`karakal.analyze.v1`, present for chain-test parity though karakal acceptance is out of beta), and `model_reuse_receipt` (path to the CPU checkpoint receipt consumed by `tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference`, produced by `tests/test_neuralimage_headless_training.py` run with `KRAKEN_RUN_TRAINING_LIVE=1`).
+- Consumes: the existing `blob_gateway\target\release\kraken-blob-gateway.exe` and the stand's gateway health/transfer checks. Rebuild offline only if the binary is absent or invalid.
+- Produces: gateway-enabled stand (`GET http://127.0.0.1:8081/health` → `service == "kraken-blob-gateway"`); only the beta-required NeuralImage machine capability and model reuse receipt if absent from the current config. Exclude Karakal capabilities and chain tests from W3.
 
-- [ ] **Step 1: Supply blocker note + owner action** — record in `docs/quality/palette-w3.md` the exact blocker text («kraken-blob-gateway.exe отсутствует; переподключить G:\kraken-transfer или комплект на K:, затем …») and pause this task until the user confirms the kit is connected.
-- [ ] **Step 2: Pin test for config extension** — extend the stand tests: `render-server-config`/config writer must include the three new keys when capabilities are requested; run, expect FAIL.
-- [ ] **Step 3: Implement token issuance in `start-beta-stand.ps1`** — after the existing machine-token step, issue `beta-stand-worker-ni` (`frames.binary-segment.v2`) and `beta-stand-worker-karakal` (`karakal.analyze.v1`) with the same capture/DPAPI pattern (secrets `machine-ni.secret`, `machine-karakal.secret`), add `neuralimage_machine_secret`/`karakal_machine_secret` to `$liveConfig`, and `model_reuse_receipt` if `.test_runtime\beta-stand\results\model-reuse-receipt.json` exists; stop script revokes all tokens with the 401-proof pattern. Tests green.
-- [ ] **Step 4: Rebuild the stand with the gateway** — `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-beta-stand.ps1 -Restart`; expect ALL lines PASS including `PASS gateway 127.0.0.1:8081 healthy …` and `BETA STAND RESULT: PASS`.
+- [ ] **Step 1: Verify existing gateway** — inspect binary, `/health`, stand config and an actual `transfer.mode == "gateway"` upload. Record a blocker only if the current setup fails.
+- [ ] **Step 2: Pin test for missing config extension** — if needed, extend stand tests for the NeuralImage secret and optional model reuse receipt; run RED before implementation.
+- [ ] **Step 3: Implement missing beta configuration only** — if necessary, issue `beta-stand-worker-ni` (`frames.binary-segment.v2`), add `neuralimage_machine_secret` and `model_reuse_receipt` to `$liveConfig`, and revoke the issued token in the stop script. Do not issue a Karakal token. Tests green.
+- [ ] **Step 4: Validate the stand with the gateway** — restart only when configuration changed and after checking the shared stand can safely be stopped. Expect ALL lines PASS, including gateway health and a real gateway-mode upload.
 - [ ] **Step 5: Produce the reuse receipt** — canonical preamble + `KRAKEN_RUN_TRAINING_LIVE=1`; run `.venv\Scripts\python.exe -m pytest tests/test_neuralimage_headless_training.py -q`; expect exit 0 and the receipt file present; wire its path into `live-worker-config.json` (re-run the stand script; it reuses components and refreshes the config).
-- [ ] **Step 6: Chain sanity** — canonical preamble; run `.venv\Scripts\python.exe -m pytest tests/test_live_server_plugin_chain.py -q -k neuralimage`; expect the chain fixture resolves (`results_directory/receipt.json` from `tests/test_live_server_worker_acceptance.py` must exist — run that file first once); exit 0, 0 skips.
-- [ ] **Step 7: Commit** — `git commit -m "feat(quality): stand issues per-capability machine tokens and model reuse receipt for gateway palette"`
+- [ ] **Step 6: Chain sanity** — canonical preamble; run only the NeuralImage chain node id and its required worker acceptance predecessor, preserving their receipts. Expect exit 0 and no skips; Karakal tests remain outside W3.
+- [ ] **Step 7: Commit if changed** — commit only necessary stand configuration and tests; otherwise record the audit evidence.
 
 ### Task 19: Scenario G16 — Blob Gateway PUT/GET/HEAD с билетом и пережитие перезапуска (live, gateway)
 
@@ -408,7 +416,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 
 ### Task 21: Scenario G18 — подготовка выборки агентом + интерактивная выборка Contour (live, gateway)
 
-**Covers:** AGT-OP-DATASET-PREPARE, PLUGIN-CONTOUR-DATASET-INTERACTIVE (+ «Headless-ветка отвергает frames.dataset.prepare.v1» error branch; отмена задания).
+**Covers:** AGT-OP-DATASET-PREPARE, PLUGIN-CONTOUR-DATASET-INTERACTIVE (+ отказ для кадра без парного CIF; отмена задания). Headless Contour поддерживает `frames.dataset.prepare.v1` и создаёт ZIP выборки; прежнее требование отвергать саму операцию противоречило реализации и существующему тесту `plugins/contour/tests/unit/test_headless_dataset.py`.
 
 **Files:**
 - Create: `tests/test_beta_palette_agent_ops.py` (docstring: `"""Палитра W3 — агентские операции выборки (live, gateway). G18."""`)
@@ -416,9 +424,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 - Modify: `docs/quality/registry/actions.json`
 
 - [ ] **Step 1: Write the agent test** — `test_g18_dataset_prepare_worker_imports_dataset`: scenario project `palette-g18-<uuid8>` with a vectorized layer (G17 provisioning mechanism at API level); `ObservedWorker` registry `{"frames.dataset.prepare.v1": PluginProcessSpec(..., (sys.executable, "-m", "contour.worker"))}`; enqueue via the job routes with a plan referencing the vector representation; worker completes; assert the dataset artifact appears in the project (registry: «Результат импортирован в проект (выборка)») and `allowed_jobs`-guarded lease observed.
-- [ ] **Step 2: Write the two error/interactive tests** — `test_g18_headless_worker_rejects_interactive_prepare` (registry `error_conditions` for PLUGIN-CONTOUR-DATASET-INTERACTIVE: the headless branch raises `ValueError` — assert the job transitions to failed with that cause and the project is intact); `test_g18_interactive_prepare_via_hub_proxy_path` (live UI: launch the Contour plugin process and drive the interactive dataset-prepare proxy/gateway path up to the return point, per the action's `expected_behavior`, without an agent job).
+- [ ] **Step 2: Write the error/interactive tests** — `test_g18_headless_worker_rejects_unpaired_cif` verifies a malformed input fails clearly without a dataset ZIP; `test_g18_interactive_prepare_via_hub_gateway_path` launches the real Contour process in interactive mode, drives the return action and verifies the imported ZIP and gateway tickets. `test_g18_cancel_queued_dataset_job_preserves_project` covers queued-job cancellation. Both headless and interactive modes must accept valid `frames.dataset.prepare.v1` inputs.
 - [ ] **Step 3: Run twice** (junit `.../palette/G18/junit.xml`), exit 0, 0 skips, matching.
-- [ ] **Step 4: Re-bind** AGT-OP-DATASET-PREPARE → PASS with `test_g18_dataset_prepare_worker_imports_dataset` (+cancel branch if added); PLUGIN-CONTOUR-DATASET-INTERACTIVE → PASS with `test_g18_interactive_prepare_via_hub_proxy_path` and `test_g18_headless_worker_rejects_interactive_prepare`; evidence = palette junit + gate-live junit.
+- [ ] **Step 4: Re-bind** AGT-OP-DATASET-PREPARE → PASS with `test_g18_dataset_prepare_worker_imports_dataset` and `test_g18_cancel_queued_dataset_job_preserves_project`; PLUGIN-CONTOUR-DATASET-INTERACTIVE → PASS with `test_g18_interactive_prepare_via_hub_gateway_path` and `test_g18_headless_worker_rejects_unpaired_cif`; evidence = two retained palette JUnit files and the live gate JUnit.
 - [ ] **Step 5: Regenerate docs + commit** — `git commit -m "test(quality): palette G18 — подготовка выборки агентом и интерактивная ветка Contour (live, gateway)"`
 
 ### Task 22: Scenario G19 — обучение модели и бинарная сегментация на живом контуре (live, gateway, bounded CPU)
@@ -426,11 +434,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Covers:** AGT-OP-TRAIN, AGT-OP-BINARY-SEGMENT (+ отмена/падение — reuse of the fault branch already observed for training in the e2e D15.1 gate: keep the CUDA-free bounded CPU path).
 
 **Files:**
-- Modify: `docs/quality/registry/actions.json`; no new test code expected (existing bounded suites are re-earned on the gateway stand) — only if a run exposes a gap does a new test file `tests/test_beta_palette_train_binary.py` appear (RED→GREEN).
+- Modify: `docs/quality/registry/actions.json`; add `tests/test_beta_palette_train_live.py` because the existing bounded training pipeline uses a local agent and does not prove the `--server-url` contract of AGT-OP-TRAIN.
 
-- [ ] **Step 1: Run the bounded training + inference suites twice** — canonical preamble + `KRAKEN_RUN_MODEL_FUNCTIONAL=1` and `KRAKEN_RUN_TRAINING_LIVE=1`: `.venv\Scripts\python.exe -m pytest tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py tests/test_live_server_plugin_chain.py -q -k "not karakal and not stitch"` with junit `.../palette/G19/junit.xml`; expected: `dataset.model.train.v1` bounded one-epoch CPU train completes through the pipeline with `capability` proven; `frames.binary-segment.v2` inference publishes a new CIF variant; the chain test reuses the verified checkpoint (`model_reuse_receipt`, epoch_upper_bound == 1). Exit 0, 0 skips (CUDA must not be touched — D15 family).
-- [ ] **Step 2: Verify outputs** — project gains the model checkpoint artifact and a new binary-segment CIF variant, both readable via artifact download routes with sha256 match (the chain test asserts digests).
-- [ ] **Step 3: Re-bind** AGT-OP-TRAIN → `tests: ["tests/test_pipeline_live_neural_model.py"]`; AGT-OP-BINARY-SEGMENT → `tests: ["tests/test_pipeline_live_neural_model.py", "tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference"]`; both PASS, evidence `["docs/quality/evidence/<run-date>/palette/G19/junit.xml"]`.
+- [ ] **Step 1: Run the bounded training + inference suites twice** — canonical preamble + `KRAKEN_RUN_MODEL_FUNCTIONAL=1` and `KRAKEN_RUN_TRAINING_LIVE=1`: `.venv\Scripts\python.exe -m pytest tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py tests/test_live_server_plugin_chain.py -q -k "not karakal and not stitch"` with junit `.../palette/G19/junit.xml`; also run `tests/test_beta_palette_train_live.py` twice against the Server Gateway. Expected: `dataset.model.train.v1` bounded one-epoch CPU training completes both locally and through a server machine lease; `frames.binary-segment.v2` inference publishes new binary PNG masks; the chain test reuses the verified checkpoint (`model_reuse_receipt`, epoch_upper_bound == 1). Exit 0, 0 skips (CUDA must not be touched — D15 family).
+- [ ] **Step 2: Verify outputs** — project gains the model checkpoint artifact and new binary PNG masks, all readable via artifact download routes with sha256 match (the live training and chain tests assert digests).
+- [ ] **Step 3: Re-bind** AGT-OP-TRAIN → `tests: ["tests/test_beta_palette_train_live.py::test_g19_server_training_publishes_verified_checkpoint", "tests/test_pipeline_live_neural_model.py"]`; AGT-OP-BINARY-SEGMENT → `tests: ["tests/test_pipeline_live_neural_model.py", "tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference"]`; both PASS, evidence = the two complete palette G19 JUnits plus the two server training JUnits.
 - [ ] **Step 4: Regenerate docs + commit** — `git commit -m "test(quality): palette G19 — обучение и бинарная сегментация на живом контуре (bounded CPU, gateway)"`
 
 ### Task 23: Финал — полный гейт дважды, аудит свежести, W3-секция чекпоинта, отчёт владельцу
@@ -438,13 +446,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 **Files:**
 - Modify: `docs/quality/checkpoint-2026-11-17-beta.md` (fill «W3 сценарий» column for all rows; append section «## Итог W3 — палитра живых сценариев принятия» in Russian)
 - Modify: `docs/quality/registry/actions.json` (final consistency: every re-verified row PASS with fresh bindings; HUB-CHECK-UPDATES stays `BLOCKED` with `exception_reason` ending «…приёмка — W4 (тестовый источник обновлений)»; failures keep NOT_TESTED + updated `exception_reason`)
-- Modify: `tests/test_quality_registry.py` (pin: every `beta: true` action with `status == "PASS"` has non-empty `tests` and every entry's file exists — the anti-drift pin of Review Focus #5)
+- Modify: `tests/test_quality_registry.py` (pin: every `beta: true` PASS action has non-empty `tests` and each node id resolves with the existing `resolve_node_id` helper); add a repeatable evidence audit for fresh passed JUnit nodes.
 - Create: `docs/quality/evidence/<final-date>/` (full-gate artifacts, committed)
 
 - [ ] **Step 1: Write the anti-drift pin** in `tests/test_quality_registry.py` and confirm it passes against the current registry (all rows re-bound so far comply).
-- [ ] **Step 2: Full gate, run 1** — bring the stand up fresh (`-Restart`); set ALL env: `KRAKEN_LIVE_WORKER_CONFIG`, `KRAKEN_TEST_POSTGRES_URL` (from `.test_runtime\beta-stand.env.json`), `KRAKEN_UI_TEST_CONFIG`, `KRAKEN_RUN_PIPELINE_LIVE=1`, `KRAKEN_RUN_MODEL_FUNCTIONAL=1`, `KRAKEN_RUN_TRAINING_LIVE=1`; run `powershell -NoProfile -ExecutionPolicy Bypass -Command "& scripts\quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live"`. Expect: 0 FAIL; `live` PASS when the gateway group completed (0 skips in live), or honestly PARTIAL listing the gateway-blocked files with the «exe не поставлен» cause if Task 18 is still open — never a claimed PASS.
-- [ ] **Step 3: Full gate, run 2** — identical command, no manual intervention between runs; live results must match run 1 (twice-in-a-row convention).
-- [ ] **Step 4: Coverage + freshness audit** — verify `coverage-report.json`/`coverage-compare.json` for the final day: 0 PASS→FAIL regressions; per `beta: true` PASS row the relying junit `timestamp`/`mtime` is post-freeze (repeat the checkpoint's `freshness_check.py` method; script stays uncommitted under `.test_runtime/`). Verify the 15 pre-existing PASS rows still show PASS on the final-day JUnit (their gui/integration/regression mappings re-ran in Steps 2–3; if any regressed, triage RED→GREEN and rerun — do not re-bind by hand).
+- [ ] **Step 2: Full gate, run 1** — confirm the stand is healthy; restart only if necessary and safe. Set ALL env: `KRAKEN_LIVE_WORKER_CONFIG`, `KRAKEN_TEST_POSTGRES_URL`, `KRAKEN_UI_TEST_CONFIG`, `KRAKEN_RUN_PIPELINE_LIVE=1`, `KRAKEN_RUN_MODEL_FUNCTIONAL=1`, `KRAKEN_RUN_TRAINING_LIVE=1`; run `scripts\quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live -OutDir docs\quality\evidence\<final-date>\full-run-1`. Expect 0 FAIL; record each PARTIAL cause explicitly.
+- [ ] **Step 3: Full gate, run 2** — repeat the identical tier/env command with `-OutDir docs\quality\evidence\<final-date>\full-run-2`, without manual intervention or stand restart. Compare both retained JUnit sets and receipts by tier and test node id, including skips, failures and errors; results must match.
+- [ ] **Step 4: Coverage + freshness audit** — verify both runs' `coverage-report.json`/`coverage-compare.json`: 0 PASS→FAIL regressions; for each `beta: true` PASS row, resolve every node id with `resolve_node_id`, require a passed result in fresh retained JUnit and check JUnit timestamp/mtime after the freeze point. Keep this audit as a committed, repeatable quality test/tool. Verify the W2 PASS rows still show PASS in both full runs; triage regressions RED→GREEN and rerun rather than re-binding by hand.
 - [ ] **Step 5: W3 checkpoint section (Russian)** — append «## Итог W3 — палитра живых сценариев принятия»: per-scenario table (id, дата прогона, junit-путь, вердикт), итоговый расклад `beta:true` (N PASS / M NOT_TESTED с причинами / 1 BLOCKED → W4), gateway-статус (поставлен/нет), список явных исключений (S14 fallback, HUB-CHECK-UPDATES), «Следующий шаг: W4 — поставка». Fill the «W3 сценарий» column of the readiness table with the ids from the mapping table below (ids не выдумываются — только из этой таблицы).
 - [ ] **Step 6: Commit evidence + checkpoint** — `git add docs/quality/evidence/<final-date> docs/quality/checkpoint-2026-11-17-beta.md docs/quality/registry/actions.json docs/quality/acceptance-matrix.md docs/quality/functional-inventory.md docs/quality/palette-w3.md tests/test_quality_registry.py; git commit -m "docs(quality): W3 итог — палитра прогнана, реестр перепривязан к свежим доказательствам"`
 - [ ] **Step 7: Report to the owner** — compact table: PASS/NOT_TESTED/BLOCKED counts vs the 15/45/1 baseline; the two-user + multi-object proof points; gateway status and what remains for W4 (installer, update source, smoke); every exception needing a signature.
@@ -469,7 +477,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 | 15 | S12 | HUB-MY-WORK, HUB-WORK-PLAN (+ in-flow: HUB-ISSUE-WORK, HUB-REVIEW-RETURN) |
 | 16 | S13 | HUB-PLUGINS, PLUGIN-CONTOUR-HELP, PLUGIN-NEURALIMAGE-VERSION |
 | 17 | S14 | ADMIN-SERVER-BACKUP-RESTORE (или явное исключение, Step 5) |
-| 18 | GATE (prereq, no actions) | — supply + stand token extension |
+| 18 | GATE (prereq, no actions) | — audit gateway and required NeuralImage config; extend only if needed |
 | 19 | G16 | BLOB-PUT-GET-RESTART (+gateway-mode confirmation of PERSISTENT-GATEWAY-UPLOAD, SRV-ARTIFACTS) |
 | 20 | G17 | AGT-OP-VECTORIZE |
 | 21 | G18 | AGT-OP-DATASET-PREPARE, PLUGIN-CONTOUR-DATASET-INTERACTIVE |
@@ -479,8 +487,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_
 Count check against the checkpoint gap table: 45 NOT_TESTED = S01:2 + S02:4 + S03:3 + S04:2 + S05:1 + S06:1 + S07:1 + S08:6 + S09:1 + S10:9 + S11:3 + S12:2 + S13:3 + S14:1 + G16:1 + G17:1 + G18:2 + G19:2 = 45. ✔
 
 **15 PASS policy (hybrid rule):** HUB-CREATE-PROJECT, HUB-PROJECT-ROLES, HUB-ADD-PERFORMER, HUB-EDIT-PERFORMER, HUB-DELETE-PERFORMER, HUB-REVIEW-RETURN, HUB-ADD-LAYER, HUB-LAYER-CONTEXT, HUB-ADD-REPRESENTATION, HUB-ISSUE-WORK, HUB-STATISTICS, SRV-HEALTH-SESSION, SRV-PRINCIPALS, SRV-ARTIFACTS, PERSISTENT-GATEWAY-UPLOAD — evidence dated 2026-11-18 already satisfies post-freeze freshness; each must remain PASS on the final full-gate JUnit of Task 23 Steps 2–4 (their mapped tiers re-run there). Rows touched by palette flows (S11/S12/G16) additionally gain palette bindings. Any that fail in the final gate → RED→GREEN triage, not manual re-bind. **HUB-CHECK-UPDATES** stays `BLOCKED` → W4 (тестовый источник обновлений — поставка W4), with the exception_reason kept current.
-```
 
 ---
 
-Notes for the controller (not part of the plan body): every fact above was verified against the current tree at `fefb38a` — tier file lists and the `-File` comma trap in `scripts/quality-gates.ps1`, the `-Restart`-before-guard ordering in `scripts/start-beta-stand.ps1` (lines 197–202 vs 223–229), the missing `timeout=` in `tests/offline/test_pytorch_resolution.py`, the `KRAKEN_UI_TEST_CONFIG`/`KRAKEN_LIVE_WORKER_CONFIG` contracts, the plugin-chain fixture's `f"{stage}_machine_secret"`/`model_reuse_receipt` keys absent from the current stand config (hence Task 18 Step 3), open loopback account registration in `src/kraken_server/interface/http/routes/auth.py` (two-user provisioning), and the `KRAKEN_TEST_PG_BIN`+CREATE-DATABASE blocker for `tests/test_server_backup.py
+This plan was originally checked at `fefb38a`; the rebaseline above supersedes those historical assumptions. Recheck all remaining paths, routes and stand prerequisites against the checkout before execution.

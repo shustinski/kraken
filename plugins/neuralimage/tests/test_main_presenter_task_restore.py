@@ -1,5 +1,4 @@
 import importlib
-import sys
 import types
 from pathlib import Path
 
@@ -273,8 +272,8 @@ def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkey
         ('recognition_only', False),
     ],
 )
-@pytest.mark.parametrize('server_dataset', [False, True])
-def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, monkeypatch, work_mode, should_save_snapshot, server_dataset):
+@pytest.mark.parametrize('kraken_dataset', ['none', 'server', 'staged'])
+def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, monkeypatch, work_mode, should_save_snapshot, kraken_dataset):
     module = _import_main_presenter_with_stubs(monkeypatch)
     presenter = module.MainPresenter(_FakeStateStore())
     monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.shutdown.GeneralNeuralHandlerThread', _FakeHandlerThread)
@@ -294,8 +293,10 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
     result = root / "result"
     for path in (sample, label, source, result):
         path.mkdir(parents=True, exist_ok=True)
-    if server_dataset:
+    if kraken_dataset == 'server':
         presenter.kraken_dataset_source = object()
+    elif kraken_dataset == 'staged':
+        presenter.kraken_training_output_directory = result
 
     task = types.SimpleNamespace(
         task_id=5,
@@ -317,7 +318,7 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
     assert len(calls) == int(should_save_snapshot)
     if should_save_snapshot:
         assert calls[0][2][0].value == work_mode
-        if server_dataset:
+        if kraken_dataset != 'none':
             assert calls[0][2][1].artifact_dir == result
     assert isinstance(presenter.neuaral_handler, _FakeHandlerThread)
     assert presenter.neuaral_handler.started is True

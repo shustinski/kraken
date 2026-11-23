@@ -1,6 +1,25 @@
 import os
 
 import numpy as np
+
+def _agent_debug_log(location, message, data, hypothesis_id):
+    # region agent log
+    try:
+        import json
+        import time
+        payload = {
+            'sessionId': 'ab6658',
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data,
+            'timestamp': int(time.time() * 1000),
+        }
+        with open(r'd:\code\kraken\.cursor\debug-ab6658.log', 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, default=str) + '\n')
+    except Exception:
+        pass
+    # endregion
 import numpy.typing as npt
 from PIL import Image
 import torch
@@ -224,6 +243,30 @@ def sew_image(
             weight_crop = base_weight[src_patch_top:src_patch_bottom, src_patch_left:src_patch_right]
             result[dst_top:dst_bottom, dst_left:dst_right] += patch_crop * weight_crop
             weight_sum[dst_top:dst_bottom, dst_left:dst_right] += weight_crop
+    uncovered = int(np.count_nonzero(weight_sum <= 0.0))
+    # region agent log
+    uncovered_ys, uncovered_xs = np.where(weight_sum <= 0.0)
+    _agent_debug_log(
+        'image_processing.py:sew_image',
+        'sew coverage',
+        {
+            'base': [base_width, base_height],
+            'pred_shape': list(getattr(predictions, 'shape', [])),
+            'overlap': int(overlap),
+            'segment': [segment_width, segment_height],
+            'grid': [int(column_steps), int(row_steps)],
+            'parts': int(parts_count),
+            'grid_cells': int(row_steps * column_steps),
+            'uncovered_pixels': uncovered,
+            'uncovered_bbox': (
+                [int(uncovered_ys.min()), int(uncovered_ys.max()), int(uncovered_xs.min()), int(uncovered_xs.max())]
+                if uncovered
+                else None
+            ),
+        },
+        'C',
+    )
+    # endregion
     weight_sum = np.where(weight_sum <= 0.0, 1.0, weight_sum)
     result = result / weight_sum
     result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)

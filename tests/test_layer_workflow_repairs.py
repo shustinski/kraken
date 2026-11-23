@@ -418,3 +418,108 @@ def test_pipeline_uses_applied_parameters_and_human_titles():
     assert node.title == "Векторизация изображений"
     assert node.subtitle == "Завершено"
     assert node.details["параметры"] == applied
+
+
+def test_training_job_edge_uses_published_dataset_version():
+    from datetime import UTC, datetime
+    from kraken_hub.presentation.qt.manager_app import DesktopController
+    from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
+
+    now = datetime.now(UTC)
+    source = SimpleNamespace(
+        id="source", name="Images", note="", kind=RepresentationKind.IMAGE,
+        purpose=RepresentationPurpose.SOURCE, active=True, source="managed-import", created_at=now,
+    )
+
+    def event(event_type, job_id, *, manifest=None, version_id=None, state="succeeded"):
+        payload = {"plugin_job_id": job_id, "job": {"layer_id": "layer", "state": state}}
+        if manifest is not None:
+            payload["manifest"] = manifest
+        if version_id is not None:
+            payload["version_id"] = version_id
+        return SimpleNamespace(
+            event_type=event_type, event_id=f"{event_type}:{job_id}", payload=payload,
+            recorded_at=now, actor=SimpleNamespace(display_name="Owner"),
+        )
+
+    events = (
+        event("PluginJobCreated", "dataset-job", manifest={
+            "layer_id": "layer", "capability": "frames.dataset.prepare.v1",
+            "target_representation_id": "source", "parameters": {"source_representation_id": "source"},
+        }),
+        event("ArtifactVersionCreated", "dataset-job", version_id="dataset-version"),
+        event("PluginJobCreated", "other-dataset-job", manifest={
+            "layer_id": "layer", "capability": "frames.dataset.prepare.v1",
+            "target_representation_id": "source", "parameters": {"source_representation_id": "source"},
+        }),
+        event("ArtifactVersionCreated", "other-dataset-job", version_id="other-dataset-version"),
+        event("PluginJobCreated", "train-job", state="queued", manifest={
+            "layer_id": "layer", "capability": "dataset.model.train.v1",
+            "target_representation_id": "source", "parameters": {
+                "source_representation_id": "source", "dataset_version_id": "dataset-version",
+            }, "inputs": [{"artifact_version_id": "dataset-version"}],
+        }),
+    )
+    controller = object.__new__(DesktopController)
+    controller.service = SimpleNamespace(
+        list_representations=lambda *_: (source,), history=lambda *_: events,
+        latest_karakal_analysis=lambda *_: None, list_derived_runs=lambda *_: (),
+    )
+
+    lane = controller._pipeline_snapshot("project", "layer").lanes[0]
+    assert ("dataset-job:dataset", "train-job") in lane.edges
+    assert ("other-dataset-job:dataset", "train-job") not in lane.edges
+    assert ("source", "train-job") not in lane.edges
+
+
+def test_binarization_depends_on_source_and_matching_trained_model():
+    from datetime import UTC, datetime
+    from kraken_hub.presentation.qt.manager_app import DesktopController
+    from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
+
+    now = datetime.now(UTC)
+    source = SimpleNamespace(
+        id="source", name="Images", note="", kind=RepresentationKind.IMAGE,
+        purpose=RepresentationPurpose.SOURCE, active=True, source="managed-import", created_at=now,
+    )
+    binary = SimpleNamespace(
+        id="binary", name="Binary", note="", kind=RepresentationKind.IMAGE,
+        purpose=RepresentationPurpose.BINARY, active=True, source_image_representation_id="source",
+        created_at=now,
+    )
+
+    def job(job_id, capability, *, state="succeeded", parameters=None, target="source"):
+        return SimpleNamespace(
+            event_type="PluginJobCreated", event_id=f"event:{job_id}", recorded_at=now,
+            actor=SimpleNamespace(display_name="Owner"), payload={
+                "plugin_job_id": job_id, "job": {"layer_id": "layer", "state": state},
+                "manifest": {"layer_id": "layer", "capability": capability,
+                             "target_representation_id": target,
+                             "parameters": {"source_representation_id": "source", **(parameters or {})}},
+            },
+        )
+
+    events = (
+        job("train-job", "dataset.model.train.v1"),
+        SimpleNamespace(event_type="ArtifactVersionCreated", payload={
+            "plugin_job_id": "train-job", "artifact_version_id": "model-version", "sha256": "a" * 64,
+        }),
+        job("managed-binarize", "frames.binary-segment.v2", state="queued",
+            parameters={"model_version_id": "model-version"}, target="binary"),
+        job("file-binarize", "frames.binary-segment.v2", state="queued",
+            parameters={"model_filename": "weights.pth", "model_sha256": "a" * 64}, target="binary"),
+        job("unrelated-file-binarize", "frames.binary-segment.v2", state="queued",
+            parameters={"model_filename": "other.pth", "model_sha256": "b" * 64}, target="binary"),
+    )
+    controller = object.__new__(DesktopController)
+    controller.service = SimpleNamespace(
+        list_representations=lambda *_: (source, binary), history=lambda *_: events,
+        latest_karakal_analysis=lambda *_: None, list_derived_runs=lambda *_: (),
+    )
+
+    edges = controller._pipeline_snapshot("project", "layer").lanes[0].edges
+    for job_id in ("managed-binarize", "file-binarize"):
+        assert ("source", job_id) in edges
+        assert ("train-job:model", job_id) in edges
+    assert ("source", "unrelated-file-binarize") in edges
+    assert ("train-job:model", "unrelated-file-binarize") not in edges

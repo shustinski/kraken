@@ -102,8 +102,9 @@ def _select_representation_in_graph(shell, controller, representation_id, qtbot)
     QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(shell.layers_action).center())
     qtbot.waitUntil(lambda: controller._layer_dialog is not None and controller._layer_dialog.isVisible())
     graph = controller._layer_dialog.graph
-    for lane in graph._snapshot.lanes:
-        graph.expand_lane(lane.lane_id)
+    lane = next(lane for lane in graph._snapshot.lanes
+                if any(str(node.representation_id) == str(representation_id) for node in lane.nodes))
+    graph.expand_lane(lane.lane_id)
     node = next(item for item in graph.graph_scene.items() if getattr(item, "node", None)
                 and str(item.node.representation_id) == str(representation_id))
     graph.fitInView(graph.graph_scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -140,7 +141,8 @@ def test_neuralimage_reuses_verified_training_and_publishes_real_inference(live_
         idempotency_key=key, if_match=revision)
     target = remote.create_representation(principal=principal, project=project, layer=layer,
         name=f"Actual NeuralImage inference {uuid4().hex[:6]}", kind=RepresentationKind.IMAGE,
-        purpose=RepresentationPurpose.BINARY, idempotency_key=str(uuid4()))
+        purpose=RepresentationPurpose.BINARY,
+        source_image_representation_id=state["image_representation_id"], idempotency_key=str(uuid4()))
     job = remote.submit_plugin_job(principal=principal, gateway=None, project_id=project.id, layer_id=layer.id,
         source_representation_id=state["image_representation_id"], target_representation_id=target.id,
         coordinates=[(1, 1), (2, 1)], capability="frames.binary-segment.v2",

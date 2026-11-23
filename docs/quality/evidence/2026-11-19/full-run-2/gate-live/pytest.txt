@@ -1,0 +1,945 @@
+﻿python.exe : Timeout (0:01:00)!
+At D:\code\kraken\scripts\quality-gates.ps1:231 char:13
++             & $Exe @Arguments 2>&1 | Out-File -LiteralPath $LogFile - ...
++             ~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Timeout (0:01:00)!:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Thread 0x00016a6c [Thread-24 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 242 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00012ae0 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00017aa0 [Thread-23 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00012168 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 47 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\composition\catalog.py", line 555 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 135 in _resume_agent_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\create_project.py", line 110 in create_project
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 46 in click
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in <lambda>
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 96 in modal
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in _create_server_project
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_work_flow.py", line 167 in test_s12_two_users_issue_work_mywork_a
+ccept_reissue
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:01:00)!
+Thread 0x00018bec [Thread-25 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001a23c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 47 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\composition\catalog.py", line 555 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 135 in _resume_agent_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\create_project.py", line 110 in create_project
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 46 in click
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in <lambda>
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 96 in modal
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in _create_server_project
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_work_flow.py", line 273 in test_s12_issue_without_folder_rejected
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:01:00)!
+Thread 0x00019080 [Thread-26 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00019928 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 47 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\composition\catalog.py", line 555 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 135 in _resume_agent_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\create_project.py", line 110 in create_project
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 46 in click
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in <lambda>
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 96 in modal
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in _create_server_project
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_work_flow.py", line 291 in test_s12_review_return_without_folder_
+rejected
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:01:00)!
+Thread 0x00017f14 [Thread-27 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00019018 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 47 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\composition\catalog.py", line 555 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 135 in _resume_agent_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\create_project.py", line 110 in create_project
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 46 in click
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in <lambda>
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 96 in modal
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in _create_server_project
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_work_flow.py", line 306 in test_s12_observer_cannot_see_private_p
+roject_until_role
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:01:00)!
+Thread 0x000126b0 [Thread-28 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00014ae8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 47 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\composition\catalog.py", line 555 in plugin_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 135 in _resume_agent_jobs
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\create_project.py", line 110 in create_project
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 46 in click
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in <lambda>
+  File "D:\code\kraken\tests\test_live_ui_workflow.py", line 96 in modal
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_layers.py", line 122 in _create_server_project
+  File "D:\code\kraken\tests\test_beta_palette_hub_ui_work_flow.py", line 326 in test_s12_work_plan_recovery_setup_and_
+export
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:01:00)!
+Thread 0x00018cdc [kraken-thumbnail-cache-2] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 369 in wait
+  File "C:\Program Files\Python314\Lib\queue.py", line 199 in get
+  File "D:\code\kraken\src\kraken_core\frame_matrix\cache.py", line 137 in _worker
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000b664 [kraken-thumbnail-cache-1] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 369 in wait
+  File "C:\Program Files\Python314\Lib\queue.py", line 199 in get
+  File "D:\code\kraken\src\kraken_core\frame_matrix\cache.py", line 137 in _worker
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018b70 [kraken-thumbnail-cache-0] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 369 in wait
+  File "C:\Program Files\Python314\Lib\queue.py", line 199 in get
+  File "D:\code\kraken\src\kraken_core\frame_matrix\cache.py", line 137 in _worker
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018a94 [Thread-16 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0001983c [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x00018d48 [Thread-15 (_send_ping)] (most recent call first):
+  File "C:\Program Files\Python314\Lib\threading.py", line 373 in wait
+  File "C:\Program Files\Python314\Lib\threading.py", line 670 in wait
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 244 in _send_ping
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x000190c8 [kraken-remote-ws] (most recent call first):
+  File "C:\Program Files\Python314\Lib\selectors.py", line 305 in _select
+  File "C:\Program Files\Python314\Lib\selectors.py", line 314 in select
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_dispatcher.py", line 79 in read
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 432 in initialize_socket
+  File "D:\code\kraken\.venv\Lib\site-packages\websocket\_app.py", line 556 in run_forever
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\remote_sync_client.py", line 159 in _run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1024 in run
+  File "C:\Program Files\Python314\Lib\threading.py", line 1082 in _bootstrap_inner
+  File "C:\Program Files\Python314\Lib\threading.py", line 1044 in _bootstrap
+
+Thread 0x0000fecc (most recent call first):
+  File "C:\Program Files\Python314\Lib\socket.py", line 725 in readinto
+  File "C:\Program Files\Python314\Lib\http\client.py", line 297 in _read_status
+  File "C:\Program Files\Python314\Lib\http\client.py", line 336 in begin
+  File "C:\Program Files\Python314\Lib\http\client.py", line 1450 in getresponse
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1325 in do_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 1350 in http_open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 464 in _call_chain
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 504 in _open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 487 in open
+  File "C:\Program Files\Python314\Lib\urllib\request.py", line 187 in urlopen
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\request.py", line 42 in request
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\call.py", line 53 in _call
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\list_layers.py", line 26 in list_projects
+  File "D:\code\kraken\src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py", line 46 in plugin_jobs
+  File "D:\code\kraken\tests\test_live_server_worker_acceptance.py", line 233 in test_contour_machine_worker_publishes_
+versions_and_hub_reopens
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 166 in pytest_pyfunc_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\python.py", line 1720 in runtest
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 179 in pytest_runtest_call
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 245 in <lambda>
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 353 in from_call
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 244 in call_and_report
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 137 in runtestprotocol
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\runner.py", line 118 in pytest_runtest_protocol
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 396 in pytest_runtestloop
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 372 in _main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 318 in wrap_session
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\main.py", line 365 in pytest_cmdline_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_callers.py", line 121 in _multicall
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_manager.py", line 120 in _hookexec
+  File "D:\code\kraken\.venv\Lib\site-packages\pluggy\_hooks.py", line 512 in __call__
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 199 in main
+  File "D:\code\kraken\.venv\Lib\site-packages\_pytest\config\__init__.py", line 223 in console_main
+  File "D:\code\kraken\.venv\Lib\site-packages\pytest\__main__.py", line 9 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+...................F................EEE.Fs.................              [100%]
+=================================== ERRORS ====================================
+_ ERROR at setup of test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal] _
+
+request = <SubRequest 'live_chain' for <Function test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]>>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_karakal_hub_dialog_runs_m0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+>           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'karakal_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError
+_ ERROR at setup of test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch] _
+
+request = <SubRequest 'live_chain' for <Function test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]>>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_stitch_real_file_dialog_m0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+>           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'stitch_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError
+_ ERROR at setup of test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch] _
+
+request = <SubRequest 'live_chain' for <Function test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]>>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_stitch_hub_reread_only_op0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+>           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'stitch_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError
+================================== FAILURES ===================================
+_______ test_s10_local_delete_rejects_partial_name_then_removes_project _______
+CALL ERROR: Exceptions caught in Qt event loop:
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+---------------------------- Captured stderr call -----------------------------
+Exceptions caught in Qt event loop:
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+Exceptions caught in Qt event loop:
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+__ test_server_pipeline_training_recognition_reviews_and_reports_through_ui ___
+
+live_ui = namespace(controller=<kraken_hub.presentation.qt.manager_app.DesktopController object at 0x000002176B5489E0>, remote=<...'D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_server_pipeline_training_0'))
+qtbot = <pytestqt.qtbot.QtBot object at 0x000002176B53F1D0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002176B5898D0>
+
+    def test_server_pipeline_training_recognition_reviews_and_reports_through_ui(live_ui, qtbot, monkeypatch):
+        ui = live_ui
+        controller = ui.controller
+        name = f"UI acceptance {uuid4().hex[:8]}"
+    
+        def create(dialog):
+            dialog.findChild(QLineEdit, "projectName").setText(name)
+            storage = dialog.findChild(QComboBox)
+            storage.setCurrentIndex(next(i for i in range(storage.count()) if storage.itemText(i) == "Сервер"))
+            accept_dialog(dialog)
+    
+        modal(lambda: click(controller.catalog_page, "Создать проект"), create)
+        project = next(project for project in ui.remote.list_projects() if project.name == name)
+        catalog = controller.catalog_page
+        model, view = catalog.project_model, catalog.project_list
+        index = next(i for i in range(model.rowCount()) if model.index(i, 0).data() == name)
+        view.setCurrentIndex(model.index(index, 0))
+        QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.visualRect(model.index(index, 0)).center())
+        qtbot.waitUntil(lambda: controller._workspace is not None)
+        assert str(controller._project_id) == str(project.id)
+        controller.shell.layers_action.trigger()
+        dialog = controller._layer_dialog
+        assert dialog is not None and dialog.isVisible()
+    
+        def add_layer(layer_dialog):
+            assert isinstance(layer_dialog, LayerCreationDialog)
+            layer_dialog.name_edit.setText("Metal l1")
+            layer_dialog.disk_source.edit.setText(ui.config["source_directory"])
+            QTest.mouseClick(layer_dialog.scan_button, Qt.MouseButton.LeftButton)
+            qtbot.waitUntil(lambda: layer_dialog.scan_result is not None, timeout=30000)
+            assert layer_dialog.scan_result.total_files == 100
+            assert layer_dialog.scan_result.ready
+            # Test both server scanning and linking, without copying the originals.
+            layer_dialog.tabs.setCurrentWidget(layer_dialog.manual_tab)
+            layer_dialog.manual_images.edit.setText(ui.config["source_directory"])
+            accept_dialog(layer_dialog)
+    
+        # Neither checking server roots nor scanning the source is permitted on the
+        # client. Restrict only these paths, leaving client caches and imports usable.
+        original_is_dir = Path.is_dir
+        source = Path(ui.config["source_directory"])
+        workspace = ui.remote.project_workspace(project.id)
+        forbidden = {str(source), workspace.source_project_dir, workspace.derived_project_dir}
+    
+        def is_dir(path):
+            if str(path) in forbidden:
+                pytest.fail(f"Hub checked a server-only directory locally: {path}")
+            return original_is_dir(path)
+    
+        with monkeypatch.context() as patches:
+            patches.setattr(Path, "is_dir", is_dir)
+>           modal(lambda: QTest.mouseClick(dialog.add_layer_button, Qt.MouseButton.LeftButton), add_layer)
+
+tests\test_live_ui_workflow.py:311: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_live_ui_workflow.py:102: in modal
+    raise errors[0]
+tests\test_live_ui_workflow.py:87: in poll
+    fill(dialog)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+layer_dialog = <kraken_manager.presentation.qt.layer_creation.LayerCreationDialog object at 0x000002176B621770>
+
+    def add_layer(layer_dialog):
+        assert isinstance(layer_dialog, LayerCreationDialog)
+        layer_dialog.name_edit.setText("Metal l1")
+        layer_dialog.disk_source.edit.setText(ui.config["source_directory"])
+        QTest.mouseClick(layer_dialog.scan_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: layer_dialog.scan_result is not None, timeout=30000)
+        assert layer_dialog.scan_result.total_files == 100
+>       assert layer_dialog.scan_result.ready
+E       AssertionError: assert False
+E        +  where False = LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')).ready
+E        +    where LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')) = <kraken_manager.presentation.qt.layer_creation.LayerCreationDialog object at 0x000002176B621770>.scan_result
+
+tests\test_live_ui_workflow.py:291: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support raise()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+------------------------------ Captured log call ------------------------------
+ERROR    websocket:_logging.py:77 error from callback <function RemoteSyncClient._run.<locals>.on_message at 0x000002176B22C880>: wrapped C/C++ object of type _RemoteSignalBridge has been deleted
+ERROR    websocket:_logging.py:77 error from callback <function RemoteSyncClient._run.<locals>.on_message at 0x000002176B34E400>: wrapped C/C++ object of type _RemoteSignalBridge has been deleted
+============================== warnings summary ===============================
+tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference[neuralimage]
+tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference[neuralimage]
+  D:\code\kraken\tests\test_live_server_plugin_chain.py:169: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert set(image.convert("L").getdata()) <= {0, 255}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_live_ui_workflow.py:409: Set KRAKEN_UI_REOPEN_PROJECT to a completed pipeline's project.json
+ERROR tests/test_live_server_plugin_chain.py::test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]
+ERROR tests/test_live_server_plugin_chain.py::test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]
+ERROR tests/test_live_server_plugin_chain.py::test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]
+FAILED tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_local_delete_rejects_partial_name_then_removes_project
+FAILED tests/test_live_ui_workflow.py::test_server_pipeline_training_recognition_reviews_and_reports_through_ui
+2 failed, 53 passed, 1 skipped, 2 warnings, 3 errors in 1613.38s (0:26:53)

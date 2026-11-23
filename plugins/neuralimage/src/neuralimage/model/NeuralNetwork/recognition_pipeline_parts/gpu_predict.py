@@ -10,6 +10,25 @@ import torch.nn.functional as F
 from neuralimage.uncertainty.config import UncertaintyConfig
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 
+def _agent_debug_log(location: str, message: str, data: dict[str, Any], hypothesis_id: str) -> None:
+    # region agent log
+    try:
+        import json
+        import time
+        payload = {
+            'sessionId': 'ab6658',
+            'hypothesisId': hypothesis_id,
+            'location': location,
+            'message': message,
+            'data': data,
+            'timestamp': int(time.time() * 1000),
+        }
+        with open(r'd:\code\kraken\.cursor\debug-ab6658.log', 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, default=str) + '\n')
+    except Exception:
+        pass
+    # endregion
+
 def gpu_predict(
     img: dict[str, Any],
     model: nn.Module,
@@ -25,6 +44,21 @@ def gpu_predict(
     variance_image = np.zeros_like(img['cutted_image'])
     disagreement_image = np.zeros_like(img['cutted_image'])
     parts_in_image = len(img['cutted_image'])
+    written_mask = np.zeros(parts_in_image, dtype=np.uint8)
+    # region agent log
+    _agent_debug_log(
+        'gpu_predict.py:entry',
+        'inference batch start',
+        {
+            'parts': int(parts_in_image),
+            'batch_size': int(batch_size),
+            'cut_shape': list(getattr(img['cutted_image'], 'shape', [])),
+            'device': str(device),
+            'remainder': int(parts_in_image % max(int(batch_size), 1)),
+        },
+        'B',
+    )
+    # endregion
 
     source_batches = img['cutted_image']
     if torch.is_tensor(source_batches):
@@ -399,6 +433,34 @@ def gpu_predict(
 
             predictions = outputs.detach().cpu().numpy()
             confidence_predictions = confidence_outputs.detach().cpu().numpy()
+            # region agent log
+            requested = int(end - start)
+            sample_max = []
+            if predictions.ndim >= 1:
+                flat_count = int(predictions.shape[0])
+                for sample_index in range(min(flat_count, requested)):
+                    sample_max.append(float(np.max(predictions[sample_index])))
+            out_batch = int(predictions.shape[0]) if getattr(predictions, 'ndim', 0) >= 1 else 0
+            black_samples = int(sum(value <= 1e-6 for value in sample_max))
+            shape_match = list(predictions.shape) == list(predicted_image[start:end].shape)
+            if batch_index == 0 or end == parts_in_image or black_samples or not shape_match or out_batch != requested:
+                _agent_debug_log(
+                    'gpu_predict.py:batch',
+                    'batch forward result',
+                    {
+                        'start': int(start),
+                        'end': int(end),
+                        'requested': requested,
+                        'pred_shape': list(predictions.shape),
+                        'out_batch': out_batch,
+                        'shape_match': shape_match,
+                        'black_samples': black_samples,
+                        'sample_max_head': [round(value, 6) for value in sample_max[:8]],
+                        'is_last': bool(end == parts_in_image),
+                    },
+                    'A',
+                )
+            # endregion
             batch_min = float(np.min(predictions))
             batch_max = float(np.max(predictions))
             batch_mean = float(np.mean(predictions))
@@ -408,11 +470,41 @@ def gpu_predict(
             processed_batches += 1
             predicted_image[start:end] = predictions[: end - start]
             confidence_image[start:end] = confidence_predictions[: end - start]
+            written_mask[start:end] = 1
             if batch_variance is not None:
                 variance_image[start:end] = batch_variance.detach().cpu().numpy()[: end - start]
             if batch_disagreement is not None:
                 disagreement_image[start:end] = batch_disagreement.detach().cpu().numpy()[: end - start]
 
+    # region agent log
+    unwritten = np.flatnonzero(written_mask == 0)
+    patch_max = np.max(predicted_image.reshape(int(parts_in_image), -1), axis=1) if parts_in_image else np.zeros(0)
+    black_indexes = np.flatnonzero(patch_max <= 1e-6)
+    source_for_compare = np.asarray(img['cutted_image'])
+    source_max = (
+        np.max(source_for_compare.reshape(int(parts_in_image), -1), axis=1)
+        if parts_in_image and source_for_compare.shape[0] == parts_in_image
+        else np.zeros(0)
+    )
+    _agent_debug_log(
+        'gpu_predict.py:summary',
+        'inference batch coverage',
+        {
+            'parts': int(parts_in_image),
+            'written': int(written_mask.sum()),
+            'unwritten': int(unwritten.size),
+            'unwritten_head': [int(value) for value in unwritten[:16]],
+            'black_patches': int(black_indexes.size),
+            'black_patch_head': [int(value) for value in black_indexes[:16]],
+            'black_input_max_head': [
+                round(float(source_max[int(index)]), 6)
+                for index in black_indexes[:8]
+                if int(index) < int(source_max.shape[0])
+            ],
+        },
+        'B',
+    )
+    # endregion
     img['predicted_image'] = predicted_image
     img['confidence_image'] = confidence_image
     if (

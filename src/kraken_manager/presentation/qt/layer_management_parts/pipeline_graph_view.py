@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from typing import Callable
-from PyQt6.QtCore import QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from kraken_core.settings import QSettings
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
@@ -76,6 +76,7 @@ class PipelineGraphView(QGraphicsView):
         if snapshot is None:
             return
         y = 30.0
+        occupied: list[QRectF] = []
         for lane in snapshot.lanes:
             visible_nodes = list(lane.nodes)
             visible_edges = list(lane.edges)
@@ -122,7 +123,12 @@ class PipelineGraphView(QGraphicsView):
                     item.setPos(saved)
                 else:
                     item.setPos(35 + column * 245, y)
+                # A new node can inherit the column of an older saved node
+                # after the pipeline grows. Keep both blocks reachable.
+                while any(item.sceneBoundingRect().intersects(bounds) for bounds in occupied):
+                    item.moveBy(245, 0)
                 self.graph_scene.addItem(item)
+                occupied.append(item.sceneBoundingRect())
                 self._items[node.node_id] = item
             for source_id, target_id in visible_edges:
                 source, target = self._items.get(source_id), self._items.get(target_id)

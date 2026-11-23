@@ -1,0 +1,51 @@
+{
+  "base_report": "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\coverage-base-report.json",
+  "new_junit": [
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-e2e\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-gui\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-integration\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-live\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-registry\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-regression\\junit(1).xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-regression\\junit(2).xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-smoke\\junit.xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-unit\\junit(1).xml",
+    "D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-1\\gate-unit\\junit(2).xml"
+  ],
+  "base_pass": [
+    "HUB-ADD-LAYER",
+    "HUB-ADD-PERFORMER",
+    "HUB-ADD-REPRESENTATION",
+    "HUB-CREATE-PROJECT",
+    "HUB-DELETE-PERFORMER",
+    "HUB-EDIT-PERFORMER",
+    "HUB-ISSUE-WORK",
+    "HUB-LAYER-CONTEXT",
+    "HUB-PROJECT-ROLES",
+    "HUB-REVIEW-RETURN",
+    "HUB-STATISTICS",
+    "PERSISTENT-GATEWAY-UPLOAD",
+    "SRV-ARTIFACTS",
+    "SRV-HEALTH-SESSION",
+    "SRV-PRINCIPALS"
+  ],
+  "regressions": [],
+  "newly_not_tested": [],
+  "verdicts": {
+    "HUB-ADD-LAYER": "PASS",
+    "HUB-ADD-PERFORMER": "PASS",
+    "HUB-ADD-REPRESENTATION": "PASS",
+    "HUB-CREATE-PROJECT": "PASS",
+    "HUB-DELETE-PERFORMER": "PASS",
+    "HUB-EDIT-PERFORMER": "PASS",
+    "HUB-ISSUE-WORK": "PASS",
+    "HUB-LAYER-CONTEXT": "PASS",
+    "HUB-PROJECT-ROLES": "PASS",
+    "HUB-REVIEW-RETURN": "PASS",
+    "HUB-STATISTICS": "PASS",
+    "PERSISTENT-GATEWAY-UPLOAD": "PASS",
+    "SRV-ARTIFACTS": "PASS",
+    "SRV-HEALTH-SESSION": "PASS",
+    "SRV-PRINCIPALS": "PASS"
+  }
+}

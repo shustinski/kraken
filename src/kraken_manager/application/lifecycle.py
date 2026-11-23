@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
@@ -288,6 +289,10 @@ class ReorderLayersHandler(_LifecycleHandler):
                     event_type=self.event_type,
                     payload={"layer": _layer_payload(layer), "layer_ids": order_payload},
                 )
+                # Postgres records one command key per project. Later layer
+                # events of this same command must not insert that key again.
+                if events_by_stream:
+                    event = replace(event, idempotency_key=None)
                 events_by_stream.append((stream, by_id[layer.id].revision, event))
             for stream, revision, event in events_by_stream:
                 uow.event_store.append(stream, expected_revision=revision, events=(event,))

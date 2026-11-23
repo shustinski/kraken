@@ -44,6 +44,10 @@ blob_root = "blobs"
 source_root = "source"
 derived_root = "derived"
 
+# Необязательный каталог публикации обновлений Hub, Contour и NeuralImage.
+# [updates]
+# root = "updates"
+
 [blob_gateway]
 # false — сервер сам проксирует файлы через Python API.
 # true — гигабайтные объекты идут в Rust gateway по HMAC-разрешению.

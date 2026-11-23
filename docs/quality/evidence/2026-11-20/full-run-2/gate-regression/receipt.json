@@ -1,0 +1,55 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-20T14:46:00.5496451Z",
+    "tier":  "regression",
+    "command":  [
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/offline/test_pytorch_resolution.py tests/test_alembic_env_logger_isolation.py tests/test_create_project_dialog_retry.py tests/test_cuda_gate_utility.py tests/test_deletion_confirmation.py tests/test_hub_embedded_service.py tests/test_hub_resume_remote_failure.py tests/test_karakal_agent_headless.py tests/test_layer_creation_dialog.py tests/test_local_auth.py tests/test_metadata_layer_deletion.py tests/test_pipeline_stitch_live_content.py tests/test_plugin_app_v1_bridges.py tests/test_project_create_idempotency.py tests/test_quality_dialog.py tests/test_registered_principal_before_session.py tests/test_remaining_qt_acceptance.py tests/test_server_managed_upload_preflight.py tests/test_server_workspace_inputs_parts/interactive_contour_opens.py tests/test_statistics_reports.py tests/test_two_root_service.py tests/test_workspace_files.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-regression(1) --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-regression\\junit(1).xml",
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit/test_frame_asset_sync.py plugins/contour/tests/unit/test_frame_switch_profiler.py plugins/contour/tests/unit/test_frames_per_row_launch.py plugins/contour/tests/unit/test_kraken_return.py plugins/contour/tests/unit/test_settings_store.py --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-regression(2) --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-regression\\junit(2).xml"
+                ],
+    "exit_code":  0,
+    "tests":  185,
+    "passed":  185,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  77.866,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/offline/test_pytorch_resolution.py tests/test_alembic_env_logger_isolation.py tests/test_create_project_dialog_retry.py tests/test_cuda_gate_utility.py tests/test_deletion_confirmation.py tests/test_hub_embedded_service.py tests/test_hub_resume_remote_failure.py tests/test_karakal_agent_headless.py tests/test_layer_creation_dialog.py tests/test_local_auth.py tests/test_metadata_layer_deletion.py tests/test_pipeline_stitch_live_content.py tests/test_plugin_app_v1_bridges.py tests/test_project_create_idempotency.py tests/test_quality_dialog.py tests/test_registered_principal_before_session.py tests/test_remaining_qt_acceptance.py tests/test_server_managed_upload_preflight.py tests/test_server_workspace_inputs_parts/interactive_contour_opens.py tests/test_statistics_reports.py tests/test_two_root_service.py tests/test_workspace_files.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-regression(1) --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-regression\\junit(1).xml",
+                     "exit_code":  0,
+                     "tests":  149,
+                     "passed":  149,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  76.915,
+                     "junit":  "junit(1).xml",
+                     "log":  "pytest(1).txt",
+                     "note":  ""
+                 },
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit/test_frame_asset_sync.py plugins/contour/tests/unit/test_frame_switch_profiler.py plugins/contour/tests/unit/test_frames_per_row_launch.py plugins/contour/tests/unit/test_kraken_return.py plugins/contour/tests/unit/test_settings_store.py --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-regression(2) --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-regression\\junit(2).xml",
+                     "exit_code":  0,
+                     "tests":  36,
+                     "passed":  36,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  0.951,
+                     "junit":  "junit(2).xml",
+                     "log":  "pytest(2).txt",
+                     "note":  ""
+                 }
+             ]
+}

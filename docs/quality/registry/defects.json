@@ -10,10 +10,7 @@
         "tests/test_project_create_idempotency.py",
         "tests/test_create_project_dialog_retry.py"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/d1-review-red-edges.txt",
-        "docs/quality/evidence/2026-11-01/d1-review-green.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "Создать локальный проект «Аудит» с ключом project-audit и повторить create_project с тем же ключом, именем и размерами — FileExistsError: папка уже существует."
     },
@@ -55,8 +52,6 @@
         "tests/test_karakal_agent_headless.py"
       ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/d4-red.txt",
-        "docs/quality/evidence/2026-11-01/d4-ui-red.txt",
         "docs/quality/evidence/2026-11-01/d4-focused.txt"
       ],
       "fixed_in": "",
@@ -87,10 +82,7 @@
         "tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history"
       ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/statistics-red.txt",
-        "docs/quality/evidence/2026-11-01/statistics-csv-red.txt",
-        "docs/quality/evidence/2026-11-01/statistics-verified.txt",
-        "docs/quality/evidence/2026-11-01/review.md"
+        "docs/quality/evidence/2026-11-01/statistics-verified.txt"
       ],
       "fixed_in": "",
       "repro": "commit_managed_import двух кадров — расчёт показывает 0 импортированных файлов; экспорт CSV падает: Object of type mappingproxy is not JSON serializable."
@@ -104,11 +96,7 @@
       "regression_tests": [
         "tests/test_hub_resume_remote_failure.py::test_resume_survives_jobs_http_failure_and_can_retry"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/hub-resume-red.txt",
-        "docs/quality/evidence/2026-11-01/hub-resume-green.txt",
-        "docs/quality/evidence/2026-11-01/schema-upgrade-working.json"
-      ],
+      "evidence": [],
       "fixed_in": "f749893",
       "repro": "На сервере со старой схемой _resume_agent_jobs: выбор active выполнялся вне try, исключение выходило из QTimer callback, процесс завершался с 0xc0000409."
     },
@@ -122,9 +110,7 @@
         "tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version"
       ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/upload-preflight-red.txt",
-        "docs/quality/evidence/2026-11-01/upload-preflight-green.txt",
-        "docs/quality/evidence/2026-11-01/upload-preflight-junit.xml"
+        "docs/quality/evidence/2026-11-01/upload-preflight-green.txt"
       ],
       "fixed_in": "393bca4",
       "repro": "Первый persistent upload после унификации команд: preflight вызывался как атрибут handler — AttributeError function.preflight и HTTP500."
@@ -168,12 +154,7 @@
       "regression_tests": [
         "tests/test_server_workspace_inputs.py::test_interactive_contour_opens_with_images_and_returns_results"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-09/interactive_contour_repro.txt",
-        "docs/quality/evidence/2026-11-09/manual_worker_run.txt",
-        "docs/quality/evidence/2026-11-09/interactive_contour_green.txt",
-        "docs/quality/evidence/2026-11-09/neighbor_suites_green.txt"
-      ],
+      "evidence": [],
       "fixed_in": "103cce1",
       "repro": "На машине, где профиль Contour содержит paths/cif_directory: pytest tests/test_server_workspace_inputs.py -q -k interactive_contour — 6 тестов FAIL, subprocess завершается с 0 без result.json."
     },
@@ -186,9 +167,7 @@
       "regression_tests": [
         "plugins/contour/tests/unit/test_frame_switch_profiler.py::FrameSwitchProfilerTests::test_conflict_detection_matches_the_real_cpython_slot_error"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-09/manual_worker_run.txt"
-      ],
+      "evidence": [],
       "fixed_in": "f260105",
       "repro": "В процессе, где слот cProfile-профайлера уже занят, конвертация изображений редактора с профайлингом логирует ERROR: ValueError: tool 2 is already in use (CPython 3.13+)."
     },
@@ -230,10 +209,7 @@
         "plugins/contour/tests/unit/test_frame_asset_sync.py::FrameAssetSyncTests::test_index_selected_cif_file_paths_requires_existing_files",
         "plugins/contour/tests/unit/test_frames_per_row_launch.py::FramesPerRowLaunchTests::test_open_command_forwards_project_width_and_does_not_invent_one"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d15-red.txt",
-        "docs/quality/evidence/2026-11-10/d15-green.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "Прогон unit-слоя quality-гейта (scripts/quality-gates.ps1 -Tier unit, коммит 0356120) на машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp) и CUDA-инициализация torch падает: первый вызов слоя (pytest tests) завершается с exit -1073741819 (STATUS_ACCESS_VIOLATION) в torch.cuda.is_available() теста tests/test_pipeline_stitch_live_content.py и не доходит до остальных тестов; второй вызов (plugins/contour/tests/unit) — 2 failed на ассертах путей (short/long форма %TEMP%), 262 passed."
     },
@@ -244,15 +220,11 @@
       "status": "RESOLVED",
       "severity": "minor",
       "regression_tests": [
-        "tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
-        "tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache"
+        "tests/offline/test_offline_sync.py::test_import_keeps_local_commits"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d16-red-offline-sync.txt",
-        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
-      "repro": "На машине без интернета pytest tests/offline/test_offline_sync.py -q -k \"verify_installs_from_transfer_cache or repeated_export_reuses_dependency_cache\" — 2 failed: uv lock / export-режим uv sync не достают https://pypi.org/simple/ (dns error, os error 11001/11002) после 3 ретраев."
+      "repro": "Исторически два теста экспорта требовали живой PyPI и падали в закрытой сети. После упрощения офлайн-переноса (c308edc) эти тесты и прежний verify-режим удалены; действующий тест проверяет перенос git bundle без pyproject.toml и без обращения к PyPI."
     },
     {
       "id": "D17",
@@ -264,10 +236,7 @@
         "tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch",
         "tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d16-red-pytorch.txt",
-        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "На машине, где .venv полностью заполнен (torch==2.12.0+cu132 установлен): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: root-прогон (all-groups all-extras) показывает torch в списке \"Would uninstall\", а workspace-прогон (all-packages) не показывает его вовсе (уже установлен, дифф пуст)."
     },
@@ -281,10 +250,7 @@
         "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif",
         "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d16-red-bridges.txt",
-        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "На машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp): pytest tests/test_plugin_app_v1_bridges.py -q — 2 failed: путь tempfile.TemporaryDirectory() обвязки короткий, а ContourKrakenSession резолвит staging-пути в длинную форму (Path.resolve), и ассерты argv/input_paths расходятся."
     },
@@ -298,10 +264,7 @@
         "tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history",
         "tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d16-red-quality-dialog.txt",
-        "docs/quality/evidence/2026-11-10/d16-green-quality-dialog.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "На Windows pytest tests/test_quality_dialog.py -q — 2 failed в TemporaryDirectory-cleanup (тело теста зелёное): после создания продуктом data\\workspace-source\\new_test\\aux — os.rmdir(new_test) падает WinError 145 «Папка не пуста»."
     },
@@ -316,10 +279,7 @@
         "tests/test_local_auth.py::LocalAccountTests::test_cleanup_waits_for_a_foreign_handle_on_the_database",
         "tests/test_local_auth.py::LocalAccountTests::test_cleanup_retries_when_the_final_rmdir_reports_not_empty"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt",
-        "docs/quality/evidence/2026-11-10/d20-green-foreign-lock.txt"
-      ],
+      "evidence": [],
       "fixed_in": "",
       "repro": "На Windows-машине с on-access антивирусом под нагрузкой: тело test_account_sessions_are_opaque_revocable_and_persistent зелёное, но TemporaryDirectory.__exit__ падает: os.unlink('...\\accounts.sqlite3') — WinError 32 (файл занят другим процессом) либо os.rmdir(tempdir) — WinError 145 «Папка не пуста», т.к. между обходом rmtree и финальным rmdir в каталоге появляется мимолётный ACCOUNTS.SQLITE3-SHM.tmp (создаётся и удаляется внешним процессом; в bundled sqlite3.dll 3.50.4 нет строки '.tmp' вовсе). Воспроизводится стресс-циклом тела теста с CPU-нагрузкой: в %TEMP% — 2-3 падения за ~1500 итераций, в C:\\code\\kraken\\.codex_tmp_scratch\\stressroot — 3 падения за 13 итераций; детерминированные RED-сценарии — docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt."
     },
@@ -350,11 +310,7 @@
       "regression_tests": [
         "tests/test_deletion_confirmation.py::test_folder_removal_deletes_windows_reserved_dos_names"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-18/d22-red-probe.txt",
-        "docs/quality/evidence/2026-11-18/d22-green.txt",
-        "docs/quality/evidence/2026-11-18/gate-integration/receipt.json"
-      ],
+      "evidence": [],
       "fixed_in": "0b6d946",
       "repro": "На Windows: создать проект (продуктовая двухкорневая раскладка всегда содержит каталог категории aux), запросить и выполнить удаление проекта через Admin — ProjectDeletion.execute падает OSError [WinError 145] «Папка не пуста» в kraken_admin.infrastructure.stored_files.remove_stored_path -> shutil.rmtree на .kraken-trash/<request>/0. В интеграционном слое гейта 2026-11-18 (первый прогон со стенда): 6 failed в tests/test_admin_project_workflows.py. Минимальное воспроизведение механизма — shutil.rmtree дерева с aux: выживший элемент ровно aux (d22-red-probe.txt). Тот же класс, что D9/D10/D19, но на продуктовой стороне удаления."
     },
@@ -371,12 +327,120 @@
         "tests/test_alembic_env_logger_isolation.py::test_default_config_preserves_cli_logger_setup",
         "tests/test_alembic_env_logger_isolation.py::test_explicit_configure_logger_true_still_clobbers"
       ],
-      "evidence": [
-        "docs/quality/evidence/2026-11-18/d23-red.txt",
-        "docs/quality/evidence/2026-11-18/d23-green.txt"
-      ],
+      "evidence": [],
       "fixed_in": "b841cfa",
       "repro": "На машине с настроенным KRAKEN_TEST_POSTGRES_URL: прогон tests/test_domain_auth_broker.py совместно с tests/test_qt_harness.py. Тест доменной аутентификации вызывает фикстуру database (Config(\"alembic.ini\") + command.upgrade), env.py вызывает logging.config.fileConfig(alembic.ini), который снимает с root-логгера все обработчики, включая ring-обработчик qt-harness; маркер журнала, поставленный после этого, не доходит до файла свидетельства, и test_failure_capture_produces_artifacts падает (d23-red.txt; в полном гейт-прогоне 2026-11-18 падал unit-слой). После opt-out программных вызовов (attributes={\"configure_logger\": False}) — d23-green.txt. CLI alembic сохраняет прежнее поведение; kraken_server.run_migrations конфиг-файл не передаёт и не затронут."
+    },
+    {
+      "id": "D24",
+      "component": "kraken_server",
+      "title": "Ответ 409 revision.conflict теряет actual_revision для сообщения Expected revision N, found M",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_server_extended_api.py::test_revision_conflict_problem_identifies_entity_and_actual_revision"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "На живом beta-стенде переименовать проект после archive/restore со старым If-Match: HTTP 409 revision.conflict содержит detail 'Expected revision 1, found 4', но actual_revision равен null. До исправления параметризованный тест проходил для 'Expected project revision 3, found 4' и падал для формы без слова project; после исправления обе формы проходят."
+    },
+    {
+      "id": "D25",
+      "component": "kraken_hub",
+      "title": "Окно входа оставляет LDAP-вкладку и другое сообщение об ошибке серверного пароля при domain_auth=false",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_hub_login_window.py::test_login_window_domain_tab_default_and_local_login_completes",
+        "tests/test_hub_login_window.py::test_server_sign_in_rejects_bad_credentials",
+        "tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"
+      ],
+      "fixed_in": "",
+      "repro": "При /api/v1/health domain_auth=false вкладка «Доменная учётная запись» оставалась видимой и выбранной, а неверный серверный пароль показывал «Неверный пароль или учётная запись не найдена на сервере» вместо сообщения блокировки локального входа. HUB-LOGIN-TABBED требует скрыть LDAP-вкладку и то же сообщение блокировки."
+    },
+    {
+      "id": "D26",
+      "component": "kraken_manager",
+      "title": "Перестановка нескольких слоёв повторно записывает ключ идемпотентности и откатывается",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_two_projects_two_layers_each"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
+      ],
+      "fixed_in": "",
+      "repro": "ReorderLayersHandler писал событие LayersReordered в поток каждого слоя с одним ключом идемпотентности. Postgres хранит ключ уникально на проект, поэтому второе событие получало 409 «Idempotency key was already committed», и порядок не менялся. Теперь ключ несёт только первое событие команды. DualCatalogService.list_layers для серверного проекта читает ревизии сервера, а не локальную проекцию."
+    },
+    {
+      "id": "D27",
+      "component": "kraken_hub",
+      "title": "«Моя работа» показывала поручения других исполнителей",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_two_users_issue_work_mywork_accept_reissue"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml"
+      ],
+      "fixed_in": "",
+      "repro": "Список «Моя работа» выводил все поручения проекта, поэтому владелец видел задание, выданное корректору. При известном идентификаторе учётной записи поручения теперь остаются только у исполнителя с тем же principal_id. Пакеты проверки и задания плагинов по-прежнему видны участникам с правами на них."
+    },
+    {
+      "id": "D28",
+      "component": "kraken_server",
+      "title": "Секрет машинного токена с меткой BOM не помещается в заголовок Authorization",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_server_administration.py::test_packaged_configuration_round_trip"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G16/worker-1/junit.xml"
+      ],
+      "fixed_in": "",
+      "repro": "PowerShell передавал токен в protect с ведущим U+FEFF. Заголовок Authorization не кодируется в latin-1, и одноразовый worker не мог взять задание. Чтение секрета и команда protect отбрасывают ведущую метку BOM."
+    },
+    {
+      "id": "D29",
+      "component": "kraken_hub",
+      "title": "Выбор активного изображения в графе слоёв не обновляет матрицу",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_layer_management_features.py::test_selecting_active_image_refreshes_its_new_vector_representations",
+        "tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G19/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-2/junit.xml"
+      ],
+      "fixed_in": "",
+      "repro": "Клик по активному бинарному представлению в графе не менял скрытый image_representation_combo: _load_representations сохранял прежний currentData, и матрица оставалась на исходном изображении. После выбора графом нужный идентификатор устанавливается до обновления списка."
+    },
+    {
+      "id": "D30",
+      "component": "plugins/neuralimage",
+      "title": "Потоковое серверное обучение не читает validation-изображения из источника данных",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_beta_palette_train_live.py::test_g19_server_training_publishes_verified_checkpoint"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G19/run-1/junit-live-train.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-2/junit-live-train.xml"
+      ],
+      "fixed_in": "",
+      "repro": "dataset.model.train.v1 с input_transport=server и validation_source=split принимал ZIP через Gateway, но построение validation export cache читало логический путь dataset/images как локальный файл. Получался FileNotFoundError и failed job. Размеры теперь читаются через asset_source датасета."
     }
   ]
 }

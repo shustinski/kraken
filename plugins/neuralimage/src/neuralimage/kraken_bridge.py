@@ -896,6 +896,7 @@ class NeuralImageTrainSession:
         state.label_folder = str(labels)
         state.result_folder = str(self.output_directory)
         presenter.kraken_dataset_source = self.dataset_source
+        presenter.kraken_training_output_directory = self.output_directory
         if self.dataset_source is not None:
             presenter._calculate_expected_samples()
         menu = window.menuBar().addMenu("Kraken")

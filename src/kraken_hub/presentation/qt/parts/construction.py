@@ -138,6 +138,9 @@ class ConstructionMixin:
         self._sync_timer = QTimer(self.shell)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._drain_live_wakes)
+        stop_sync = getattr(self.service, "stop_sync", None)
+        if callable(stop_sync):
+            self.shell.destroyed.connect(stop_sync)
         self.catalog_page = shell.page("projects")
         assert self.catalog_page is not None
         self.catalog_page.createRequested.connect(self.create_project)

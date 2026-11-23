@@ -26,6 +26,7 @@ from kraken_server.interface.http.routes.reviews import register as register_rev
 from kraken_server.interface.http.routes.session import register as register_session
 from kraken_server.interface.http.routes.work_orders import register as register_work_orders
 from kraken_server.interface.http.routes.work_planning import register_work_planning_routes
+from kraken_server.interface.http.routes.updates import register as register_updates
 from kraken_server.interface.session import SessionPrincipal
 from kraken_server.services import ServerServices
 
@@ -67,6 +68,7 @@ def create_app(
     )
     register_session(context)
     register_auth(context)
+    register_updates(context.app)
     register_projects(context)
     register_commands(context)
     register_layers(context)

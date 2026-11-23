@@ -69,6 +69,10 @@ def build_workflow_parameters(
         requested_context_branch = sem_config.context.enabled
     if requested_context_branch is None:
         requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
+    if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition) and settings.model not in {
+        'quasi_dual_scale_unet', 'FrameUnet', 'UNetWithContextBranch',
+    }:
+        requested_context_branch = False
     model = (
         settings.model
         if work_mode in (WorkMode.train_only, WorkMode.train_and_recognition)

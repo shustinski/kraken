@@ -93,6 +93,8 @@ def test_packaged_configuration_round_trip(tmp_path: Path) -> None:
     database_url = "postgresql+psycopg://kraken:secret@db/kraken"
     protect_secret(database_url, secret)
     assert unprotect_secret(secret) == database_url
+    protect_secret("\ufeff" + database_url, tmp_path / "bom.secret")
+    assert unprotect_secret(tmp_path / "bom.secret") == database_url
 
     config = write_config(
         tmp_path / "server.toml",

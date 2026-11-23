@@ -1,7 +1,10 @@
 from dataclasses import replace
 import hashlib
 from io import BytesIO
+import json
 import os
+from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -163,3 +166,14 @@ def test_actual_headless_training_publishes_real_model_and_applied_workflow(tmp_
 
     loaded = load_model_artifact(model, map_location="cpu")
     assert sum(parameter.numel() for parameter in loaded.parameters()) > 100000
+    receipt_path = os.environ.get("KRAKEN_MODEL_REUSE_RECEIPT")
+    if receipt_path:
+        receipt = Path(receipt_path)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        retained_model = receipt.with_name("verified-bounded-model.pth")
+        shutil.copy2(model, retained_model)
+        receipt.write_text(json.dumps({
+            "path": str(retained_model.resolve()),
+            "sha256": output.sha256,
+            "original_training": {"execution": execution},
+        }, indent=2), encoding="utf-8")

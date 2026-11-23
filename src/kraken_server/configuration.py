@@ -130,7 +130,7 @@ def unprotect_secret(source: Path) -> str:
         raw = payload[len(plain_prefix) :]
     else:
         raise RuntimeError("Kraken Server secret file has an unsupported format")
-    return raw.decode("utf-8")
+    return raw.decode("utf-8").lstrip("\ufeff")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +138,7 @@ class ServerConfig:
     path: Path
     database_url_secret: Path
     blob_root: Path
+    updates_root: Path | None
     source_root: Path
     derived_root: Path
     host: str = "127.0.0.1"
@@ -178,6 +179,9 @@ class ServerConfig:
         server = document.get("server", {})
         database = document.get("database", {})
         storage = document.get("storage", {})
+        updates = document.get("updates", {})
+        if not isinstance(updates, dict):
+            raise ValueError("updates must be a TOML table")
         identity = document.get("identity", {})
         gateway = document.get("blob_gateway", {})
         admission = document.get('compute_admission', {})
@@ -251,6 +255,7 @@ class ServerConfig:
             path=config_path,
             database_url_secret=resolve(database.get("url_secret")),  # type: ignore[arg-type]
             blob_root=resolve(storage.get("blob_root")),  # type: ignore[arg-type]
+            updates_root=resolve(updates.get("root"), required=False),
             source_root=source_root,
             derived_root=derived_root,
             host=str(server.get("host", "127.0.0.1")).strip() or "127.0.0.1",
@@ -304,6 +309,10 @@ class ServerConfig:
         os.environ["KRAKEN_DB_POOL_SIZE"] = str(self.db_pool_size)
         os.environ["KRAKEN_DB_MAX_OVERFLOW"] = str(self.db_max_overflow)
         os.environ["KRAKEN_BLOB_ROOT"] = str(self.blob_root)
+        if self.updates_root is not None:
+            os.environ["KRAKEN_UPDATES_ROOT"] = str(self.updates_root)
+        else:
+            os.environ.pop("KRAKEN_UPDATES_ROOT", None)
         os.environ["KRAKEN_SOURCE_ROOT"] = str(self.source_root)
         os.environ["KRAKEN_DERIVED_ROOT"] = str(self.derived_root)
         os.environ["KRAKEN_PROJECT_ACCESS_MODE"] = self.project_access_mode

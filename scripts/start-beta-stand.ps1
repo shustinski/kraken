@@ -78,6 +78,9 @@ $serverToml = Join-Path $standDir 'server.toml'
 $dbSecret = Join-Path $standDir 'beta-database-url.secret'
 $sessionSecret = Join-Path $standDir 'session.secret'
 $machineSecret = Join-Path $standDir 'machine.secret'
+$datasetSecret = Join-Path $standDir 'dataset.secret'
+$neuralimageSecret = Join-Path $standDir 'neuralimage.secret'
+$extendedSecret = Join-Path $standDir 'extended-machine.secret'
 $pluginsJson = Join-Path $standDir 'worker-plugins.json'
 $liveConfig = Join-Path $standDir 'live-worker-config.json'
 $resultsDir = Join-Path $standDir 'results'
@@ -458,6 +461,167 @@ if (-not $machineTokenId) {
     }
 }
 
+# A second token: dataset preparation is not covered by the vectorize grant.
+$datasetTokenId = ''
+$datasetUsable = (Test-Path -LiteralPath $datasetSecret) -and $state -and $state.dataset_machine_token_id
+if ($datasetUsable) {
+    $listJson = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'list-agent-tokens', '--config', $serverToml, '--json')
+    $stillActive = $false
+    if ($listJson.Exit -eq 0) {
+        try {
+            $tokens = (($listJson.Lines -join "`n") | ConvertFrom-Json).items
+            $stillActive = [bool](@($tokens | Where-Object {
+                $_.token_id -eq [string]$state.dataset_machine_token_id -and -not $_.revoked }).Count -gt 0)
+        }
+        catch { $stillActive = $false }
+    }
+    if ($stillActive) {
+        $datasetTokenId = [string]$state.dataset_machine_token_id
+        Report 'dataset-token' $true "reusing active token $datasetTokenId"
+    }
+}
+if (-not $datasetTokenId) {
+    $created = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'create-agent-token', '--config', $serverToml,
+        '--name', 'beta-stand-dataset', '--capability', 'frames.dataset.prepare.v1')
+    $idMatch = [regex]::Match(($created.Lines -join "`n"), '(?m)^Agent token id: (.+)$')
+    $tokenValue = ''
+    if ($idMatch.Success) {
+        $datasetTokenId = $idMatch.Groups[1].Value.Trim()
+        $promptIndex = [array]::IndexOf($created.Lines, 'Copy this token now; it cannot be shown again:')
+        if ($promptIndex -ge 0) {
+            foreach ($line in $created.Lines[($promptIndex + 1)..($created.Lines.Count - 1)]) {
+                if ($line.Trim()) { $tokenValue = $line.Trim(); break }
+            }
+        }
+    }
+    if ($tokenValue) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $tokenValue | & $python $helper 'protect' --destination $datasetSecret | Out-Null
+            $protectExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $prev
+            $tokenValue = ''
+        }
+        if ($protectExit -eq 0) { Report 'dataset-token' $true "issued frames.dataset.prepare.v1 token $datasetTokenId" }
+        else { Report 'dataset-token' $false 'failed to protect the issued token' }
+    }
+    else {
+        $datasetTokenId = ''
+        Report 'dataset-token' $false 'token was not issued'
+    }
+}
+
+# ---------------------------------------------------------- 9. NeuralImage token
+$neuralimageTokenId = ''
+$neuralimageUsable = (Test-Path -LiteralPath $neuralimageSecret) -and $state -and $state.neuralimage_machine_token_id
+if ($neuralimageUsable) {
+    $listJson = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'list-agent-tokens', '--config', $serverToml, '--json')
+    if ($listJson.Exit -eq 0) {
+        try {
+            $tokens = (($listJson.Lines -join "`n") | ConvertFrom-Json).items
+            if (@($tokens | Where-Object {
+                $_.token_id -eq [string]$state.neuralimage_machine_token_id -and -not $_.revoked }).Count -gt 0) {
+                $neuralimageTokenId = [string]$state.neuralimage_machine_token_id
+                Report 'neuralimage-token' $true "reusing active token $neuralimageTokenId"
+            }
+        }
+        catch { $neuralimageTokenId = '' }
+    }
+}
+if (-not $neuralimageTokenId) {
+    $created = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'create-agent-token', '--config', $serverToml,
+        '--name', 'beta-stand-worker-ni', '--capability', 'frames.binary-segment.v2')
+    $idMatch = [regex]::Match(($created.Lines -join "`n"), '(?m)^Agent token id: (.+)$')
+    $tokenValue = ''
+    if ($idMatch.Success) {
+        $neuralimageTokenId = $idMatch.Groups[1].Value.Trim()
+        $promptIndex = [array]::IndexOf($created.Lines, 'Copy this token now; it cannot be shown again:')
+        if ($promptIndex -ge 0) {
+            foreach ($line in $created.Lines[($promptIndex + 1)..($created.Lines.Count - 1)]) {
+                if ($line.Trim()) { $tokenValue = $line.Trim(); break }
+            }
+        }
+    }
+    if ($tokenValue) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $tokenValue | & $python $helper 'protect' --destination $neuralimageSecret | Out-Null
+            $protectExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $prev
+            $tokenValue = ''
+        }
+        if ($protectExit -eq 0) { Report 'neuralimage-token' $true "issued frames.binary-segment.v2 token $neuralimageTokenId" }
+        else { Report 'neuralimage-token' $false 'failed to protect the issued token' }
+    }
+    else {
+        $neuralimageTokenId = ''
+        Report 'neuralimage-token' $false 'token was not issued'
+    }
+}
+
+# Additional worker capabilities used by the live Karakal and Stitch tests.
+$extendedTokenId = ''
+if ((Test-Path -LiteralPath $extendedSecret) -and $state -and $state.extended_machine_token_id) {
+    $listed = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'list-agent-tokens', '--config', $serverToml, '--json')
+    if ($listed.Exit -eq 0) {
+        try {
+            $tokens = (($listed.Lines -join "`n") | ConvertFrom-Json).items
+            if (@($tokens | Where-Object {
+                $_.token_id -eq [string]$state.extended_machine_token_id -and -not $_.revoked }).Count -gt 0) {
+                $extendedTokenId = [string]$state.extended_machine_token_id
+                Report 'extended-token' $true "reusing active token $extendedTokenId"
+            }
+        }
+        catch { $extendedTokenId = '' }
+    }
+}
+if (-not $extendedTokenId) {
+    $created = Invoke-NativeCapture -Exe $python -Arguments @(
+        '-m', 'kraken_admin', 'create-agent-token', '--config', $serverToml,
+        '--name', 'beta-stand-worker-extended',
+        '--capability', 'karakal.analyze.v1', '--capability', 'layer.stitch.v1')
+    $idMatch = [regex]::Match(($created.Lines -join "`n"), '(?m)^Agent token id: (.+)$')
+    $tokenValue = ''
+    if ($idMatch.Success) {
+        $extendedTokenId = $idMatch.Groups[1].Value.Trim()
+        $promptIndex = [array]::IndexOf($created.Lines, 'Copy this token now; it cannot be shown again:')
+        if ($promptIndex -ge 0) {
+            foreach ($line in $created.Lines[($promptIndex + 1)..($created.Lines.Count - 1)]) {
+                if ($line.Trim()) { $tokenValue = $line.Trim(); break }
+            }
+        }
+    }
+    if ($tokenValue) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $tokenValue | & $python $helper 'protect' --destination $extendedSecret | Out-Null
+            $protectExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $prev
+            $tokenValue = ''
+        }
+        if ($protectExit -eq 0) { Report 'extended-token' $true "issued Karakal/Stitch token $extendedTokenId" }
+        else { Report 'extended-token' $false 'failed to protect the issued token' }
+    }
+    else {
+        $extendedTokenId = ''
+        Report 'extended-token' $false 'token was not issued'
+    }
+}
+
 # ---------------------------------------------------------- 9. agent worker
 $agentPid = $null
 if (-not $WithWorkerAgent) {
@@ -509,6 +673,11 @@ if ($coreOk) {
         server_url = $serverUrl
         session_secret = $sessionSecret
         machine_secret = $machineSecret
+        dataset_machine_secret = $datasetSecret
+        neuralimage_machine_secret = $neuralimageSecret
+        karakal_machine_secret = $extendedSecret
+        stitch_machine_secret = $extendedSecret
+        model_reuse_receipt = (Join-Path $resultsDir 'model-reuse-receipt.json')
         protected_project_id = $projectId
         results_directory = $resultsDir
     } | ConvertTo-Json | Set-Content -LiteralPath $liveConfig -Encoding UTF8
@@ -539,6 +708,9 @@ else {
     beta_password = $betaPassword
     protected_project_id = $projectId
     machine_token_id = $machineTokenId
+    dataset_machine_token_id = $datasetTokenId
+    neuralimage_machine_token_id = $neuralimageTokenId
+    extended_machine_token_id = $extendedTokenId
     live_worker_config = $liveConfig
     env_json = $envJsonPath
 } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8

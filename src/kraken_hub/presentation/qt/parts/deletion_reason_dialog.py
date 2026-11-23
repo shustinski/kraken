@@ -30,11 +30,53 @@ def _deletion_reason_dialog(parent, project_name: str) -> str | None:
         return None
     return reason.text()
 
+def _stop_plugin_processes(processes) -> None:
+    """Stop plugin processes opened from the panel when its window closes."""
+    for process in processes:
+        if getattr(process, "poll", lambda: 0)() is None:
+            process.terminate()
+    for process in processes:
+        wait = getattr(process, "wait", None)
+        if not callable(wait):
+            continue
+        try:
+            wait(timeout=5)
+        except Exception:
+            kill = getattr(process, "kill", None)
+            if callable(kill):
+                kill()
+
+
 def _plugin_panel(items: list[PluginInventoryItem], *, launch_plugin=None):
+    from PyQt6.QtCore import QEvent, QObject
     from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
     host = QWidget()
     layout = QVBoxLayout(host)
+    processes: list = []
+    scroll = QScrollArea()
+
+    class _StopOnClose(QObject):
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+            if event.type() == QEvent.Type.Close:
+                _stop_plugin_processes(processes)
+            return False
+
+    owner = _StopOnClose(scroll)
+    attached: dict[str, object] = {"window": None}
+
+    def start(selected) -> None:
+        if launch_plugin is None:
+            return
+        process = launch_plugin(selected)
+        if process is None:
+            return
+        processes.append(process)
+        window = scroll.window()
+        if window is not None and attached["window"] is not window:
+            window.installEventFilter(owner)
+            attached["window"] = window
+
     for inventory in items:
         plugin = inventory.metadata
         row = QFrame()
@@ -47,11 +89,11 @@ def _plugin_panel(items: list[PluginInventoryItem], *, launch_plugin=None):
         button = QPushButton("Открыть")
         button.setEnabled(launch_plugin is not None and plugin.enabled and (inventory.installed or bool(plugin.source_dir)))
         if launch_plugin is not None:
-            button.clicked.connect(lambda _checked=False, selected=plugin: launch_plugin(selected))
+            button.clicked.connect(lambda _checked=False, selected=plugin: start(selected))
         row_layout.addWidget(button)
         layout.addWidget(row)
     layout.addStretch(1)
-    scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setWidget(host)
+    scroll.plugin_processes = processes
     return scroll

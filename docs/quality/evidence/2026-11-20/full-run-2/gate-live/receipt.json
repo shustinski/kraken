@@ -1,0 +1,38 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-20T15:15:56.9892674Z",
+    "tier":  "live",
+    "command":  [
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_beta_palette_server_api.py tests/test_beta_palette_agent_health.py tests/test_beta_palette_agent_ops.py tests/test_beta_palette_train_live.py tests/test_beta_palette_hub_ui_project_cycle.py tests/test_beta_palette_hub_ui_layers.py tests/test_beta_palette_hub_ui_work_flow.py tests/test_beta_palette_hub_plugins.py tests/test_beta_palette_vectorize_multi.py tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-live --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-live\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  59,
+    "passed":  59,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  1794.63,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_beta_palette_server_api.py tests/test_beta_palette_agent_health.py tests/test_beta_palette_agent_ops.py tests/test_beta_palette_train_live.py tests/test_beta_palette_hub_ui_project_cycle.py tests/test_beta_palette_hub_ui_layers.py tests/test_beta_palette_hub_ui_work_flow.py tests/test_beta_palette_hub_plugins.py tests/test_beta_palette_vectorize_multi.py tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-9af7db03043745cdbe8d401e8351135e\\basetemp-live --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-20\\full-run-2\\gate-live\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  59,
+                     "passed":  59,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  1794.63,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

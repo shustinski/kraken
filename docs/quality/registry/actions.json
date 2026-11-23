@@ -10,8 +10,11 @@
       "error_conditions": ["Второй аккаунт отклоняется: A local account already exists"],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": [
+        "tests/quality/test_s01_local_identity.py::test_s01_first_account_created_and_signed_in",
+        "tests/quality/test_s01_local_identity.py::test_s01_second_account_rejected"
+      ],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S01/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S01/run-2/junit.xml", "docs/quality/evidence/2026-11-19/palette/S01/gui-tier-direct.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -25,8 +28,11 @@
       "error_conditions": ["Неверный пароль или блокировка: «Неверные учётные данные или аккаунт временно заблокирован.»"],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": [
+        "tests/quality/test_s01_local_identity.py::test_s01_local_login_accepts_correct_password",
+        "tests/quality/test_s01_local_identity.py::test_s01_local_login_rejects_wrong_password"
+      ],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S01/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S01/run-2/junit.xml", "docs/quality/evidence/2026-11-19/palette/S01/gui-tier-direct.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -56,12 +62,11 @@
       "side_effects": ["Подключённый клиент сервера (dual catalog)"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_saved_server_reconnect_attaches_server_client"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "Отдельной строки нет; подключение имплицируется в live-блоках (live-catalog, real-project-qt-view), но само действие не принималось"
+      "beta": true
     },
     {
       "id": "HUB-PREFERENCES",
@@ -72,12 +77,11 @@
       "side_effects": ["Изменения QSettings/keyring"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s02_local_preferences.py::test_s02_preferences_dialog_persists_server_url_and_theme"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml", "docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-UPDATE-SOURCE",
@@ -88,12 +92,11 @@
       "side_effects": ["Изменения QSettings"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s02_local_preferences.py::test_s02_update_source_dialog_stores_manifest_url"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml", "docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "Собственного прогона нет; контракт URL/секрета проверен в блоке UPDATER-INSTALL / REMOTE-HTTPS (BLOCKED)"
+      "beta": true
     },
     {
       "id": "HUB-CHECK-UPDATES",
@@ -120,12 +123,11 @@
       "side_effects": ["Изменения QSettings"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s02_local_preferences.py::test_s02_matrix_visual_mode_persisted"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml", "docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-CREATE-PROJECT",
@@ -154,12 +156,11 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "Отдельной строки нет; перечитывание каталога имплицируется в live-catalog, но само действие не принималось"
+      "beta": true
     },
     {
       "id": "HUB-OPEN-PROJECT",
@@ -171,10 +172,8 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/real-project-qt-view.json"
-      ],
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -187,12 +186,11 @@
       "side_effects": ["Привязка двух корней"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s03_local_backup.py::test_s03_bind_workspace_attaches_two_roots"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml", "docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-RENAME-PROJECT",
@@ -204,8 +202,8 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -219,8 +217,8 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -234,8 +232,8 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -249,10 +247,11 @@
       "error_conditions": ["Неполное подтверждение именем отклоняется"],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/live-catalog.txt"
+      "tests": [
+        "tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui",
+        "tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_local_delete_rejects_partial_name_then_removes_project"
       ],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -265,12 +264,11 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-SCAN-INTEGRITY",
@@ -282,8 +280,8 @@
       "error_conditions": ["«Обнаружены ошибки» при повреждённых данных"],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/quality/test_s04_local_administration.py::test_s04_scan_integrity_reports_clean_and_errors"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S04/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S04/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -296,12 +294,11 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s04_local_administration.py::test_s04_admin_refresh_lists_projects_and_audit"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S04/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S04/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-CONFIGURE-ROOTS",
@@ -312,12 +309,11 @@
       "side_effects": ["Изменения QSettings"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/quality/test_s02_local_preferences.py::test_s02_configure_roots_writes_settings"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S02/run-5/junit.xml", "docs/quality/evidence/2026-11-19/palette/S02/run-6/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-EXPORT-BACKUP",
@@ -329,8 +325,8 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/quality/test_s03_local_backup.py::test_s03_export_backup_creates_verified_folder"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml", "docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -344,8 +340,8 @@
       "error_conditions": ["Испорченная копия отклоняется ошибкой проверки"],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/quality/test_s03_local_backup.py::test_s03_import_backup_restores_project", "tests/quality/test_s03_local_backup.py::test_s03_import_corrupted_backup_rejected"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S03/run-3/junit.xml", "docs/quality/evidence/2026-11-19/palette/S03/run-4/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -461,12 +457,16 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_two_variants_switch_primary_and_context_menu"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-REVIEW-RETURN",
@@ -479,9 +479,14 @@
       "tier": "gui",
       "status": "PASS",
       "tests": [
-        "tests/test_remaining_qt_acceptance.py"
+        "tests/test_remaining_qt_acceptance.py",
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_two_users_issue_work_mywork_accept_reissue",
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_review_return_without_folder_rejected"
       ],
-      "evidence": [],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -498,10 +503,15 @@
       "tests": [
         "tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images",
         "tests/test_two_root_service.py::test_png_disk_import_survives_reopen",
-        "tests/test_layer_creation_dialog.py::test_png_scan_is_ready_without_bmp_conversion"
+        "tests/test_layer_creation_dialog.py::test_png_scan_is_ready_without_bmp_conversion",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_two_projects_two_layers_each",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_mixed_png_jpg_scan_blocked",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_use_then_delete_layer_project_stays_readable"
       ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/png-parity.txt"
+        "docs/quality/evidence/2026-11-01/png-parity.txt",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
       ],
       "mandatory": true,
       "beta": true
@@ -515,12 +525,16 @@
       "side_effects": ["Событие порядка слоёв"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_two_projects_two_layers_each"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-LAYER-CONTEXT",
@@ -531,11 +545,15 @@
       "side_effects": ["Зависит от пункта меню"],
       "error_conditions": ["Удаление требует точного имени слоя"],
       "tier": "gui",
-      "status": "PARTIAL",
+      "status": "PASS",
       "tests": [
-        "tests/test_metadata_layer_deletion.py"
+        "tests/test_metadata_layer_deletion.py",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_use_then_delete_layer_project_stays_readable"
       ],
-      "evidence": [],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -548,12 +566,16 @@
       "side_effects": ["Репрезентация в журнале", "Импортированные файлы"],
       "error_conditions": ["Импорт неподдерживаемого вида отклоняется"],
       "tier": "gui",
-      "status": "PARTIAL",
+      "status": "PASS",
       "tests": [
-        "tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images"
+        "tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_two_variants_switch_primary_and_context_menu",
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_unsupported_representation_import_rejected"
       ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/png-parity.txt"
+        "docs/quality/evidence/2026-11-01/png-parity.txt",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
       ],
       "mandatory": true,
       "beta": true
@@ -567,12 +589,16 @@
       "side_effects": ["События жизненного цикла репрезентации"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_ui_layers.py::test_s11_lifecycle_rename_note_activate_archive_deactivate"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S11/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S11/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-LAYER-WORKFLOW",
@@ -619,9 +645,14 @@
       "tier": "gui",
       "status": "PASS",
       "tests": [
-        "tests/test_remaining_qt_acceptance.py"
+        "tests/test_remaining_qt_acceptance.py",
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_two_users_issue_work_mywork_accept_reissue",
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_issue_without_folder_rejected"
       ],
-      "evidence": [],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -634,12 +665,16 @@
       "side_effects": ["Состояния заданий"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_two_users_issue_work_mywork_accept_reissue"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-WORK-PLAN",
@@ -651,9 +686,13 @@
       "error_conditions": [],
       "tier": "gui",
       "status": "PASS",
-      "tests": [],
+      "tests": [
+        "tests/test_beta_palette_hub_ui_work_flow.py::test_s12_work_plan_recovery_setup_and_export"
+      ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/qt-acceptance.txt"
+        "docs/quality/evidence/2026-11-01/qt-acceptance.txt",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S12/run-2/junit.xml"
       ],
       "mandatory": true,
       "beta": true
@@ -776,12 +815,16 @@
       "side_effects": ["Запущенный процесс плагина"],
       "error_conditions": [],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_plugins.py::test_s13_plugins_dialog_opens_plugin_process"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/S13/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/S13/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "HUB-STATISTICS",
@@ -833,10 +876,8 @@
       "error_conditions": ["Чужой If-Match — 409 revision.conflict"],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/live-catalog.txt"
-      ],
+      "tests": ["tests/test_beta_palette_server_api.py::test_s05_project_crud_and_revision_conflict"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -866,12 +907,11 @@
       "side_effects": ["Слои и файлы в серверном хранилище"],
       "error_conditions": [],
       "tier": "integration",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_server_api.py::test_s06_layer_routes_full_surface"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В SRV-POSTGRES-PERSISTENT проверены только создание и сохранность слоя; сканирование, импорт, переименование, порядок, архив и удаление серверных слоёв в прогоне не вызывались"
+      "beta": true
     },
     {
       "id": "SRV-REPRESENTATIONS",
@@ -882,12 +922,11 @@
       "side_effects": ["Репрезентации и артефакты"],
       "error_conditions": [],
       "tier": "integration",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_server_api.py::test_s07_representations_import_viewport_and_stale_upload"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S05-S07/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S05-S07/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "SRV-ARTIFACTS",
@@ -918,12 +957,11 @@
       "side_effects": ["События команд в журнале"],
       "error_conditions": ["Отказ без прав — 403"],
       "tier": "integration",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_project_command_accepted_and_forbidden"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан"
+      "beta": true
     },
     {
       "id": "SRV-WEBSOCKET",
@@ -935,10 +973,8 @@
       "error_conditions": [],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/live-catalog.txt"
-      ],
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_websocket_ping_subscribe_unsubscribe"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -951,11 +987,9 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "integration",
-      "status": "PARTIAL",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/real-project-artifact-verification.json"
-      ],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_history_and_statistics"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -968,9 +1002,9 @@
       "side_effects": ["События в журнале проекта"],
       "error_conditions": [],
       "tier": "integration",
-      "status": "PARTIAL",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_notes_checks_package_return"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -984,12 +1018,8 @@
       "error_conditions": ["Неверный токен — 401", "CAS-конфликт — 409", "Дубликат complete — 403"],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/server-acceptance.txt",
-        "docs/quality/evidence/2026-11-01/target-lease-green.txt",
-        "docs/quality/evidence/2026-11-01/live-worker-contour-faults.txt"
-      ],
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_jobs_agent_protocol_error_branches"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -1057,10 +1087,8 @@
       "error_conditions": ["Чужой If-Match — 409"],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [
-        "docs/quality/evidence/2026-11-01/server-domain-remaining.txt"
-      ],
+      "tests": ["tests/test_beta_palette_server_api.py::test_s08_plans_crud_and_revision_conflict"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S08/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S08/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -1110,8 +1138,8 @@
       "error_conditions": ["Запрос без токена отклонён"],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": ["tests/test_beta_palette_agent_health.py::test_s09_agent_health_ok_with_token_and_rejected_without"],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S09/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S09/run-2/junit.xml"],
       "mandatory": true,
       "beta": true
     },
@@ -1145,9 +1173,13 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "smoke",
-      "status": "PARTIAL",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_plugin_cli_smoke.py::test_contour_help_exits_zero"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/gate-smoke/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -1208,9 +1240,13 @@
       "side_effects": [],
       "error_conditions": [],
       "tier": "smoke",
-      "status": "PARTIAL",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_plugin_cli_smoke.py::test_neuralimage_version_exits_zero"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/gate-smoke/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -1309,12 +1345,16 @@
       "preconditions": ["Подключённый клиент Contour"],
       "expected_behavior": "Интерактивные proxy/gateway пути до возврата",
       "side_effects": ["Выборка в реестре задания"],
-      "error_conditions": ["Headless-ветка отвергает frames.dataset.prepare.v1 (ValueError в worker.py)"],
+      "error_conditions": ["Кадр без парного CIF отклоняется с ValueError; ZIP выборки не создаётся"],
       "tier": "gui",
-      "status": "PARTIAL",
-      "tests": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_agent_ops.py::test_g18_interactive_prepare_via_hub_gateway_path",
+        "tests/test_beta_palette_agent_ops.py::test_g18_headless_worker_rejects_unpaired_cif"
+      ],
       "evidence": [
-        "docs/quality/evidence/2026-11-01/server-acceptance.txt"
+        "docs/quality/evidence/2026-11-19/palette/G18/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G18/run-2/junit.xml"
       ],
       "mandatory": true,
       "beta": true
@@ -1329,8 +1369,15 @@
       "error_conditions": ["Нет билета, неверный HMAC, чужая операция, просрочка — 401"],
       "tier": "integration",
       "status": "PASS",
-      "tests": [],
-      "evidence": [],
+      "tests": [
+        "tests/test_blob_gateway.py::test_rust_gateway_streams_python_signed_upload_and_range_download",
+        "tests/test_blob_gateway.py::test_ticket_round_trip_rejects_tampering",
+        "tests/test_blob_gateway.py::test_rust_gateway_survives_restart_returns_same_bytes"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G16/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G16/run-2/junit.xml"
+      ],
       "mandatory": true,
       "beta": true
     },
@@ -1363,12 +1410,14 @@
       "side_effects": ["Зеркальный аккаунт на сервере при первом серверном входе"],
       "error_conditions": ["Неверные учётные данные — то же сообщение блокировки"],
       "tier": "gui",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden",
+        "tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_wrong_server_credentials_blocked_message"
+      ],
+      "evidence": ["docs/quality/evidence/2026-11-19/palette/S10/run-1/junit.xml", "docs/quality/evidence/2026-11-19/palette/S10/run-2/junit.xml"],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "beta": true
     },
     {
       "id": "ADMIN-SERVER-BACKUP-RESTORE",
@@ -1384,7 +1433,7 @@
       "evidence": [],
       "mandatory": true,
       "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "exception_reason": "native backup/restore требует роль с CREATEDB и KRAKEN_TEST_PG_BIN — provisioning вне возможностей закрытой машины; решение заказчика перенести на W4"
     },
     {
       "id": "AGT-OP-VECTORIZE",
@@ -1395,12 +1444,21 @@
       "side_effects": ["Артефакты задания в проекте"],
       "error_conditions": ["Отмена задания, падение плагина — задание помечено failed, проект не испорчен"],
       "tier": "live",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_live_server_worker_acceptance.py::test_contour_machine_worker_publishes_versions_and_hub_reopens",
+        "tests/test_beta_palette_vectorize_multi.py::test_g17_two_layers_vectorized_separately_active_variant",
+        "tests/test_beta_palette_vectorize_multi.py::test_g17_cancel_marks_failed_project_intact",
+        "tests/test_pipeline_live_contour.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G16/worker-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G16/worker-2/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G17/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G17/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "beta": true
     },
     {
       "id": "AGT-OP-DATASET-PREPARE",
@@ -1411,12 +1469,17 @@
       "side_effects": ["Выборка в проекте"],
       "error_conditions": ["Отмена задания, падение плагина — задание помечено failed, проект не испорчен"],
       "tier": "live",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_agent_ops.py::test_g18_dataset_prepare_worker_imports_dataset",
+        "tests/test_beta_palette_agent_ops.py::test_g18_cancel_queued_dataset_job_preserves_project"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G18/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G18/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "beta": true
     },
     {
       "id": "AGT-OP-TRAIN",
@@ -1427,28 +1490,40 @@
       "side_effects": ["Чекпоинт модели в проекте"],
       "error_conditions": ["Отмена задания, падение плагина — задание помечено failed, проект не испорчен"],
       "tier": "live",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_beta_palette_train_live.py::test_g19_server_training_publishes_verified_checkpoint",
+        "tests/test_pipeline_live_neural_model.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G19/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-2/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-1/junit-live-train.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-2/junit-live-train.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "beta": true
     },
     {
       "id": "AGT-OP-BINARY-SEGMENT",
       "surface": "AGT",
-      "entry_point": "Задание агента frames.binary-segment.v1/v2 через --server-url",
+      "entry_point": "Задание агента frames.binary-segment.v2 через --server-url",
       "preconditions": ["Работающие kraken-server и агент, подключённый по --server-url"],
-      "expected_behavior": "Результат импортирован в проект (бинарный CIF)",
-      "side_effects": ["Бинарный CIF в проекте"],
+      "expected_behavior": "Результат импортирован в проект (бинарные PNG-маски)",
+      "side_effects": ["Бинарные PNG-маски в проекте"],
       "error_conditions": ["Отмена задания, падение плагина — задание помечено failed, проект не испорчен"],
       "tier": "live",
-      "status": "NOT_TESTED",
-      "tests": [],
-      "evidence": [],
+      "status": "PASS",
+      "tests": [
+        "tests/test_pipeline_live_neural_model.py",
+        "tests/test_live_server_plugin_chain.py::test_neuralimage_reuses_verified_training_and_publishes_real_inference"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-19/palette/G19/run-1/junit.xml",
+        "docs/quality/evidence/2026-11-19/palette/G19/run-2/junit.xml"
+      ],
       "mandatory": true,
-      "beta": true,
-      "exception_reason": "сценарий ещё не прогнан; палитра W3"
+      "beta": true
     }
   ]
 }

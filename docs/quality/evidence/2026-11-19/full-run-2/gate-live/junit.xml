@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="3" failures="2" skipped="1" tests="59" time="1613.368" timestamp="2026-11-19T17:01:12.860677+03:00" hostname="DESKTOP-ECDP7QC"><testcase classname="tests.test_beta_palette_server_api" name="test_s05_project_crud_and_revision_conflict" time="33.366" /><testcase classname="tests.test_beta_palette_server_api" name="test_s06_layer_routes_full_surface" time="33.403" /><testcase classname="tests.test_beta_palette_server_api" name="test_s07_representations_import_viewport_and_stale_upload" time="34.110" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_project_command_accepted_and_forbidden" time="33.011" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_websocket_ping_subscribe_unsubscribe" time="37.021" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_notes_checks_package_return" time="54.714" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_jobs_agent_protocol_error_branches" time="58.027" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_plans_crud_and_revision_conflict" time="33.631" /><testcase classname="tests.test_beta_palette_server_api" name="test_s08_history_and_statistics" time="34.376" /><testcase classname="tests.test_beta_palette_agent_health" name="test_s09_agent_health_ok_with_token_and_rejected_without" time="1.792" /><testcase classname="tests.test_beta_palette_agent_ops" name="test_g18_dataset_prepare_worker_imports_dataset" time="48.985" /><testcase classname="tests.test_beta_palette_agent_ops" name="test_g18_interactive_prepare_via_hub_gateway_path" time="38.397" /><testcase classname="tests.test_beta_palette_agent_ops" name="test_g18_headless_worker_rejects_unpaired_cif" time="0.013" /><testcase classname="tests.test_beta_palette_agent_ops" name="test_g18_cancel_queued_dataset_job_preserves_project" time="35.489" /><testcase classname="tests.test_beta_palette_train_live" name="test_g19_server_training_publishes_verified_checkpoint" time="58.370" /><testcase classname="tests.test_beta_palette_hub_ui_project_cycle" name="test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden" time="0.411" /><testcase classname="tests.test_beta_palette_hub_ui_project_cycle" name="test_s10_saved_server_reconnect_attaches_server_client" time="0.293" /><testcase classname="tests.test_beta_palette_hub_ui_project_cycle" name="test_s10_wrong_server_credentials_blocked_message" time="8.146" /><testcase classname="tests.test_beta_palette_hub_ui_project_cycle" name="test_s10_project_cycle_through_ui" time="14.961" /><testcase classname="tests.test_beta_palette_hub_ui_project_cycle" name="test_s10_local_delete_rejects_partial_name_then_removes_project" time="11.218"><failure message="Failed: CALL ERROR: Exceptions caught in Qt event loop:&#10;________________________________________________________________________________&#10;Traceback (most recent call last):&#10;  File &quot;D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py&quot;, line 41, in _on_remote_wake&#10;    if not self._sync_timer.isActive():&#10;           ~~~~~~~~~~~~~~~~~~~~~~~~~^^&#10;RuntimeError: wrapped C/C++ object of type QTimer has been deleted&#10;________________________________________________________________________________&#10;Traceback (most recent call last):&#10;  File &quot;D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py&quot;, line 41, in _on_remote_wake&#10;    if not self._sync_timer.isActive():&#10;           ~~~~~~~~~~~~~~~~~~~~~~~~~^^&#10;RuntimeError: wrapped C/C++ object of type QTimer has been deleted&#10;________________________________________________________________________________">CALL ERROR: Exceptions caught in Qt event loop:
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+Traceback (most recent call last):
+  File "D:\code\kraken\src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py", line 41, in _on_remote_wake
+    if not self._sync_timer.isActive():
+           ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+RuntimeError: wrapped C/C++ object of type QTimer has been deleted
+________________________________________________________________________________
+
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()</failure></testcase><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_two_projects_two_layers_each" time="25.359" /><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_two_variants_switch_primary_and_context_menu" time="19.487" /><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_lifecycle_rename_note_activate_archive_deactivate" time="20.881" /><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_use_then_delete_layer_project_stays_readable" time="19.953" /><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_mixed_png_jpg_scan_blocked" time="12.919" /><testcase classname="tests.test_beta_palette_hub_ui_layers" name="test_s11_unsupported_representation_import_rejected" time="16.538" /><testcase classname="tests.test_beta_palette_hub_ui_work_flow" name="test_s12_two_users_issue_work_mywork_accept_reissue" time="259.007" /><testcase classname="tests.test_beta_palette_hub_ui_work_flow" name="test_s12_issue_without_folder_rejected" time="91.475" /><testcase classname="tests.test_beta_palette_hub_ui_work_flow" name="test_s12_review_return_without_folder_rejected" time="92.360" /><testcase classname="tests.test_beta_palette_hub_ui_work_flow" name="test_s12_observer_cannot_see_private_project_until_role" time="68.653" /><testcase classname="tests.test_beta_palette_hub_ui_work_flow" name="test_s12_work_plan_recovery_setup_and_export" time="72.386" /><testcase classname="tests.test_beta_palette_hub_plugins" name="test_s13_plugins_dialog_opens_plugin_process" time="27.499" /><testcase classname="tests.test_beta_palette_vectorize_multi" name="test_g17_two_layers_vectorized_separately_active_variant" time="45.809" /><testcase classname="tests.test_beta_palette_vectorize_multi" name="test_g17_cancel_marks_failed_project_intact" time="27.904" /><testcase classname="tests.test_live_server_plugin_chain" name="test_neuralimage_reuses_verified_training_and_publishes_real_inference[neuralimage]" time="53.454" /><testcase classname="tests.test_live_server_plugin_chain" name="test_neuralimage_hub_reread_only_selects_actual_published_masks[neuralimage]" time="31.319" /><testcase classname="tests.test_live_server_plugin_chain" name="test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]" time="0.277"><error message="failed on setup with &quot;KeyError: 'karakal_machine_secret'&quot;">request = &lt;SubRequest 'live_chain' for &lt;Function test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]&gt;&gt;
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_karakal_hub_dialog_runs_m0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+&gt;           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'karakal_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError</error></testcase><testcase classname="tests.test_live_server_plugin_chain" name="test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]" time="0.209"><error message="failed on setup with &quot;KeyError: 'stitch_machine_secret'&quot;">request = &lt;SubRequest 'live_chain' for &lt;Function test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]&gt;&gt;
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_stitch_real_file_dialog_m0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+&gt;           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'stitch_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError</error></testcase><testcase classname="tests.test_live_server_plugin_chain" name="test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]" time="0.167"><error message="failed on setup with &quot;KeyError: 'stitch_machine_secret'&quot;">request = &lt;SubRequest 'live_chain' for &lt;Function test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]&gt;&gt;
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_stitch_hub_reread_only_op0')
+
+    @pytest.fixture
+    def live_chain(request, tmp_path):
+        filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
+        if not filename:
+            pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for actual plugin chain acceptance")
+        config = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
+        stage = request.param
+        operation, module = {"neuralimage": ("frames.binary-segment.v2", "neuralimage"),
+            "karakal": ("karakal.analyze.v1", "karakal.worker"),
+            "stitch": ("layer.stitch.v1", "kraken_manager.infrastructure.stitch_worker")}[stage]
+        output = Path(config["results_directory"]).parent / "plugin-chain" / stage
+        if "reread_only" in request.node.name:
+            output = output / "reread-only"
+        output.mkdir(parents=True, exist_ok=True)
+        remote = _connect(config, tmp_path / "client")
+        protected = _protected_snapshot(remote, config["protected_project_id"])
+        from kraken_core.settings import configure_settings_directory
+        configure_settings_directory(tmp_path / "settings")
+        worker = ObservedWorker(server_url=config["server_url"],
+&gt;           token=unprotect_secret(Path(config[f"{stage}_machine_secret"])), data_dir=output / "worker",
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            registry=PluginRegistry({operation: PluginProcessSpec(operation, (sys.executable, "-m", module))}))
+E       KeyError: 'stitch_machine_secret'
+
+tests\test_live_server_plugin_chain.py:40: KeyError</error></testcase><testcase classname="tests.test_live_server_worker_acceptance" name="test_contour_machine_worker_publishes_versions_and_hub_reopens" time="87.887" /><testcase classname="tests.test_live_ui_workflow" name="test_server_pipeline_training_recognition_reviews_and_reports_through_ui" time="14.318"><failure message="AssertionError: assert False&#10; +  where False = LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')).ready&#10; +    where LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')) = &lt;kraken_manager.presentation.qt.layer_creation.LayerCreationDialog object at 0x000002176B621770&gt;.scan_result">live_ui = namespace(controller=&lt;kraken_hub.presentation.qt.manager_app.DesktopController object at 0x000002176B5489E0&gt;, remote=&lt;...'D:/code/kraken/.test_runtime/quality-e6ef6173ebdc4f16836bdf000184547e/basetemp-live/test_server_pipeline_training_0'))
+qtbot = &lt;pytestqt.qtbot.QtBot object at 0x000002176B53F1D0&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002176B5898D0&gt;
+
+    def test_server_pipeline_training_recognition_reviews_and_reports_through_ui(live_ui, qtbot, monkeypatch):
+        ui = live_ui
+        controller = ui.controller
+        name = f"UI acceptance {uuid4().hex[:8]}"
+    
+        def create(dialog):
+            dialog.findChild(QLineEdit, "projectName").setText(name)
+            storage = dialog.findChild(QComboBox)
+            storage.setCurrentIndex(next(i for i in range(storage.count()) if storage.itemText(i) == "Сервер"))
+            accept_dialog(dialog)
+    
+        modal(lambda: click(controller.catalog_page, "Создать проект"), create)
+        project = next(project for project in ui.remote.list_projects() if project.name == name)
+        catalog = controller.catalog_page
+        model, view = catalog.project_model, catalog.project_list
+        index = next(i for i in range(model.rowCount()) if model.index(i, 0).data() == name)
+        view.setCurrentIndex(model.index(index, 0))
+        QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.visualRect(model.index(index, 0)).center())
+        qtbot.waitUntil(lambda: controller._workspace is not None)
+        assert str(controller._project_id) == str(project.id)
+        controller.shell.layers_action.trigger()
+        dialog = controller._layer_dialog
+        assert dialog is not None and dialog.isVisible()
+    
+        def add_layer(layer_dialog):
+            assert isinstance(layer_dialog, LayerCreationDialog)
+            layer_dialog.name_edit.setText("Metal l1")
+            layer_dialog.disk_source.edit.setText(ui.config["source_directory"])
+            QTest.mouseClick(layer_dialog.scan_button, Qt.MouseButton.LeftButton)
+            qtbot.waitUntil(lambda: layer_dialog.scan_result is not None, timeout=30000)
+            assert layer_dialog.scan_result.total_files == 100
+            assert layer_dialog.scan_result.ready
+            # Test both server scanning and linking, without copying the originals.
+            layer_dialog.tabs.setCurrentWidget(layer_dialog.manual_tab)
+            layer_dialog.manual_images.edit.setText(ui.config["source_directory"])
+            accept_dialog(layer_dialog)
+    
+        # Neither checking server roots nor scanning the source is permitted on the
+        # client. Restrict only these paths, leaving client caches and imports usable.
+        original_is_dir = Path.is_dir
+        source = Path(ui.config["source_directory"])
+        workspace = ui.remote.project_workspace(project.id)
+        forbidden = {str(source), workspace.source_project_dir, workspace.derived_project_dir}
+    
+        def is_dir(path):
+            if str(path) in forbidden:
+                pytest.fail(f"Hub checked a server-only directory locally: {path}")
+            return original_is_dir(path)
+    
+        with monkeypatch.context() as patches:
+            patches.setattr(Path, "is_dir", is_dir)
+&gt;           modal(lambda: QTest.mouseClick(dialog.add_layer_button, Qt.MouseButton.LeftButton), add_layer)
+
+tests\test_live_ui_workflow.py:311: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_live_ui_workflow.py:102: in modal
+    raise errors[0]
+tests\test_live_ui_workflow.py:87: in poll
+    fill(dialog)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+layer_dialog = &lt;kraken_manager.presentation.qt.layer_creation.LayerCreationDialog object at 0x000002176B621770&gt;
+
+    def add_layer(layer_dialog):
+        assert isinstance(layer_dialog, LayerCreationDialog)
+        layer_dialog.name_edit.setText("Metal l1")
+        layer_dialog.disk_source.edit.setText(ui.config["source_directory"])
+        QTest.mouseClick(layer_dialog.scan_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: layer_dialog.scan_result is not None, timeout=30000)
+        assert layer_dialog.scan_result.total_files == 100
+&gt;       assert layer_dialog.scan_result.ready
+E       AssertionError: assert False
+E        +  where False = LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')).ready
+E        +    where LayerSourceScan(selected_root='D:\\code\\kraken\\.test_runtime\\palette-source', working_directory='D:\\code\\kraken\\...D:\\code\\kraken\\.test_runtime\\palette-source\\099.png', 'D:\\code\\kraken\\.test_runtime\\palette-source\\100.png')) = &lt;kraken_manager.presentation.qt.layer_creation.LayerCreationDialog object at 0x000002176B621770&gt;.scan_result
+
+tests\test_live_ui_workflow.py:291: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support raise()
+QtWarningMsg: This plugin does not support propagateSizeHints()</failure></testcase><testcase classname="tests.test_live_ui_workflow" name="test_reopened_project_reviews_and_reports_through_ui" time="12.318"><skipped type="pytest.skip" message="Set KRAKEN_UI_REOPEN_PROJECT to a completed pipeline's project.json">D:\code\kraken\tests\test_live_ui_workflow.py:409: Set KRAKEN_UI_REOPEN_PROJECT to a completed pipeline's project.json</skipped></testcase><testcase classname="tests.test_pipeline_live_contour" name="test_actual_contour_jobs_follow_pipeline_dependencies_and_publish_exact_versions" time="6.061" /><testcase classname="tests.test_pipeline_live_neural_model" name="test_actual_cpu_training_to_pipeline_model_port_and_inference" time="21.656" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[boolean-epoch]" time="0.001" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[zero-epoch]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[seed]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[foreign-path]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[nan]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[bad-root]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[unknown]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[unsupported-automatic-patience]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_headless_training_configuration_rejects_unsafe_or_invalid_values[unsupported-automatic-restore-policy]" time="0.000" /><testcase classname="tests.test_neuralimage_headless_training" name="test_renaming_training_image_does_not_create_an_independent_validation_set" time="0.018" /><testcase classname="tests.test_neuralimage_headless_training" name="test_training_archive_preflight_rejects_before_extracting_files[member-limit]" time="0.023" /><testcase classname="tests.test_neuralimage_headless_training" name="test_training_archive_preflight_rejects_before_extracting_files[expanded-byte-limit]" time="0.025" /><testcase classname="tests.test_neuralimage_headless_training" name="test_training_archive_preflight_rejects_before_extracting_files[file-directory-conflict]" time="0.024" /><testcase classname="tests.test_neuralimage_headless_training" name="test_training_archive_preflight_rejects_before_extracting_files[case-collision]" time="0.024" /><testcase classname="tests.test_neuralimage_headless_training" name="test_actual_headless_training_publishes_real_model_and_applied_workflow" time="14.066" /></testsuite></testsuites>

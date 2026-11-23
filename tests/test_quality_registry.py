@@ -101,6 +101,18 @@ def test_mandatory_actions_tracked():
     assert not problems, "untracked mandatory actions:\n" + "\n".join(problems)
 
 
+def test_beta_pass_actions_have_resolvable_tests():
+    problems = []
+    for action in _load(ACTIONS_JSON)["actions"]:
+        if not action.get("beta") or action["status"] != "PASS":
+            continue
+        if not action.get("tests"):
+            problems.append(f"{action['id']}: beta PASS action has no test binding")
+        for node_id in action.get("tests", []):
+            problems.extend(f"{action['id']}: {problem}" for problem in resolve_node_id(node_id, REPO_ROOT))
+    assert not problems, "invalid beta PASS bindings:\n" + "\n".join(problems)
+
+
 def _action_record(**overrides) -> dict:
     """A minimal valid synthetic action record; keyword overrides tweak one field."""
     record = {

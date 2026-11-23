@@ -27,6 +27,7 @@ FAST_TEST_FILES = frozenset(
         "test_contact_feedback.py",
         "test_frame_asset_sync.py",
         "test_frame_drop.py",
+        "test_headless_dataset.py",
         "test_frame_layers.py",
         "test_frame_path_list_model.py",
         "test_frame_prefetch.py",

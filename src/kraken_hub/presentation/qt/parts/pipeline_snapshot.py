@@ -75,6 +75,38 @@ class PipelineSnapshotMixin:
             and event.event_id not in removed_action_ids
         ]
         histories = [event for event in histories if event.event_id not in removed_action_ids]
+        dataset_job_ids = {
+            str(event.payload.get("plugin_job_id", ""))
+            for event in histories
+            if event.payload.get("manifest", {}).get("capability") == "frames.dataset.prepare.v1"
+        }
+        dataset_nodes_by_version = {
+            str(event.payload.get("version_id", event.payload.get("artifact_version_id", ""))):
+                f"{event.payload['plugin_job_id']}:dataset"
+            for event in project_history
+            if event.event_type == "ArtifactVersionCreated"
+            and str(event.payload.get("plugin_job_id", "")) in dataset_job_ids
+        }
+        model_job_ids = {
+            str(event.payload.get("plugin_job_id", ""))
+            for event in histories
+            if event.payload.get("manifest", {}).get("capability") == "dataset.model.train.v1"
+        }
+        model_nodes_by_version: dict[str, str] = {}
+        model_nodes_by_hash: dict[str, set[str]] = {}
+        for event in project_history:
+            if event.event_type != "ArtifactVersionCreated":
+                continue
+            job_id = str(event.payload.get("plugin_job_id", ""))
+            if job_id not in model_job_ids:
+                continue
+            model_node_id = f"{job_id}:model"
+            version_id = str(event.payload.get("version_id", event.payload.get("artifact_version_id", "")))
+            if version_id:
+                model_nodes_by_version[version_id] = model_node_id
+            digest = str(event.payload.get("sha256", "")).lower()
+            if digest:
+                model_nodes_by_hash.setdefault(digest, set()).add(model_node_id)
         recorded_job_ids = {
             str(event.payload.get("plugin_job_id", ""))
             for event in project_history
@@ -301,7 +333,28 @@ class PipelineSnapshotMixin:
                         },
                     )
                 )
-                lane_edges.append((str(source.id), job_id))
+                if capability == "dataset.model.train.v1":
+                    dataset_version_id = str(parameters.get("dataset_version_id", ""))
+                    if not dataset_version_id:
+                        inputs = manifest.get("inputs", ())
+                        if inputs:
+                            dataset_version_id = str(inputs[0].get("artifact_version_id", ""))
+                    dataset_node_id = dataset_nodes_by_version.get(dataset_version_id)
+                    if dataset_node_id:
+                        lane_edges.append((dataset_node_id, job_id))
+                else:
+                    lane_edges.append((str(source.id), job_id))
+                if capability == "frames.binary-segment.v2":
+                    input_parameters = manifest.get("parameters", {})
+                    model_version_id = str(input_parameters.get("model_version_id", ""))
+                    model_node_id = model_nodes_by_version.get(model_version_id)
+                    if not model_version_id:
+                        digest = str(input_parameters.get("model_sha256", "")).lower()
+                        matches = model_nodes_by_hash.get(digest, set())
+                        if len(matches) == 1:
+                            model_node_id = next(iter(matches))
+                    if model_node_id:
+                        lane_edges.append((model_node_id, job_id))
                 if output_kind and str(job.get("state", "")) == "succeeded":
                     output_versions = [
                         str(item.payload.get("version_id", item.payload.get("artifact_version_id", "")))

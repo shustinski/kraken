@@ -510,6 +510,15 @@ function Find-BaselineReport {
 # environment). See the header for the detection method.
 $unitIgnores = @(
     # live / UI / opt-in env gates (never run without their environment)
+    'tests/test_beta_palette_server_api.py',
+    'tests/test_beta_palette_agent_health.py',
+    'tests/test_beta_palette_agent_ops.py',
+    'tests/test_beta_palette_train_live.py',
+    'tests/test_beta_palette_hub_ui_project_cycle.py',
+    'tests/test_beta_palette_hub_ui_layers.py',
+    'tests/test_beta_palette_hub_ui_work_flow.py',
+    'tests/test_beta_palette_hub_plugins.py',
+    'tests/test_beta_palette_vectorize_multi.py',
     'tests/test_live_server_plugin_chain.py',        # KRAKEN_LIVE_WORKER_CONFIG
     'tests/test_live_server_worker_acceptance.py',   # KRAKEN_LIVE_WORKER_CONFIG
     'tests/test_live_server_worker_faults.py',       # gated via the acceptance plugin
@@ -598,6 +607,15 @@ $integrationFiles = @(
 # variables are inherited from the caller environment (like the integration
 # tier inherits KRAKEN_TEST_POSTGRES_URL).
 $liveFiles = @(
+    'tests/test_beta_palette_server_api.py',
+    'tests/test_beta_palette_agent_health.py',
+    'tests/test_beta_palette_agent_ops.py',
+    'tests/test_beta_palette_train_live.py',
+    'tests/test_beta_palette_hub_ui_project_cycle.py',
+    'tests/test_beta_palette_hub_ui_layers.py',
+    'tests/test_beta_palette_hub_ui_work_flow.py',
+    'tests/test_beta_palette_hub_plugins.py',
+    'tests/test_beta_palette_vectorize_multi.py',
     'tests/test_live_server_plugin_chain.py',
     'tests/test_live_server_worker_acceptance.py',
     'tests/test_live_ui_workflow.py',
@@ -609,6 +627,10 @@ $liveFiles = @(
 # Offscreen pytest-qt suites (gui tier): the proven `qt` block of
 # reproduce-stabilization.ps1 plus the local layer_* Qt suites.
 $guiFiles = @(
+    'tests/quality/test_s01_local_identity.py',
+    'tests/quality/test_s02_local_preferences.py',
+    'tests/quality/test_s03_local_backup.py',
+    'tests/quality/test_s04_local_administration.py',
     'tests/test_work_planning_dialog.py',
     'tests/test_quality_dialog.py',
     'tests/test_multilayer_dialog.py',
@@ -671,7 +693,7 @@ try {
             $st = $null
             switch ($t) {
                 'smoke' {
-                    $st = Invoke-GateTier -Name 'smoke' -Runs @(@('tests/test_desktop_runtime_smoke.py'))
+                    $st = Invoke-GateTier -Name 'smoke' -Runs @(@('tests/test_desktop_runtime_smoke.py', 'tests/test_plugin_cli_smoke.py'))
                 }
                 'unit' {
                     $unitArgs = @('tests')

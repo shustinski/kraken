@@ -30,8 +30,9 @@
 | regression | PARTIAL | 180/0/5 | 0 |
 | live | PARTIAL | 14/0/11 | 0 |
 
-Coverage-артефакты: `docs/quality/evidence/2026-11-18/coverage-report.json` (+ `.md`,
-`coverage-base-report.json`, `coverage-compare.json`). Сравнение с базой 2026-11-10:
+Coverage-артефакты: `docs/quality/evidence/2026-11-18/coverage-report.json` и `.md`.
+Промежуточные `coverage-base-report.json` и `coverage-compare.json` сняты вместе
+с сырыми журналами слоёв: сравнение уже записано здесь. Сравнение с базой 2026-11-10:
 0 регрессий; 6 newly NOT_TESTED (ADMIN-SERVER-BACKUP-RESTORE, AGT-OP-VECTORIZE,
 AGT-OP-DATASET-PREPARE, AGT-OP-TRAIN, AGT-OP-BINARY-SEGMENT, HUB-LOGIN-TABBED) —
 информационно: строки реестра без автотест-маппинга, гейт не валят.
@@ -108,8 +109,10 @@ staged-дерево `shutil.rmtree`, WinError 145 на каталоге кате
 
 ## Provenance доказательств
 
-Итоговая evidence — единственный согласованный полный прогон 2026-11-18
-(`docs/quality/evidence/2026-11-18/**`; слой при перезапуске затирает stale-junit).
+Итоговая evidence того прогона — `docs/quality/evidence/2026-11-18/coverage-report.json`
+(и `.md`). Сырые junit и pytest слоёв 2026-11-10 и 2026-11-18 сняты: вердикты
+записаны в этом чекпоинте, а следующий гейт берёт базой coverage-report.json
+дня, строго предшествующего прогону. Слой при перезапуске затирает stale-junit.
 Пререквизитные слои гейта (gate-registry, gate-unit) до этого коммита лежали
 untracked (наследие Tasks 8/9); этим коммитом они зафиксированы вместе со всем
 evidence дня. Рекомендация: и дальше коммитить receipts пререквизитов вместе со
@@ -139,7 +142,8 @@ SRV-ARTIFACTS, PERSISTENT-GATEWAY-UPLOAD). Опирающиеся junit — вс
 2026-11-18: `gate-gui/junit.xml` (2026-11-18T16:46:06+03:00, 90 тестов / 0 failures),
 `gate-integration/junit.xml` (2026-11-18T16:42:58+03:00, 147/0), `gate-regression/junit(1).xml`
 (2026-11-18T16:47:21+03:00, 149/0), `gate-unit/junit(1).xml` (2026-11-18T16:30:03+03:00,
-1628/0). Нарушений нет: каждый бета-PASS подкреплён доказательствами сегодняшнего дня.
+1628/0). Нарушений нет: каждый бета-PASS подкреплён доказательствами того дня.
+Сами junit-файлы слоёв после записи этих timestamp сняты.
 
 Ручная spot-проверка 5 действий (action → маппинг теста → опирающий junit с фактическим
 `timestamp` из файла; пути относительно `docs/quality/evidence/2026-11-18/`):
@@ -156,67 +160,67 @@ SRV-ARTIFACTS, PERSISTENT-GATEWAY-UPLOAD). Опирающиеся junit — вс
 
 | Действие | Tier | Вердикт | Примечание | W3 сценарий |
 |---|---|---|---|---|
-| HUB-BOOTSTRAP-ACCOUNT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-LOGIN | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-CONNECT-SAVED-SERVER | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-PREFERENCES | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-UPDATE-SOURCE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
+| HUB-BOOTSTRAP-ACCOUNT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S01 |
+| HUB-LOGIN | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S01 |
+| HUB-CONNECT-SAVED-SERVER | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-PREFERENCES | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S02 |
+| HUB-UPDATE-SOURCE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S02 |
 | HUB-CHECK-UPDATES | gui | BLOCKED | BLOCKED в реестре: источник обновлений вне закрытой сети; приёмка — W4 |  |
-| MGR-MATRIX-VISUAL | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
+| MGR-MATRIX-VISUAL | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S02 |
 | HUB-CREATE-PROJECT | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-REFRESH-CATALOG | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-OPEN-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-BIND-WORKSPACE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-RENAME-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-ARCHIVE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-RESTORE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-DELETE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-PROJECT-PROPERTIES | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-SCAN-INTEGRITY | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-ADMIN-REFRESH | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-CONFIGURE-ROOTS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-EXPORT-BACKUP | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-IMPORT-BACKUP | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
+| HUB-REFRESH-CATALOG | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-OPEN-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-BIND-WORKSPACE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S03 |
+| HUB-RENAME-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-ARCHIVE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-RESTORE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-DELETE-PROJECT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-PROJECT-PROPERTIES | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S10 |
+| HUB-SCAN-INTEGRITY | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S04 |
+| HUB-ADMIN-REFRESH | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S04 |
+| HUB-CONFIGURE-ROOTS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S02 |
+| HUB-EXPORT-BACKUP | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S03 |
+| HUB-IMPORT-BACKUP | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S03 |
 | HUB-PROJECT-ROLES | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
 | HUB-ADD-PERFORMER | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
 | HUB-EDIT-PERFORMER | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
 | HUB-DELETE-PERFORMER | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-MATRIX-CONTEXT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-REVIEW-RETURN | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-ADD-LAYER | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-REORDER-LAYERS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-LAYER-CONTEXT | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-ADD-REPRESENTATION | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-REPRESENTATION-LIFECYCLE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-ISSUE-WORK | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-MY-WORK | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-WORK-PLAN | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
-| HUB-PLUGINS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 |  |
+| HUB-MATRIX-CONTEXT | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S11 |
+| HUB-REVIEW-RETURN | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | S12 |
+| HUB-ADD-LAYER | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | S11 |
+| HUB-REORDER-LAYERS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S11 |
+| HUB-LAYER-CONTEXT | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | S11 |
+| HUB-ADD-REPRESENTATION | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | S11 |
+| HUB-REPRESENTATION-LIFECYCLE | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S11 |
+| HUB-ISSUE-WORK | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | S12 |
+| HUB-MY-WORK | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S12 |
+| HUB-WORK-PLAN | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S12 |
+| HUB-PLUGINS | gui | NOT_TESTED | нет автотест-маппинга; UI/серверный приём — W3 | S13 |
 | HUB-STATISTICS | gui | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
 | SRV-HEALTH-SESSION | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| SRV-PROJECTS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
+| SRV-PROJECTS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S05 |
 | SRV-PRINCIPALS | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| SRV-LAYERS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-REPRESENTATIONS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-ARTIFACTS | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| SRV-COMMANDS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-WEBSOCKET | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-HISTORY-STATISTICS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-NOTES-CHECKS-PACKAGES | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-JOBS-AGENT-PROTOCOL | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| SRV-PLANS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| AGT-HEALTH | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 |  |
-| PLUGIN-CONTOUR-HELP | smoke | NOT_TESTED | нет автотест-маппинга; приём плагинов — W3 |  |
-| PLUGIN-NEURALIMAGE-VERSION | smoke | NOT_TESTED | нет автотест-маппинга; приём плагинов — W3 |  |
-| PLUGIN-CONTOUR-DATASET-INTERACTIVE | gui | NOT_TESTED | нет автотест-маппинга; интерактивный приём — W3 |  |
-| BLOB-PUT-GET-RESTART | integration | NOT_TESTED | нет автотест-маппинга; блокируется отсутствием exe Blob Gateway (D-поступление) |  |
-| PERSISTENT-GATEWAY-UPLOAD | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) |  |
-| HUB-LOGIN-TABBED | gui | NOT_TESTED | нет автотест-маппинга; UI-приём — W3 |  |
-| ADMIN-SERVER-BACKUP-RESTORE | integration | NOT_TESTED | нет автотест-маппинга; native backup/restore требует KRAKEN_TEST_PG_BIN и CREATE DATABASE |  |
-| AGT-OP-VECTORIZE | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) |  |
-| AGT-OP-DATASET-PREPARE | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) |  |
-| AGT-OP-TRAIN | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) |  |
-| AGT-OP-BINARY-SEGMENT | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) |  |
+| SRV-LAYERS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S06 |
+| SRV-REPRESENTATIONS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S07 |
+| SRV-ARTIFACTS | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | G16 |
+| SRV-COMMANDS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| SRV-WEBSOCKET | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| SRV-HISTORY-STATISTICS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| SRV-NOTES-CHECKS-PACKAGES | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| SRV-JOBS-AGENT-PROTOCOL | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| SRV-PLANS | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S08 |
+| AGT-HEALTH | integration | NOT_TESTED | нет автотест-маппинга; серверный приём — W3 | S09 |
+| PLUGIN-CONTOUR-HELP | smoke | NOT_TESTED | нет автотест-маппинга; приём плагинов — W3 | S13 |
+| PLUGIN-NEURALIMAGE-VERSION | smoke | NOT_TESTED | нет автотест-маппинга; приём плагинов — W3 | S13 |
+| PLUGIN-CONTOUR-DATASET-INTERACTIVE | gui | NOT_TESTED | нет автотест-маппинга; интерактивный приём — W3 | G18 |
+| BLOB-PUT-GET-RESTART | integration | NOT_TESTED | нет автотест-маппинга; блокируется отсутствием exe Blob Gateway (D-поступление) | G16 |
+| PERSISTENT-GATEWAY-UPLOAD | integration | PASS | свежесть подтверждена (JUnit evidence 2026-11-18) | G16 |
+| HUB-LOGIN-TABBED | gui | NOT_TESTED | нет автотест-маппинга; UI-приём — W3 | S10 |
+| ADMIN-SERVER-BACKUP-RESTORE | integration | NOT_TESTED | нет автотест-маппинга; native backup/restore требует KRAKEN_TEST_PG_BIN и CREATE DATABASE | S14 |
+| AGT-OP-VECTORIZE | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) | G17 |
+| AGT-OP-DATASET-PREPARE | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) | G18 |
+| AGT-OP-TRAIN | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) | G19 |
+| AGT-OP-BINARY-SEGMENT | live | NOT_TESTED | нет автотест-маппинга; живой приём агентских операций — W3 (нужен стенд + gateway) | G19 |
 
 Итог: 15 PASS / 45 NOT_TESTED / 1 BLOCKED из 61 `beta:true`. PARTIAL-вердиктов на
 уровне действий нет: вердикт действия PASS только при полном прохождении маппинга,
@@ -231,3 +235,38 @@ JUnit прогона 2026-11-18). W3 перепривязывает статус
 доказательствам.
 
 Следующий шаг: палитра W3 — план живых сценариев принятия
+
+## Итог W3 — два полных гейта 2026-11-19
+
+Команда одна и та же, каталоги разные, стенд между прогонами не перезапускался:
+`scripts/quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live`.
+Доказательства: receipts всех слоёв в `docs/quality/evidence/2026-11-19/full-run-1`
+и `full-run-2`. JUnit и pytest оставлены у живого слоя — там прогоны разошлись.
+Журналы зелёных слоёв сняты: счётчики есть в receipts и в таблице ниже.
+Оба прогона завершились `GATE RESULT: FAIL`. Узлов в JUnit 2090 и 2090.
+
+| Слой | Прогон 1 | Прогон 2 |
+|---|---|---|
+| registry | PASS 14/0/0 | PASS 14/0/0 |
+| smoke | PARTIAL 4/0/2 | PARTIAL 4/0/2 |
+| unit | FAIL 1900/2/5 | PARTIAL 1902/0/5 |
+| integration | PARTIAL 123/0/24 | PARTIAL 123/0/24 |
+| gui | PASS 104/0/0 | PASS 104/0/0 |
+| stateful | NOT_TESTED | NOT_TESTED |
+| e2e | FAIL 0/1/0 | PASS 1/0/0 |
+| regression | PASS 185/0/0 | PASS 185/0/0 |
+| live | FAIL 54/4/1 | FAIL 53/5/1 |
+
+Сравнение по идентификаторам узлов, без параметризованных имён с новым uuid:
+
+- `tests/test_end_to_end_functional.py::test_single_project_twenty_stage_functional_lifecycle` — прогон 1 упал за 2,11 с: дочерний процесс не импортировал `tests`. После переноса импорта пробы CUDA внутрь теста прогон 2 прошёл за 31,34 с. Отдельная проверка до гейта: 1 passed за 32,15 с.
+- `tests/test_console_lifetime.py` — оба теста в прогоне 1 падали: `tasklist` при `text=True` отдавал `stdout is None` (кодировка консоли). В прогоне 2 сравнение идёт по байтам, оба теста прошли и в гейте, и отдельно (2 passed за 5,15 с).
+- `tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_local_delete_rejects_partial_name_then_removes_project` — прогон 1 прошёл, прогон 2 упал без собственного assert: pytest-qt поймал `RuntimeError` в цикле событий, `QTimer` в `poll_agent_jobs._on_remote_wake` уже удалён. Остальные 4 теста S10 в прогоне 2 прошли.
+- `tests/test_live_ui_workflow.py::test_server_pipeline_training_recognition_reviews_and_reports_through_ui` — оба прогона: скан `palette-source` (`001.png`–`100.png`) вернул `total_files == 100` и `ready is False`. Нумерация кадра нулевая, слот 100 в матрицу 100 не входит.
+- Три ошибки настройки вне палитры W3, одинаковые в обоих прогонах: `karakal_machine_secret` и `stitch_machine_secret` отсутствуют в live-конфиге (`test_live_server_plugin_chain.py`). Karakal и stitch в объём W3 не входят, но живой слой гейта запускает файл целиком, поэтому слой остаётся FAIL.
+
+Палитра в живом слое прогона 2: серверные S05–S08 — 9 passed; агент — 1+4 passed; S11 — 6 passed; S12 — 5 passed; S13 — 1 passed; G17 — 2 passed; G18 — 4 passed; G19 — 1 passed. S10 — 4 passed и 1 failed, как выше. S14 в гейт не входит: native backup по-прежнему 24 skip, `ADMIN-SERVER-BACKUP-RESTORE` остаётся NOT_TESTED. `HUB-CHECK-UPDATES` остаётся BLOCKED и уходит в W4.
+
+Таблица вердиктов выше — снимок W2 (15 PASS / 45 NOT_TESTED / 1 BLOCKED). Этот раздел её не переписывает: полный гейт ещё не зелёный, а S10 локальное удаление не совпало между прогонами.
+
+Следующий шаг внутри W3: скан `001.png`–`100.png` на матрице 100, гонка `QTimer` в S10, и ошибки Karakal/stitch в живом слое (исключить из гейта или пропускать при отсутствии секрета). Повтор полного гейта — после этих трёх расхождений.

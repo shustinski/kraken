@@ -1,0 +1,38 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-19T13:58:43.5306725Z",
+    "tier":  "gui",
+    "command":  [
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/quality/test_s01_local_identity.py tests/quality/test_s02_local_preferences.py tests/quality/test_s03_local_backup.py tests/quality/test_s04_local_administration.py tests/test_work_planning_dialog.py tests/test_quality_dialog.py tests/test_multilayer_dialog.py tests/test_electrical_dialog.py tests/test_computed_stitch_dialog.py tests/test_analysis_qt_ui.py tests/test_local_analysis_map_ui.py tests/test_work_templates_dialog.py tests/test_vector_stitch_dialog.py tests/test_remaining_qt_acceptance.py tests/test_layer_creation_dialog.py tests/test_layer_management_features.py tests/test_layer_menu_permissions.py tests/test_layer_menu_profiling.py tests/test_layer_pipeline_dialog.py tests/test_layer_workflow_repairs.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-e6ef6173ebdc4f16836bdf000184547e\\basetemp-gui --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-19\\full-run-2\\gate-gui\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  104,
+    "passed":  104,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  50.646,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/quality/test_s01_local_identity.py tests/quality/test_s02_local_preferences.py tests/quality/test_s03_local_backup.py tests/quality/test_s04_local_administration.py tests/test_work_planning_dialog.py tests/test_quality_dialog.py tests/test_multilayer_dialog.py tests/test_electrical_dialog.py tests/test_computed_stitch_dialog.py tests/test_analysis_qt_ui.py tests/test_local_analysis_map_ui.py tests/test_work_templates_dialog.py tests/test_vector_stitch_dialog.py tests/test_remaining_qt_acceptance.py tests/test_layer_creation_dialog.py tests/test_layer_management_features.py tests/test_layer_menu_permissions.py tests/test_layer_menu_profiling.py tests/test_layer_pipeline_dialog.py tests/test_layer_workflow_repairs.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-e6ef6173ebdc4f16836bdf000184547e\\basetemp-gui --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-19\\full-run-2\\gate-gui\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  104,
+                     "passed":  104,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  50.646,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

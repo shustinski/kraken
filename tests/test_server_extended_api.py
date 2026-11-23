@@ -106,14 +106,20 @@ def test_analysis_and_pipeline_events_are_revisioned_server_resources() -> None:
 
 
 class _ConflictServices(InMemoryServerServices):
+    conflict_detail = "Expected project revision 3, found 4"
+
     def rename_project(self, project_id, name, context):
         del project_id, name, context
-        raise ConflictError("Expected project revision 3, found 4")
+        raise ConflictError(self.conflict_detail)
 
 
-def test_revision_conflict_problem_identifies_entity_and_actual_revision() -> None:
+@pytest.mark.parametrize("detail", ["Expected project revision 3, found 4", "Expected revision 3, found 4"])
+def test_revision_conflict_problem_identifies_entity_and_actual_revision(detail) -> None:
+    class ConflictServices(_ConflictServices):
+        conflict_detail = detail
+
     app = create_app(
-        services=_ConflictServices(),
+        services=ConflictServices(),
         session_resolver=lambda token: SessionPrincipal("user", "gitlab", token),
         live_gitlab_verifier=lambda _session: True,
     )

@@ -142,7 +142,8 @@ def test_login_window_domain_tab_default_and_local_login_completes(qapp, tmp_pat
         for actor in actors:
             actor.stop()
     assert session is not None
-    assert seen["default"] == 0
+    assert seen["default"] == 1
+    assert seen["tabs"].isTabVisible(0) is False
     assert seen["tabs"].tabText(0) == "Доменная учётная запись"
     assert seen["domain_username"] == os.environ.get("USERNAME", "")
     assert seen["submit_kind"] == "QPushButton"
@@ -677,7 +678,7 @@ def test_server_sign_in_rejects_bad_credentials(qapp, tmp_path, monkeypatch, ser
         for actor in actors:
             actor.stop()
     assert session is not None
-    assert "Неверный пароль или учётная запись не найдена на сервере" in seen["warning_text"]
+    assert "Неверные учётные данные или аккаунт временно заблокирован." in seen["warning_text"]
     assert seen["password"] == ""
 
 

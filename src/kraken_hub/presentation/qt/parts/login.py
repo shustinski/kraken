@@ -301,6 +301,10 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
         }[state]
         status_label.setText(text)
         server_status_label.setText(text)
+        domain_off = state == STATUS_DISABLED
+        tabs.setTabVisible(0, not domain_off)
+        if domain_off and tabs.currentIndex() == 0:
+            tabs.setCurrentIndex(1)
         return state
 
     refresh_status()  # blocking probe, <= 3 s
@@ -397,7 +401,7 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
         except ValueError:
             # URL уже проверен выше: это 401 сервера.
             server_password.clear()
-            QMessageBox.warning(dialog, "Kraken", "Неверный пароль или учётная запись не найдена на сервере")
+            QMessageBox.warning(dialog, "Kraken", "Неверные учётные данные или аккаунт временно заблокирован.")
             return
         except RemoteServerError as exc:
             QMessageBox.warning(dialog, "Kraken", domain_login_error_text(exc))

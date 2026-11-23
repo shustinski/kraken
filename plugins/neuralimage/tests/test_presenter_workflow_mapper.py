@@ -12,6 +12,16 @@ def test_resolve_work_mode_known_value():
     assert mode.value == 'train_only'
 
 
+def test_standard_model_does_not_request_context_dictionary_inputs():
+    main = MainWindowState(work_mode='train_only')
+    settings = SettingsState(model='S 660k', use_context_branch=True)
+
+    _, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.use_context_branch is False
+    assert recognition.use_context_branch is False
+
+
 def test_resolve_work_mode_continue_training_value():
     mode = resolve_work_mode('continue_training')
     assert mode is not None

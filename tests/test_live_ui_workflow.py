@@ -16,7 +16,8 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from PyQt6.QtCore import QSettings, Qt, QTimer
+from PyQt6 import sip
+from PyQt6.QtCore import QPointF, QSettings, Qt, QTimer
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -111,8 +112,16 @@ def accept_dialog(dialog):
 
 def node_menu(controller, kind, label, *, representation_id=None, job_id=None):
     graph = controller._layer_dialog.graph
-    for lane in graph._snapshot.lanes:
-        graph.expand_lane(lane.lane_id)
+    lane = next(
+        lane for lane in graph._snapshot.lanes
+        if any(
+            node.kind == kind
+            and (representation_id is None or node.representation_id == representation_id)
+            and (job_id is None or node.details.get("job_id") == str(job_id))
+            for node in lane.nodes
+        )
+    )
+    graph.expand_lane(lane.lane_id)
     node = next(
         item
         for item in graph.graph_scene.items()
@@ -123,6 +132,7 @@ def node_menu(controller, kind, label, *, representation_id=None, job_id=None):
     )
     graph.ensureVisible(node)
     graph.fitInView(graph.graph_scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+    graph.graph_scene.clearSelection()
     QApplication.processEvents()
     selected = []
     errors = []
@@ -135,7 +145,11 @@ def node_menu(controller, kind, label, *, representation_id=None, job_id=None):
             return
         timer.stop()
         try:
-            action = next(action for action in menu.actions() if action.text() == label)
+            action = next(
+                (action for action in menu.actions() if action.text() == label),
+                None,
+            )
+            assert action is not None, (kind, label, [action.text() for action in menu.actions()])
             assert action.isEnabled() and action.isVisible(), (label, action.toolTip())
             selected.append(action.text())
             QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
@@ -145,7 +159,24 @@ def node_menu(controller, kind, label, *, representation_id=None, job_id=None):
 
     timer.timeout.connect(choose)
     timer.start()
-    position = graph.mapFromScene(node.sceneBoundingRect().center())
+    bounds = node.sceneBoundingRect()
+    position = None
+    hits = []
+    for x_fraction in (0.5, 0.25, 0.75):
+        for y_fraction in (0.5, 0.25, 0.75):
+            candidate = graph.mapFromScene(
+                bounds.topLeft() + QPointF(bounds.width() * x_fraction, bounds.height() * y_fraction)
+            )
+            hit = graph.itemAt(candidate)
+            hits.append((candidate.x(), candidate.y(), getattr(getattr(hit, "node", None), "kind", type(hit).__name__)))
+            while hit is not None and hit is not node:
+                hit = hit.parentItem()
+            if hit is node:
+                position = candidate
+                break
+        if position is not None:
+            break
+    assert position is not None, (kind, str(bounds), str(graph.viewport().rect()), str(graph.transform()), hits)
     try:
         # Send the real context menu event; QTest right-click alone does not
         # produce it consistently on the offscreen Windows platform.
@@ -245,15 +276,18 @@ def live_ui(qtbot, tmp_path, monkeypatch):
         tmp_path=tmp_path,
     )
     qtbot.waitUntil(lambda: not controller._background_workers, timeout=30000)
-    controller._agent_timer.stop()
+    if not sip.isdeleted(controller._agent_timer):
+        controller._agent_timer.stop()
     remote.stop_sync()
-    if controller._layer_dialog is not None:
+    if controller._layer_dialog is not None and not sip.isdeleted(controller._layer_dialog):
         controller._layer_dialog.close()
     # Existing tasks from other acceptance runs do not belong to this fixture.
     # Closing with active tasks is exercised separately below.
-    shell.close_guard = None
-    shell.close()
-    timer.stop()
+    if not sip.isdeleted(shell):
+        shell.close_guard = None
+        shell.close()
+    if not sip.isdeleted(timer):
+        timer.stop()
     assert not failures, failures
 
 
@@ -380,7 +414,27 @@ def test_server_pipeline_training_recognition_reviews_and_reports_through_ui(liv
         if job.project_id == project.id and job.capability == "dataset.model.train.v1"
     )
     assert training.state.value == "succeeded", training.error
-    node_menu(controller, "model", "Распознать исходники")
+    from kraken_hub.presentation.qt.published_model_dialog import PublishedModelDialog
+
+    selector_timer = QTimer()
+    selector_timer.setInterval(20)
+
+    def choose_published_model():
+        selector = QApplication.activeModalWidget()
+        if not isinstance(selector, PublishedModelDialog) or not selector.models.isEnabled():
+            return
+        index = next((i for i in range(selector.models.count()) if selector.models.itemData(i) != "legacy"), -1)
+        assert index >= 0, "Training did not publish a selectable model"
+        selector.models.setCurrentIndex(index)
+        selector_timer.stop()
+        QTest.mouseClick(selector.buttons.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton)
+
+    selector_timer.timeout.connect(choose_published_model)
+    selector_timer.start()
+    try:
+        node_menu(controller, "model", "Распознать исходники")
+    finally:
+        selector_timer.stop()
     qtbot.waitUntil(lambda: not controller._background_workers, timeout=600000)
     recognition = next(
         job

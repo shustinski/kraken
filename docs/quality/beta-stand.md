@@ -34,6 +34,8 @@ powershell -ExecutionPolicy Bypass -File scripts\start-beta-stand.ps1
 | Аккаунт/сессия | регистрация/вход loopback `POST /api/v1/auth/accounts` → `session.secret` (DPAPI) | удаляется вместе с БД |
 | Protected-проект | `beta-stand-protected` (2×1) — сентинел неизменности в fixture | удаляется вместе с БД |
 | Machine token | `kraken-admin create-agent-token --capability frames.vectorize.v1` → `machine.secret` (DPAPI), id в `state.json` | `kraken-admin revoke-agent-token` + **proof: lease → HTTP 401** (пока Server ещё жив) |
+| Dataset token | `create-agent-token --capability frames.dataset.prepare.v1` → `dataset.secret` (DPAPI), id `dataset_machine_token_id` | `revoke-agent-token` при остановке стенда |
+| NeuralImage token | `create-agent-token --capability frames.binary-segment.v2` → `neuralimage.secret` (DPAPI), id `neuralimage_machine_token_id` | `revoke-agent-token` при остановке стенда |
 | Agent (опция `-WithWorkerAgent`) | `python -m kraken_agent --server-url ... --plugins-config worker-plugins.json --independent`, токен через env `KRAKEN_AGENT_TOKEN` | PID из `state.json` |
 
 Стенд переживает закрытие консоли, из которой запущен: компоненты стартуют
@@ -51,26 +53,29 @@ worker (`-WithWorkerAgent`) включают только задачи авто�
 
 - `.test_runtime\beta-stand\live-worker-config.json` — контракт
   `KRAKEN_LIVE_WORKER_CONFIG` (`server_url`, `session_secret`, `machine_secret`,
+  `dataset_machine_secret`, `neuralimage_machine_secret`, `model_reuse_receipt`,
   `protected_project_id`, `results_directory`; значения секретов в JSON запрещены,
   только DPAPI-пути).
 - `.test_runtime\beta-stand.env.json` — `KRAKEN_TEST_POSTGRES_URL` (plaintext URL —
   git-ignored location) и путь `KRAKEN_LIVE_WORKER_CONFIG`.
 
 ```powershell
-$env:KRAKEN_LIVE_WORKER_CONFIG  = 'C:\code\kraken\.test_runtime\beta-stand\live-worker-config.json'
-$env:KRAKEN_TEST_POSTGRES_URL  = (Get-Content .test_runtime\beta-stand.env.json -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL
+$repo = (Resolve-Path .).Path
+$env:KRAKEN_LIVE_WORKER_CONFIG = Join-Path $repo '.test_runtime\beta-stand\live-worker-config.json'
+$env:KRAKEN_TEST_POSTGRES_URL = (Get-Content (Join-Path $repo '.test_runtime\beta-stand.env.json') -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL
+$env:KRAKEN_MODEL_REUSE_RECEIPT = Join-Path $repo '.test_runtime\beta-stand\results\model-reuse-receipt.json'
 ```
 
 ## KRAKEN_UI_TEST_CONFIG для палитры W3
 
 Контракт `tests/test_live_ui_workflow.py` (header docstring): JSON-файл с ключами
 `server_url`, `username`, `password`, `source_directory`; в `source_directory`
-ровно **100 пронумерованных изображений** (`001.png`..`100.png`, grayscale 64×64).
+ровно **100 пронумерованных изображений** (`000.png`..`099.png`, grayscale 64×64).
 Файлы-источник и конфиг генерируются throwaway-скриптом (git-ignored, не коммитится):
 
 ```powershell
 .venv\Scripts\python.exe .test_runtime\make-ui-test-config.py
-# -> .test_runtime\palette-source\001.png..100.png (100 файлов)
+# -> .test_runtime\palette-source-zero-based\000.png..099.png (100 файлов)
 # -> .test_runtime\beta-stand\ui-test-config.json (server_url/username/password
 #    из state.json стенда; source_directory — прямые слеши, POSIX-стиль)
 ```
@@ -83,7 +88,12 @@ $env:KRAKEN_TEST_POSTGRES_URL  = (Get-Content .test_runtime\beta-stand.env.json 
 дословно, подставляя дату доказательства и команду):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_CONFIG='C:\code\kraken\.test_runtime\beta-stand\live-worker-config.json'; $env:KRAKEN_TEST_POSTGRES_URL=(Get-Content .test_runtime\beta-stand.env.json -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL; $env:KRAKEN_UI_TEST_CONFIG='C:\code\kraken\.test_runtime\beta-stand\ui-test-config.json'; $env:QT_QPA_PLATFORM='offscreen'; <command>"
+$repo = (Resolve-Path .).Path
+$env:KRAKEN_LIVE_WORKER_CONFIG = Join-Path $repo '.test_runtime\beta-stand\live-worker-config.json'
+$env:KRAKEN_TEST_POSTGRES_URL = (Get-Content (Join-Path $repo '.test_runtime\beta-stand.env.json') -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL
+$env:KRAKEN_UI_TEST_CONFIG = Join-Path $repo '.test_runtime\beta-stand\ui-test-config.json'
+$env:QT_QPA_PLATFORM = 'offscreen'
+# Запустите pytest или quality-gates.ps1 в этой же PowerShell-сессии.
 ```
 
 **Учётные записи.** Стенд провизнит ОДНУ учётную запись (`beta-stand`,
@@ -161,6 +171,23 @@ fallback: **SCHEMA `kraken_beta_test` внутри базы `kraken_local`** с
 и не пишутся, `DROP SCHEMA ... CASCADE` на teardown удаляет только объекты стенда.
 Если появится роль с `CREATEDB` (или superuser-секрет), тот же скрипт вернётся к
 отдельной базе без изменений — режим пишется в `state.json` (`db_mode`).
+
+## S14: резервное копирование сервера
+
+`tests/test_server_backup.py` создаёт и удаляет две базы `kraken_backup_test_*`.
+Для этого нужны `KRAKEN_TEST_PG_BIN` (`pg_dump`/`pg_restore` рядом с кластером) и
+роль с `CREATEDB`. Роль стенда `kraken_local_app` такого права не имеет, секрет
+суперпользователя на закрытой машине не запрашивался. Сценарий
+В постоянном стенде тесты S14 пропускаются из-за отсутствия `CREATEDB`.
+Пароль роли не выдумывается и в репозиторий не записывается.
+
+Это ограничение относится к постоянному beta-стенду. Для S14 уже есть
+[изолированный сценарий](../operations/runbook.md#изолированный-тест-backuprestore-s14),
+который поднимает временный кластер с ролью `kraken_audit`, задаёт обе тестовые
+переменные и останавливает кластер после прогона. 20.11.2026 сценарий прошёл
+дважды: по 26 PASS, без пропусков. JUnit, pytest и receipt сохранены в
+`evidence/2026-11-20/s14/run-{1,2}/`. Эта проверка подтверждает S14 на
+изолированном кластере; основной integration tier остаётся PARTIAL.
 
 ## Замечание D21 (перенесено обязательно)
 

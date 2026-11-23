@@ -1,0 +1,40 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-19T13:45:41.6969967Z",
+    "tier":  "smoke",
+    "command":  [
+                    "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_desktop_runtime_smoke.py tests/test_plugin_cli_smoke.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-e6ef6173ebdc4f16836bdf000184547e\\basetemp-smoke --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-19\\full-run-2\\gate-smoke\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  6,
+    "passed":  4,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  2,
+    "skipped_tests":  [
+                          "tests.test_desktop_runtime_smoke::test_live_server_dual_catalog_smoke",
+                          "tests.test_desktop_runtime_smoke::test_live_agent_health_smoke"
+                      ],
+    "duration_seconds":  1.734,
+    "status":  "PARTIAL",
+    "note":  "2 test(s) skipped; skipped tests are never counted as pass",
+    "runs":  [
+                 {
+                     "command":  "D:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_desktop_runtime_smoke.py tests/test_plugin_cli_smoke.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=D:\\code\\kraken\\.test_runtime\\quality-e6ef6173ebdc4f16836bdf000184547e\\basetemp-smoke --junitxml=D:\\code\\kraken\\docs\\quality\\evidence\\2026-11-19\\full-run-2\\gate-smoke\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  6,
+                     "passed":  4,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  2,
+                     "skipped_tests":  [
+                                           "tests.test_desktop_runtime_smoke::test_live_server_dual_catalog_smoke",
+                                           "tests.test_desktop_runtime_smoke::test_live_agent_health_smoke"
+                                       ],
+                     "duration_seconds":  1.734,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

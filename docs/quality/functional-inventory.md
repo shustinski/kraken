@@ -17,92 +17,92 @@
 
 | ID | Поверхность | Статус | Обязательный | Тесты | Исключение |
 |---|---|---|---|---|---|
-| HUB-BOOTSTRAP-ACCOUNT | HUB | PASS | да | 0 | — |
-| HUB-LOGIN | HUB | PASS | да | 0 | — |
+| HUB-BOOTSTRAP-ACCOUNT | HUB | PASS | да | 2 (tests/quality/test_s01_local_identity.py::test_s01_first_account_created_and_signed_in) | — |
+| HUB-LOGIN | HUB | PASS | да | 2 (tests/quality/test_s01_local_identity.py::test_s01_local_login_accepts_correct_password) | — |
 | HUB-DEV-SESSION | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-CONNECT-SAVED-SERVER | HUB | NOT_TESTED | да | 0 | Отдельной строки нет; подключение имплицируется в live-блоках (live-catalog, real-project-qt-view), но само действие не принималось |
-| HUB-PREFERENCES | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-UPDATE-SOURCE | HUB | NOT_TESTED | да | 0 | Собственного прогона нет; контракт URL/секрета проверен в блоке UPDATER-INSTALL / REMOTE-HTTPS (BLOCKED) |
+| HUB-CONNECT-SAVED-SERVER | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_saved_server_reconnect_attaches_server_client) | — |
+| HUB-PREFERENCES | HUB | PASS | да | 1 (tests/quality/test_s02_local_preferences.py::test_s02_preferences_dialog_persists_server_url_and_theme) | — |
+| HUB-UPDATE-SOURCE | HUB | PASS | да | 1 (tests/quality/test_s02_local_preferences.py::test_s02_update_source_dialog_stores_manifest_url) | — |
 | HUB-CHECK-UPDATES | HUB | BLOCKED | да | 0 | Не предоставлены отдельный тестовый установщик и удалённый TLS-стенд. Проверки контракта URL/секрета прошли, скачивание/запуск реального установщика и удалённый HTTPS не выполнялись |
-| MGR-MATRIX-VISUAL | MGR | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
+| MGR-MATRIX-VISUAL | MGR | PASS | да | 1 (tests/quality/test_s02_local_preferences.py::test_s02_matrix_visual_mode_persisted) | — |
 | HUB-CREATE-PROJECT | HUB | PASS | да | 2 (tests/test_project_create_idempotency.py) | — |
-| HUB-REFRESH-CATALOG | HUB | NOT_TESTED | да | 0 | Отдельной строки нет; перечитывание каталога имплицируется в live-catalog, но само действие не принималось |
-| HUB-OPEN-PROJECT | HUB | PASS | да | 0 | — |
-| HUB-BIND-WORKSPACE | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-RENAME-PROJECT | HUB | PASS | да | 0 | — |
-| HUB-ARCHIVE-PROJECT | HUB | PASS | да | 0 | — |
-| HUB-RESTORE-PROJECT | HUB | PASS | да | 0 | — |
-| HUB-DELETE-PROJECT | HUB | PASS | да | 0 | — |
-| HUB-PROJECT-PROPERTIES | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-SCAN-INTEGRITY | HUB | PASS | да | 0 | — |
-| HUB-ADMIN-REFRESH | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-CONFIGURE-ROOTS | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-EXPORT-BACKUP | HUB | PASS | да | 0 | — |
-| HUB-IMPORT-BACKUP | HUB | PASS | да | 0 | — |
+| HUB-REFRESH-CATALOG | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-OPEN-PROJECT | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-BIND-WORKSPACE | HUB | PASS | да | 1 (tests/quality/test_s03_local_backup.py::test_s03_bind_workspace_attaches_two_roots) | — |
+| HUB-RENAME-PROJECT | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-ARCHIVE-PROJECT | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-RESTORE-PROJECT | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-DELETE-PROJECT | HUB | PASS | да | 2 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-PROJECT-PROPERTIES | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_project_cycle_through_ui) | — |
+| HUB-SCAN-INTEGRITY | HUB | PASS | да | 1 (tests/quality/test_s04_local_administration.py::test_s04_scan_integrity_reports_clean_and_errors) | — |
+| HUB-ADMIN-REFRESH | HUB | PASS | да | 1 (tests/quality/test_s04_local_administration.py::test_s04_admin_refresh_lists_projects_and_audit) | — |
+| HUB-CONFIGURE-ROOTS | HUB | PASS | да | 1 (tests/quality/test_s02_local_preferences.py::test_s02_configure_roots_writes_settings) | — |
+| HUB-EXPORT-BACKUP | HUB | PASS | да | 1 (tests/quality/test_s03_local_backup.py::test_s03_export_backup_creates_verified_folder) | — |
+| HUB-IMPORT-BACKUP | HUB | PASS | да | 2 (tests/quality/test_s03_local_backup.py::test_s03_import_backup_restores_project) | — |
 | HUB-ATTACH-PROJECT | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
 | HUB-MIGRATE-LEGACY-WORK | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
 | HUB-PROJECT-ROLES | HUB | PASS | да | 2 (tests/test_remaining_qt_acceptance.py) | — |
 | HUB-ADD-PERFORMER | HUB | PASS | да | 1 (tests/test_remaining_qt_acceptance.py) | — |
 | HUB-EDIT-PERFORMER | HUB | PASS | да | 1 (tests/test_remaining_qt_acceptance.py) | — |
 | HUB-DELETE-PERFORMER | HUB | PASS | да | 1 (tests/test_remaining_qt_acceptance.py) | — |
-| HUB-MATRIX-CONTEXT | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-REVIEW-RETURN | HUB | PASS | да | 1 (tests/test_remaining_qt_acceptance.py) | — |
-| HUB-ADD-LAYER | HUB | PASS | да | 3 (tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images) | — |
-| HUB-REORDER-LAYERS | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-LAYER-CONTEXT | HUB | PARTIAL | да | 1 (tests/test_metadata_layer_deletion.py) | — |
-| HUB-ADD-REPRESENTATION | HUB | PARTIAL | да | 1 (tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images) | — |
-| HUB-REPRESENTATION-LIFECYCLE | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
+| HUB-MATRIX-CONTEXT | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_layers.py::test_s11_two_variants_switch_primary_and_context_menu) | — |
+| HUB-REVIEW-RETURN | HUB | PASS | да | 3 (tests/test_remaining_qt_acceptance.py) | — |
+| HUB-ADD-LAYER | HUB | PASS | да | 6 (tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images) | — |
+| HUB-REORDER-LAYERS | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_layers.py::test_s11_two_projects_two_layers_each) | — |
+| HUB-LAYER-CONTEXT | HUB | PASS | да | 2 (tests/test_metadata_layer_deletion.py) | — |
+| HUB-ADD-REPRESENTATION | HUB | PASS | да | 3 (tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images) | — |
+| HUB-REPRESENTATION-LIFECYCLE | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_layers.py::test_s11_lifecycle_rename_note_activate_archive_deactivate) | — |
 | HUB-LAYER-WORKFLOW | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
 | HUB-PIPELINE-STITCH-STEP | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-ISSUE-WORK | HUB | PASS | да | 1 (tests/test_remaining_qt_acceptance.py) | — |
-| HUB-MY-WORK | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
-| HUB-WORK-PLAN | HUB | PASS | да | 0 | — |
+| HUB-ISSUE-WORK | HUB | PASS | да | 3 (tests/test_remaining_qt_acceptance.py) | — |
+| HUB-MY-WORK | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_work_flow.py::test_s12_two_users_issue_work_mywork_accept_reissue) | — |
+| HUB-WORK-PLAN | HUB | PASS | да | 1 (tests/test_beta_palette_hub_ui_work_flow.py::test_s12_work_plan_recovery_setup_and_export) | — |
 | HUB-QUALITY | HUB | PASS | да | 0 | — |
 | HUB-MULTILAYER | HUB | PASS | да | 0 | — |
 | HUB-ELECTRICAL | HUB | PASS | да | 0 | — |
 | HUB-STITCH-FILES | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
 | HUB-COMPUTED-STITCH | HUB | PASS | да | 0 | — |
 | HUB-ANALYSIS | HUB | PASS | да | 3 (tests/test_karakal_agent_headless.py) | — |
-| HUB-PLUGINS | HUB | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан |
+| HUB-PLUGINS | HUB | PASS | да | 1 (tests/test_beta_palette_hub_plugins.py::test_s13_plugins_dialog_opens_plugin_process) | — |
 | HUB-STATISTICS | HUB | PASS | да | 3 (tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions) | — |
 | SRV-HEALTH-SESSION | SRV | PASS | да | 1 (tests/test_server_administration.py) | — |
-| SRV-PROJECTS | SRV | PASS | да | 0 | — |
+| SRV-PROJECTS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s05_project_crud_and_revision_conflict) | — |
 | SRV-PRINCIPALS | SRV | PASS | да | 1 (tests/test_registered_principal_before_session.py) | — |
-| SRV-LAYERS | SRV | NOT_TESTED | да | 0 | В SRV-POSTGRES-PERSISTENT проверены только создание и сохранность слоя; сканирование, импорт, переименование, порядок, архив и удаление серверных слоёв в прогоне не вызывались |
-| SRV-REPRESENTATIONS | SRV | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан |
+| SRV-LAYERS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s06_layer_routes_full_surface) | — |
+| SRV-REPRESENTATIONS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s07_representations_import_viewport_and_stale_upload) | — |
 | SRV-ARTIFACTS | SRV | PASS | да | 1 (tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version) | — |
-| SRV-COMMANDS | SRV | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан |
-| SRV-WEBSOCKET | SRV | PASS | да | 0 | — |
-| SRV-HISTORY-STATISTICS | SRV | PARTIAL | да | 0 | — |
-| SRV-NOTES-CHECKS-PACKAGES | SRV | PARTIAL | да | 0 | — |
-| SRV-JOBS-AGENT-PROTOCOL | SRV | PASS | да | 0 | — |
+| SRV-COMMANDS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_project_command_accepted_and_forbidden) | — |
+| SRV-WEBSOCKET | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_websocket_ping_subscribe_unsubscribe) | — |
+| SRV-HISTORY-STATISTICS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_history_and_statistics) | — |
+| SRV-NOTES-CHECKS-PACKAGES | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_notes_checks_package_return) | — |
+| SRV-JOBS-AGENT-PROTOCOL | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_jobs_agent_protocol_error_branches) | — |
 | SRV-ANALYSIS | SRV | PASS | да | 2 (tests/test_server_analysis_workflow.py) | — |
 | SRV-QUALITY | SRV | PASS | да | 0 | — |
 | SRV-LAYER-WORKFLOW | SRV | NOT_TESTED | да | 0 | В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан |
-| SRV-PLANS | SRV | PASS | да | 0 | — |
+| SRV-PLANS | SRV | PASS | да | 1 (tests/test_beta_palette_server_api.py::test_s08_plans_crud_and_revision_conflict) | — |
 | SRV-PHYSICS | SRV | PASS | да | 0 | — |
 | SRV-ELECTRICAL | SRV | PASS | да | 0 | — |
-| AGT-HEALTH | AGT | PASS | да | 0 | — |
+| AGT-HEALTH | AGT | PASS | да | 1 (tests/test_beta_palette_agent_health.py::test_s09_agent_health_ok_with_token_and_rejected_without) | — |
 | AGT-REGISTRY-CONFIDENCE | AGT | PASS | да | 1 (tests/test_karakal_agent_headless.py) | — |
-| PLUGIN-CONTOUR-HELP | PLG | PARTIAL | да | 0 | — |
+| PLUGIN-CONTOUR-HELP | PLG | PASS | да | 1 (tests/test_plugin_cli_smoke.py::test_contour_help_exits_zero) | — |
 | PLUGIN-KRONA-HELP | PLG | PARTIAL | да | 0 | — |
 | PLUGIN-CSLISER-CAPABILITIES | PLG | PARTIAL | да | 0 | — |
 | PLUGIN-KATEGB-HELP | PLG | PARTIAL | нет | 0 | — |
-| PLUGIN-NEURALIMAGE-VERSION | PLG | PARTIAL | да | 0 | — |
+| PLUGIN-NEURALIMAGE-VERSION | PLG | PASS | да | 1 (tests/test_plugin_cli_smoke.py::test_neuralimage_version_exits_zero) | — |
 | PLUGIN-CSLISER-SELF-TEST | PLG | PASS | да | 0 | — |
 | PLUGIN-CSLISER-COPY-CANCEL-RECOVERY | PLG | PASS | да | 0 | — |
 | PLUGIN-KATEGB-CALCULATION | PLG | PASS | нет | 0 | — |
 | PLUGIN-KRONA-LOGIC-VIEWER | PLG | PASS | да | 2 (plugins/krona/tests/test_explicit_connectivity.py) | — |
 | PLUGIN-KARAKAL-COMPARE-MAP | PLG | PASS | да | 2 (plugins/karakal/tests/unit/test_headless_analysis.py) | — |
-| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PARTIAL | да | 0 | — |
-| BLOB-PUT-GET-RESTART | GW | PASS | да | 0 | — |
+| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PASS | да | 2 (tests/test_beta_palette_agent_ops.py::test_g18_interactive_prepare_via_hub_gateway_path) | — |
+| BLOB-PUT-GET-RESTART | GW | PASS | да | 3 (tests/test_blob_gateway.py::test_rust_gateway_streams_python_signed_upload_and_range_download) | — |
 | PERSISTENT-GATEWAY-UPLOAD | GW | PASS | да | 1 (tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version) | — |
-| HUB-LOGIN-TABBED | HUB | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
-| ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
-| AGT-OP-VECTORIZE | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
-| AGT-OP-DATASET-PREPARE | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
-| AGT-OP-TRAIN | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
-| AGT-OP-BINARY-SEGMENT | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| HUB-LOGIN-TABBED | HUB | PASS | да | 2 (tests/test_beta_palette_hub_ui_project_cycle.py::test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden) | — |
+| ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | да | 0 | native backup/restore требует роль с CREATEDB и KRAKEN_TEST_PG_BIN — provisioning вне возможностей закрытой машины; решение заказчика перенести на W4 |
+| AGT-OP-VECTORIZE | AGT | PASS | да | 4 (tests/test_live_server_worker_acceptance.py::test_contour_machine_worker_publishes_versions_and_hub_reopens) | — |
+| AGT-OP-DATASET-PREPARE | AGT | PASS | да | 2 (tests/test_beta_palette_agent_ops.py::test_g18_dataset_prepare_worker_imports_dataset) | — |
+| AGT-OP-TRAIN | AGT | PASS | да | 2 (tests/test_beta_palette_train_live.py::test_g19_server_training_publishes_verified_checkpoint) | — |
+| AGT-OP-BINARY-SEGMENT | AGT | PASS | да | 2 (tests/test_pipeline_live_neural_model.py) | — |
 <!-- quality-registry:generated-end -->
 
 ## Как устроены поверхности

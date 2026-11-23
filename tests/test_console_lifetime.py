@@ -149,9 +149,8 @@ def _is_alive(pid: int) -> bool:
         ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
         check=False,
         capture_output=True,
-        text=True,
     )
-    return str(pid) in result.stdout
+    return str(pid).encode("ascii") in result.stdout
 
 
 def _kill_pid(pid: int) -> None:

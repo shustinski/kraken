@@ -45,8 +45,9 @@ def test_pipeline_vectorization_uses_clicked_image_representation(kind):
     assert observed == ["clicked-images"]
 
 
-def test_selecting_active_image_refreshes_its_new_vector_representations():
+def test_selecting_active_image_refreshes_its_new_vector_representations(qtbot):
     from types import SimpleNamespace
+    from PyQt6.QtWidgets import QComboBox
     from kraken_hub.presentation.qt.manager_app import DesktopController
     from kraken_manager.domain.project import RepresentationKind
 
@@ -62,8 +63,13 @@ def test_selecting_active_image_refreshes_its_new_vector_representations():
     calls = []
     controller._load_representations = lambda *_args: calls.append(_args)
     controller._refresh_matrix = lambda *_args: pytest.fail("Representation list was not refreshed")
-    workspace = SimpleNamespace(_selected_layer_id="layer")
+    combo = QComboBox()
+    qtbot.addWidget(combo)
+    combo.addItem("source", "source")
+    combo.addItem("binary", "binary")
+    workspace = SimpleNamespace(_selected_layer_id="layer", image_representation_combo=combo)
     controller._activate_representation(workspace, "project", "binary")
+    assert combo.currentData() == "binary"
     assert calls == [(workspace, "project", "layer")]
 
 

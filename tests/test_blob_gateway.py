@@ -241,6 +241,95 @@ def _built_gateway() -> Path:
     pytest.skip("Rust Blob Gateway executable is not built")
 
 
+def _start_rust_gateway(root: Path, port: int, secret: str) -> subprocess.Popen:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "KRAKEN_BLOB_ROOT": str(root),
+            "KRAKEN_BLOB_GATEWAY_BIND": f"127.0.0.1:{port}",
+            "KRAKEN_BLOB_GATEWAY_SECRET": secret,
+        }
+    )
+    process = subprocess.Popen(  # noqa: S603 - test launches the repository-built binary
+        [str(_built_gateway())],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    for _ in range(100):
+        try:
+            with urllib.request.urlopen(f"{base_url}/health", timeout=0.2) as response:
+                if response.status == 200:
+                    return process
+        except (OSError, urllib.error.URLError):
+            time.sleep(0.05)
+    process.kill()
+    process.wait(timeout=5)
+    pytest.fail("Rust Blob Gateway did not become ready")
+
+
+def _stop_rust_gateway(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def test_rust_gateway_survives_restart_returns_same_bytes(tmp_path: Path) -> None:
+    secret = "integration-secret-which-is-at-least-thirty-two-bytes"
+    root = tmp_path / "blobs"
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    process = _start_rust_gateway(root, port, secret)
+    content = b"restart-stable-bytes"
+    digest = hashlib.sha256(content).hexdigest()
+    signer = BlobTicketSigner(secret)
+    context = {"project": "11111111-1111-1111-1111-111111111111"}
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        upload = signer.issue("upload", digest, len(content), context=context).token
+        request = urllib.request.Request(
+            f"{base_url}/v1/blobs/{digest}",
+            data=content,
+            method="PUT",
+            headers={"Authorization": f"Bearer {upload}", "Content-Length": str(len(content))},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert json.loads(response.read())["sha256"] == digest
+    finally:
+        _stop_rust_gateway(process)
+
+    process = _start_rust_gateway(root, port, secret)
+    try:
+        download = signer.issue("download", digest, len(content), context=context).token
+        request = urllib.request.Request(
+            f"{base_url}/v1/blobs/{digest}",
+            headers={"Authorization": f"Bearer {download}"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.read() == content
+        head = urllib.request.Request(
+            f"{base_url}/v1/blobs/{digest}",
+            method="HEAD",
+            headers={"Authorization": f"Bearer {signer.issue('download', digest, len(content), context=context).token}"},
+        )
+        with urllib.request.urlopen(head, timeout=5) as response:
+            assert response.status == 200
+            assert digest in response.headers["ETag"]
+            assert response.headers["Content-Length"] == str(len(content))
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(urllib.request.Request(f"{base_url}/v1/blobs/{digest}"), timeout=5)
+        assert denied.value.code == 401
+    finally:
+        _stop_rust_gateway(process)
+
+
 def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: Path) -> None:
     executable = _built_gateway()
     with socket.socket() as reservation:

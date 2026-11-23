@@ -43,18 +43,22 @@ class ActivateRepresentationMixin:
                 workspace.vector_representation_combo.blockSignals(True)
                 workspace.vector_representation_combo.setCurrentIndex(vector_index)
                 workspace.vector_representation_combo.blockSignals(False)
-        if representation.active:
-            self._load_representations(workspace, project_id, layer_id)
-            return
-        try:
-            self.service.activate_representation(
-                principal=self.session.principal,
-                project=project,
-                layer=layer,
-                representation=representation,
-                idempotency_key=str(uuid4()),
-            )
-        except Exception as exc:
-            self._error(str(exc))
-            return
+        if not representation.active:
+            try:
+                self.service.activate_representation(
+                    principal=self.session.principal,
+                    project=project,
+                    layer=layer,
+                    representation=representation,
+                    idempotency_key=str(uuid4()),
+                )
+            except Exception as exc:
+                self._error(str(exc))
+                return
+        if representation.kind is RepresentationKind.IMAGE:
+            image_index = workspace.image_representation_combo.findData(str(representation.id))
+            if image_index >= 0:
+                workspace.image_representation_combo.blockSignals(True)
+                workspace.image_representation_combo.setCurrentIndex(image_index)
+                workspace.image_representation_combo.blockSignals(False)
         self._load_representations(workspace, project_id, layer_id)

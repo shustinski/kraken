@@ -85,3 +85,31 @@ def test_manifest_rejects_external_installer_and_missing_hash(tmp_path, monkeypa
         assert client.get("/api/v1/updates/contour/stable/version.json").status_code == 404
         manifest_path.write_text(json.dumps({"version": "2.0.0", "download_url": "setup.exe"}))
         assert client.get("/api/v1/updates/contour/stable/version.json").status_code == 404
+
+
+def test_channel_publishes_plugin_catalog_as_json(tmp_path, monkeypatch):
+    # Hub reads <channel>/plugins.json next to the NeuralImage update manifest.
+    folder = tmp_path / "neuralimage" / "stable"
+    folder.mkdir(parents=True)
+    catalog = {"plugins": [{"id": "neuralimage", "version": "6.3.0"}, {"id": "contour", "version": "0.9.0"}]}
+    (folder / "plugins.json").write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setenv("KRAKEN_UPDATES_ROOT", str(tmp_path))
+
+    with TestClient(create_app(development=True)) as client:
+        response = client.get("/api/v1/updates/neuralimage/stable/plugins.json")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == catalog
+
+
+def test_malformed_plugin_catalog_is_not_published(tmp_path, monkeypatch):
+    folder = tmp_path / "neuralimage" / "stable"
+    folder.mkdir(parents=True)
+    catalog_path = folder / "plugins.json"
+    monkeypatch.setenv("KRAKEN_UPDATES_ROOT", str(tmp_path))
+
+    with TestClient(create_app(development=True)) as client:
+        for payload in ("{not json", json.dumps({"plugins": "neuralimage"}), json.dumps({"plugins": [{"version": "1"}]})):
+            catalog_path.write_text(payload, encoding="utf-8")
+            assert client.get("/api/v1/updates/neuralimage/stable/plugins.json").status_code == 404

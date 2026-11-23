@@ -23,7 +23,21 @@ D:/KrakenUpdates/
   contour/stable/ContourSetup.exe
   neuralimage/stable/version.json
   neuralimage/stable/NeuralImageSetup.exe
+  neuralimage/stable/plugins.json
 ```
+
+`plugins.json` — каталог плагинов для Hub. Когда в рабочей копии есть `plugins/neuralimage/resources/update_client.json`, Hub при старте берёт адрес канала по умолчанию и читает `plugins.json` рядом с его `version.json`. Если файла нет или он недоступен, Hub использует встроенный каталог `src/kraken_hub/resources/plugins.json`, поэтому за образец публикуемого файла удобно брать именно его. Формат — объект со списком `plugins`, у каждого элемента обязателен `id`:
+
+```json
+{
+  "plugins": [
+    {"id": "neuralimage", "display_name": "NeuralImage", "version": "6.3.0", "protocol_version": "2.0"},
+    {"id": "contour", "display_name": "Contour", "version": "0.9.0", "protocol_version": "1.0"}
+  ]
+}
+```
+
+Server отвечает 404 на `plugins.json`, который не разбирается как JSON или не соответствует этому формату. Как и `version.json`, заменяйте его атомарно: сначала запишите новый файл рядом, затем переименуйте поверх старого.
 
 Для канала `beta` создайте аналогичную подпапку. Имена файлов внутри канала должны быть простыми, без вложенных путей. Пример `version.json`:
 

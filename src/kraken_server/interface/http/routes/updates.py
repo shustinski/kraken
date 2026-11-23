@@ -50,6 +50,21 @@ def _valid_manifest(path: Path, directory: Path) -> bool:
     return True
 
 
+def _valid_plugin_catalog(path: Path) -> bool:
+    """A published plugins.json must be the catalog shape Hub reads: plugin objects with an id."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except OSError, ValueError, UnicodeError:
+        return False
+    plugins = payload.get("plugins") if isinstance(payload, dict) else None
+    if not isinstance(plugins, list):
+        return False
+    return all(isinstance(item, dict) and str(item.get("id", "")).strip() for item in plugins)
+
+
+_JSON_FILES = {"version.json": _valid_manifest, "plugins.json": lambda path, _directory: _valid_plugin_catalog(path)}
+
+
 def register(app: object) -> None:
     @app.get(f"{API_PREFIX}/updates/{{product}}/{{channel}}/{{filename}}")
     def read_update_file(product: str, channel: str, filename: str) -> FileResponse:
@@ -61,8 +76,9 @@ def register(app: object) -> None:
         target = (directory / filename).resolve()
         if not directory.is_relative_to(resolved_root) or not target.is_relative_to(directory) or not target.is_file():
             raise HTTPException(status_code=404)
-        if filename == "version.json" and not _valid_manifest(target, directory):
+        validate = _JSON_FILES.get(filename)
+        if validate is not None and not validate(target, directory):
             raise HTTPException(status_code=404)
         return FileResponse(
-            target, media_type="application/json" if filename == "version.json" else "application/octet-stream"
+            target, media_type="application/json" if validate is not None else "application/octet-stream"
         )

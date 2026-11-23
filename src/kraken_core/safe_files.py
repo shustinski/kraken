@@ -23,13 +23,13 @@ class UnsafeFilesystemPath(ValueError):
     """Raised when a path contains a link, reparse point or special file."""
 
 
-def replace_atomic_with_retry(source: Path | str, destination: Path | str) -> None:
+def replace_atomic_with_retry(source: Path | str, destination: Path | str, *, timeout: float = 2.0) -> None:
     """Replace caller-owned staged bytes; tolerate brief Windows reader sharing.
 
     Retry the rename only. Never expose a partial in-place write or remove the
     old destination first. Persistent permissions and other I/O errors surface.
     """
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + timeout
     while True:
         try:
             os.replace(source, destination)

@@ -14,6 +14,7 @@ from threading import Event, Lock
 from typing import Any, Callable
 from uuid import uuid4
 
+from kraken_core.safe_files import replace_atomic_with_retry
 from kraken_manager.workspace import (
     DerivedRun,
     DerivedRunKind,
@@ -31,6 +32,8 @@ from kraken_manager.workspace import (
     validate_workspace_name,
     walk_directory_tree,
 )
+
+INTAKE_RENAME_TIMEOUT = 30.0
 
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -198,7 +201,9 @@ def _copy_directory(source: Path, destination: Path) -> None:
     stage = destination.parent / f".intake-{uuid4().hex}"
     try:
         _copy_children(source, stage)
-        os.replace(stage, destination)
+        # Antivirus/indexer/thumbnailer open freshly copied images; Windows refuses to
+        # rename a directory while any file inside is open (WinError 5/32).
+        replace_atomic_with_retry(stage, destination, timeout=INTAKE_RENAME_TIMEOUT)
     except Exception:
         remove_tree(stage, ignore_errors=True)
         raise

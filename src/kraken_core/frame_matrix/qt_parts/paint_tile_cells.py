@@ -35,20 +35,19 @@ class PaintTileCellsMixin:
         selection_color = QColor(scene_color("selection"))
         selection_fill = QColor(selection_color)
         selection_fill.setAlphaF(0.2)
-        selection_pen = QPen(selection_color, cell_border_width)
-        selection_pen.setCosmetic(True)
         for row in range(start_row, end_row):
             y = self._y_for_row(row)
             for column in range(start_column, end_column):
                 x = column + 1
                 cell = self._cells.get((x, y), FrameCellData(x, y))
+                prepared = self._prepared_by_cell.get((x, y))
                 rect = QRectF(
                     column * self.CELL_PITCH,
                     row * self.CELL_PITCH,
                     self.CELL_SIZE,
                     self.CELL_SIZE,
                 )
-                painter.fillRect(rect, self._cell_visual_color(cell, self._fill_mode))
+                painter.fillRect(rect, self._empty_fill if prepared is None else prepared.fill)
         mosaic = self._paint_loaded_mosaic(painter, tile)
         for row in range(start_row, end_row):
             y = self._y_for_row(row)
@@ -74,16 +73,18 @@ class PaintTileCellsMixin:
                     painter.drawPixmap(rect.toRect(), cell.thumbnail)
                     painter.restore()
 
-                selected = self._selection.contains(x, y)
+                selected = (x, y) in self._selected_coordinates
                 if selected:
                     painter.fillRect(rect, selection_fill)
-                border_color = self._cell_visual_color(cell, self._border_mode)
-                semantic_pen = QPen(border_color if border_color.isValid() else base_pen.color(), cell_border_width)
-                semantic_pen.setCosmetic(True)
-                painter.setPen(semantic_pen)
-                painter.drawRect(rect)
-                if selected:
-                    painter.setPen(selection_pen)
+                if self._border_mode != "none":
+                    prepared = self._prepared_by_cell.get((x, y))
+                    border_color = self._empty_border if prepared is None else prepared.border
+                    semantic_pen = QPen(
+                        border_color if border_color.isValid() else base_pen.color(),
+                        cell_border_width,
+                    )
+                    semantic_pen.setCosmetic(True)
+                    painter.setPen(semantic_pen)
                     painter.drawRect(rect)
 
                 if lod is MatrixLod.DETAILS:
@@ -149,6 +150,20 @@ class PaintTileCellsMixin:
         if not images or revision is None:
             return ()
         orientation = self.orientation().value
+        wanted = self._mosaic_tile_cells() if callable(getattr(self, "_mosaic_tile_cells", None)) else tile.tile_cells
+        if wanted < tile.tile_cells:
+            sharp, complete = self._child_mosaic_pieces(tile, wanted, revision, orientation)
+            if complete:
+                return sharp
+            return (*self._backdrop_mosaic_pieces(tile, revision, orientation), *sharp)
+        return self._backdrop_mosaic_pieces(tile, revision, orientation)
+
+    def _backdrop_mosaic_pieces(
+        self,
+        tile: _ViewportTileItem,
+        revision: object,
+        orientation: str,
+    ) -> tuple[tuple[QPixmap, QRectF, QRectF], ...]:
         exact = self._stored_mosaic(tile.tile_x, tile.tile_y, tile.tile_cells, revision, orientation)
         if exact is not None:
             target = tile.boundingRect()
@@ -157,6 +172,41 @@ class PaintTileCellsMixin:
         if coarser is not None:
             return (coarser,)
         return self._finer_mosaic_pieces(tile, revision, orientation)
+
+    def _child_mosaic_pieces(
+        self,
+        tile: _ViewportTileItem,
+        finer: int,
+        revision: object,
+        orientation: str,
+    ) -> tuple[tuple[tuple[QPixmap, QRectF, QRectF], ...], bool]:
+        """Pieces of one finer level over this tile, and whether none is still on its way."""
+
+        target = tile.boundingRect()
+        scale = tile.tile_cells // finer
+        requested = getattr(self, "_mosaic_requested", set())
+        # Until a request for this level went out, a missing child may still hold an image.
+        complete = getattr(self, "_mosaic_requested_cells", None) == finer
+        pieces: list[tuple[QPixmap, QRectF, QRectF]] = []
+        for step_y in range(scale):
+            for step_x in range(scale):
+                child_x = tile.tile_x * scale + step_x
+                child_y = tile.tile_y * scale + step_y
+                if child_x * finer >= self.matrix_width or child_y * finer >= self.matrix_height:
+                    continue
+                pixmap = self._stored_mosaic(child_x, child_y, finer, revision, orientation)
+                if pixmap is None:
+                    if (child_x, child_y, finer, revision, orientation) in requested:
+                        complete = False
+                    continue
+                pieces.append(
+                    (
+                        pixmap,
+                        QRectF(0, 0, pixmap.width(), pixmap.height()),
+                        _child_destination(tile, child_x, child_y, finer, target, self.matrix_width, self.matrix_height),
+                    )
+                )
+        return tuple(pieces), complete and bool(pieces)
 
     def _stored_mosaic(
         self,
@@ -190,7 +240,7 @@ class PaintTileCellsMixin:
         orientation: str,
     ) -> tuple[QPixmap, QRectF, QRectF] | None:
         cells = tile.tile_cells * 2
-        limit = max(self.matrix_width, self.matrix_height, cells)
+        limit = _covering_cell_count(self.matrix_width, self.matrix_height, cells)
         while cells <= limit:
             parent_x = (tile.tile_x * tile.tile_cells) // cells
             parent_y = (tile.tile_y * tile.tile_cells) // cells
@@ -209,7 +259,7 @@ class PaintTileCellsMixin:
     ) -> tuple[tuple[QPixmap, QRectF, QRectF], ...]:
         finer = tile.tile_cells // 2
         target = tile.boundingRect()
-        while finer >= self.BASE_TILE_CELLS:
+        while finer >= self.FINEST_MOSAIC_CELLS:
             scale = tile.tile_cells // finer
             pieces: list[tuple[QPixmap, QRectF, QRectF]] = []
             for step_y in range(scale):
@@ -230,6 +280,16 @@ class PaintTileCellsMixin:
                 return tuple(pieces)
             finer //= 2
         return ()
+
+
+def _covering_cell_count(width: int, height: int, minimum: int) -> int:
+    """Smallest power-of-two cell span that covers the matrix and ``minimum``."""
+
+    span = max(int(width), int(height), int(minimum), 1)
+    cells = max(1, int(minimum))
+    while cells < span:
+        cells *= 2
+    return cells
 
 
 def _source_in_parent(

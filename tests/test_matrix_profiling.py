@@ -22,6 +22,27 @@ from kraken_hub.presentation.qt.matrix_source import KrakenMatrixAssetSource, Kr
 from kraken_hub.presentation.qt.parts.run_manager_gui import _MainWindowReadyFilter
 
 
+def test_matrix_zoom_profile_reports_frames_per_second(tmp_path, monkeypatch):
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text(
+        "[profiling]\nenabled = false\nmatrix_zoom = true\ntop_lines = 5\n",
+        encoding="utf-8",
+    )
+    profiling.configure(tmp_path)
+    session = profiling.begin_matrix_zoom(1.0, 1.28)
+    assert session is not None
+    session.record_frame(session.started_at)
+    session.record_frame(session.started_at)
+    session.finish(status="displayed", final_zoom=1.28)
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[matrix_zoom] started" in report
+    assert "status=displayed" in report
+    assert "frames=2" in report
+    assert "fps=" in report
+    assert not session.active
+
+
 def test_profiling_ini_lives_at_project_root():
     project_root = Path(__file__).resolve().parents[1]
 

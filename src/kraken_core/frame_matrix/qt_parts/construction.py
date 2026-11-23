@@ -24,6 +24,8 @@ from kraken_core.frame_matrix.qt_parts.frame_rect import FrameRect
 from kraken_core.frame_matrix.qt_parts.viewport_tile_item import (
     FrameCellData,
     FrameSelection,
+    PreparedSelectionPaint,
+    _SelectionOverlayItem,
 )
 
 
@@ -45,6 +47,7 @@ class ConstructionMixin:
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setMouseTracking(True)
+        self._configure_matrix_viewport()
 
         self.matrix_width = 1
         self.matrix_height = 1
@@ -53,7 +56,19 @@ class ConstructionMixin:
         self._status_colors = dict(DEFAULT_STATUS_COLORS)
         self._border_mode = "status"
         self._fill_mode = "thumbnail"
+        self._border_colors: dict[tuple[int, int], QColor] = {}
+        self._fill_colors: dict[tuple[int, int], QColor] = {}
+        self._prepared_by_cell: dict[tuple[int, int], object] = {}
+        self._prepared_visuals: tuple = ()
+        self._empty_border = QColor("#475569")
+        self._empty_fill = QColor("#475569")
+        self._time_span: tuple[float, float] | None = None
+        self._time_span_builds = 0
         self._selection = FrameSelection()
+        self._selection_fill_rects: tuple[QRectF, ...] = ()
+        self._selection_border_rects: tuple[QRectF, ...] = ()
+        self._selection_paints: tuple[PreparedSelectionPaint, ...] = ()
+        self._selected_coordinates: frozenset[tuple[int, int]] = frozenset()
         self._selection_anchor: tuple[int, int] | None = None
         self._drag_anchor: tuple[int, int] | None = None
         self._drag_base_rectangles: tuple[FrameRect, ...] = ()
@@ -69,13 +84,19 @@ class ConstructionMixin:
         self.horizontalScrollBar().valueChanged.connect(self._schedule_visible_update)
         self.verticalScrollBar().valueChanged.connect(self._schedule_visible_update)
         self.apply_kraken_scene_theme()
+        self._selection_overlay = _SelectionOverlayItem(self)
+        self._graphics_scene.addItem(self._selection_overlay)
         self.set_matrix_size(width, height, orientation)
 
     def apply_kraken_scene_theme(self) -> None:
         from kraken_core.theme import scene_color
 
         self.setBackgroundBrush(QColor(scene_color("matrix")))
+        if hasattr(self, "resetCachedContent"):
+            self.resetCachedContent()
         self._status_colors["empty"] = scene_color("empty")
+        if hasattr(self, "_cells"):
+            self._store_cell_visuals(None)
         if getattr(self, "_visible_tiles", None):
             self._invalidate_tiles()
         elif self.viewport() is not None:
@@ -96,6 +117,9 @@ class ConstructionMixin:
     ) -> None:
         if int(width) <= 0 or int(height) <= 0:
             raise ValueError("matrix dimensions must be positive")
+        overlay = getattr(self, "_selection_overlay", None)
+        if overlay is not None:
+            overlay.prepareGeometryChange()
         self.matrix_width = int(width)
         self.matrix_height = int(height)
         if orientation is not None:
@@ -106,6 +130,8 @@ class ConstructionMixin:
             if cell.x <= self.matrix_width and cell.y <= self.matrix_height
         }
         self._selection = self._clamp_selection(self._selection)
+        self._store_selection_paints()
+        self._store_cell_visuals(None)
         self._graphics_scene.setSceneRect(
             0.0,
             0.0,
@@ -129,6 +155,7 @@ class ConstructionMixin:
             return
         self._orientation = normalized
         self._indexed_tile_cells = 0
+        self._store_selection_paints()
         self._invalidate_tiles()
 
     def set_cells(self, cells: Iterable[FrameCellData]) -> None:
@@ -137,6 +164,7 @@ class ConstructionMixin:
             self._ensure_inside(cell.x, cell.y)
             prepared[(cell.x, cell.y)] = cell
         self._cells = prepared
+        self._store_cell_visuals(None)
         self._indexed_tile_cells = 0
         self._invalidate_tiles()
         self._emit_cells_changed()
@@ -147,12 +175,15 @@ class ConstructionMixin:
 
     def update_cells(self, cells: Iterable[FrameCellData]) -> None:
         changed_tiles: dict[tuple[int, int], list[FrameCellData]] = {}
+        changed: list[FrameCellData] = []
         for cell in cells:
             self._ensure_inside(cell.x, cell.y)
             self._cells[(cell.x, cell.y)] = cell
+            changed.append(cell)
             if self._indexed_tile_cells:
                 key = ((cell.x - 1) // self._indexed_tile_cells, self._row_for_y(cell.y) // self._indexed_tile_cells)
                 changed_tiles.setdefault(key, []).append(cell)
+        self._store_cell_visuals(changed)
         if self._indexed_tile_cells:
             for key, replacements in changed_tiles.items():
                 indexed = {(cell.x, cell.y): cell for cell in self._tile_index.get(key, ())}
@@ -177,7 +208,11 @@ class ConstructionMixin:
 
     def remove_cells(self, coordinates: Iterable[tuple[int, int]]) -> None:
         for x, y in coordinates:
-            self._cells.pop((int(x), int(y)), None)
+            key = (int(x), int(y))
+            self._cells.pop(key, None)
+            self._border_colors.pop(key, None)
+            self._fill_colors.pop(key, None)
+        self._store_cell_visuals(None if self._border_mode == "time" or self._fill_mode == "time" else ())
         self._indexed_tile_cells = 0
         self._invalidate_tiles()
 
@@ -185,6 +220,8 @@ class ConstructionMixin:
         self._cells.clear()
         self._aggregates = ()
         self._indexed_tile_cells = 0
+        self._time_span = None
+        self._store_cell_visuals(None)
         self._invalidate_tiles()
         self._emit_cells_changed()
 
@@ -227,6 +264,7 @@ class ConstructionMixin:
             if not candidate.isValid():
                 raise ValueError(f"invalid color for status {status!r}: {color!r}")
             self._status_colors[str(status)] = candidate.name(QColor.NameFormat.HexArgb)
+        self._store_cell_visuals(None)
         self._invalidate_tiles()
 
     def selection(self) -> FrameSelection:
@@ -245,6 +283,7 @@ class ConstructionMixin:
         if normalized == self._selection:
             return
         self._selection = normalized
+        self._store_selection_paints()
         if self._drag_anchor is None:
             if normalized.rectangles:
                 last = normalized.rectangles[-1]
@@ -256,6 +295,43 @@ class ConstructionMixin:
 
     def clear_selection(self) -> None:
         self.set_selection(None)
+
+    def selection_fill_rects(self) -> tuple[QRectF, ...]:
+        return self._selection_fill_rects
+
+    def selection_border_rects(self) -> tuple[QRectF, ...]:
+        return self._selection_border_rects
+
+    def selection_paints(self) -> tuple[PreparedSelectionPaint, ...]:
+        """Return the stored selection fill and frame array."""
+        return self._selection_paints
+
+    def _store_selection_paints(self) -> None:
+        fills: list[QRectF] = []
+        borders: list[QRectF] = []
+        paints: list[PreparedSelectionPaint] = []
+        selected: dict[tuple[int, int], None] = {}
+        for rectangle in self._selection.rectangles:
+            for x, y in rectangle.coordinates():
+                if (x, y) in selected:
+                    continue
+                selected[(x, y)] = None
+                column = x - 1
+                row = self._row_for_y(y)
+                rect = QRectF(
+                    column * self.CELL_PITCH,
+                    row * self.CELL_PITCH,
+                    self.CELL_SIZE,
+                    self.CELL_SIZE,
+                )
+                border = QRectF(rect)
+                fills.append(rect)
+                borders.append(border)
+                paints.append(PreparedSelectionPaint(rect, border))
+        self._selection_fill_rects = tuple(fills)
+        self._selection_border_rects = tuple(borders)
+        self._selection_paints = tuple(paints)
+        self._selected_coordinates = frozenset(selected)
 
     def selected_coordinates(self, *, maximum: int | None = None) -> tuple[tuple[int, int], ...]:
         return tuple(self._selection.coordinates(maximum=maximum))

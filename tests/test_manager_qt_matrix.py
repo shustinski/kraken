@@ -194,6 +194,21 @@ def test_wheel_scrolls_and_modifier_changes_axis_or_zoom(qapp):
     assert view.zoom_factor() > zoom_before
 
 
+def test_ctrl_wheel_eases_toward_the_cursor_zoom(qapp):
+    view = FrameMatrixView(20, 20)
+    view.resize(400, 300)
+    view.show()
+    view.set_zoom_factor(1.0)
+
+    _send_wheel(view, 120, Qt.KeyboardModifier.ControlModifier)
+    started = view.zoom_factor()
+
+    assert 1.0 < started < 1.28
+    QTest.qWait(500)
+    assert view.zoom_factor() == pytest.approx(1.28, rel=0.02)
+    view.close()
+
+
 def test_shared_widget_deduplicates_viewport_and_loads_thumbnail(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(profiling, "_config", None)
     (tmp_path / "kraken.ini").write_text(
@@ -486,6 +501,52 @@ def test_cell_lod_paints_loaded_thumbnail_instead_of_status_fill(qapp):
 
     assert pixel.red() > 200
     assert pixel.red() > pixel.blue() * 2
+
+
+def test_zoom_animation_scales_a_snapshot_instead_of_repainting_cells(qapp):
+    view = FrameMatrixView(40, 40)
+    view.resize(480, 320)
+    calls = {"count": 0}
+    original = view._paint_tile_cells
+
+    def counting(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    view._paint_tile_cells = counting
+    view.show()
+    qapp.processEvents()
+    assert view.visible_item_count() > 0
+    assert calls["count"] > 0
+
+    _send_wheel(view, -120, Qt.KeyboardModifier.ControlModifier)
+    captured = calls["count"]
+    assert view._zoom_animating
+    assert any(tile._zoom_snapshot is not None for tile in view._visible_tiles.values())
+    view.viewport().update()
+    qapp.processEvents()
+    assert calls["count"] == captured
+
+    view._stop_zoom_animation(rebuild=True)
+    qapp.processEvents()
+    assert not view._zoom_animating
+    assert calls["count"] > captured
+
+
+def test_ctrl_wheel_stops_zooming_out_when_the_layer_fills_the_view(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(320, 240)
+    view.show()
+    view.set_zoom_factor(1.0)
+    for _ in range(24):
+        _send_wheel(view, -120, Qt.KeyboardModifier.ControlModifier)
+    QTest.qWait(700)
+
+    assert view.zoom_factor() == pytest.approx(view._fitted_zoom_factor(), rel=0.02)
+    before = view.zoom_factor()
+    _send_wheel(view, -120, Qt.KeyboardModifier.ControlModifier)
+    QTest.qWait(200)
+    assert view.zoom_factor() == pytest.approx(before, rel=0.001)
 
 
 def test_fit_shortcut_accepts_english_and_russian_layout(qapp):

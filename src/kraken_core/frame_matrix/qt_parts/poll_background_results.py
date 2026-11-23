@@ -161,7 +161,10 @@ class PollBackgroundResultsMixin:
                             self._thumbnail_batch_error_types.get("invalid_image_payload", 0) + 1
                         )
                     continue
+                self._mosaic_retry_delay_ms = _MOSAIC_RETRY_MS
+                self._mosaic_images.pop(key, None)
                 self._mosaic_images[key] = pixmap
+                _trim_fine_mosaics(self._mosaic_images, self.BASE_TILE_CELLS)
                 changed = True
                 if self._thumbnail_batch_profile is not None:
                     self._thumbnail_batch_completed += 1
@@ -171,6 +174,11 @@ class PollBackgroundResultsMixin:
                 if "not prepared" in str(exc):
                     self._schedule_mosaic_retry()
                     continue
+                if _transient_mosaic_error(exc):
+                    # A busy or restarting server must not leave the matrix half drawn.
+                    self._matrix_log.warning("Matrix mosaic request will be retried: %s", exc)
+                    self._schedule_mosaic_retry(backoff=True)
+                    continue
                 if self._thumbnail_batch_profile is not None:
                     self._thumbnail_batch_failed += 1
                     kind = type(exc).__name__
@@ -179,11 +187,14 @@ class PollBackgroundResultsMixin:
         if changed:
             self._invalidate_tiles()
 
-    def _schedule_mosaic_retry(self) -> None:
+    def _schedule_mosaic_retry(self, *, backoff: bool = False) -> None:
+        delay = int(getattr(self, "_mosaic_retry_delay_ms", _MOSAIC_RETRY_MS))
+        if backoff:
+            self._mosaic_retry_delay_ms = min(_MOSAIC_RETRY_MAX_MS, delay * 2)
         if getattr(self, "_mosaic_retry_scheduled", False):
             return
         self._mosaic_retry_scheduled = True
-        QTimer.singleShot(750, self._retry_mosaics)
+        QTimer.singleShot(delay, self._retry_mosaics)
 
     def _retry_mosaics(self) -> None:
         self._mosaic_retry_scheduled = False
@@ -198,3 +209,31 @@ class PollBackgroundResultsMixin:
 
         self._request_mosaics(_Pending(items, str(getattr(self, "_mosaic_revision", "") or "")))
         self._result_poll_timer.start()
+
+
+_FINE_MOSAIC_LIMIT = 384
+_MOSAIC_RETRY_MS = 750
+_MOSAIC_RETRY_MAX_MS = 8000
+
+
+def _transient_mosaic_error(exc: BaseException) -> bool:
+    """Connection trouble that a later request can get past."""
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return True
+        if "cannot reach" in str(current).lower():
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _trim_fine_mosaics(images: dict, base_cells: int, limit: int = _FINE_MOSAIC_LIMIT) -> None:
+    """Keep only the newest close-zoom mosaics; coarse levels stay for fallback."""
+
+    fine = [key for key in images if len(key) >= 3 and int(key[2]) < int(base_cells)]
+    for key in fine[: max(0, len(fine) - int(limit))]:
+        images.pop(key, None)

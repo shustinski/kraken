@@ -8,7 +8,7 @@ from typing import Any
 import weakref
 from PyQt6 import sip
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QStyleOptionGraphicsItem,
@@ -100,6 +100,7 @@ class _ViewportTileItem(QGraphicsItem):
         columns = min(tile_cells, owner.matrix_width - tile_x * tile_cells)
         rows = min(tile_cells, owner.matrix_height - tile_y * tile_cells)
         self._bounds = QRectF(left, top, columns * pitch, rows * pitch)
+        self._zoom_snapshot: QPixmap | None = None
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
 
@@ -116,11 +117,71 @@ class _ViewportTileItem(QGraphicsItem):
         owner = self._owner()
         if owner is None or sip.isdeleted(owner):
             return
+        snapshot = self._zoom_snapshot
+        if (
+            snapshot is not None
+            and not snapshot.isNull()
+            and owner._zoom_animating
+            and not owner._capturing_zoom_frame
+        ):
+            painter.drawPixmap(self._bounds, snapshot, QRectF(snapshot.rect()))
+            return
         lod = owner.lod_level()
         if lod is MatrixLod.OVERVIEW or self.tile_cells > owner.BASE_TILE_CELLS:
             owner._paint_overview_tile(painter, self)
             return
         owner._paint_tile_cells(painter, self, lod, option.exposedRect)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSelectionPaint:
+    """Stored fill and frame for one selected cell. Ready to draw."""
+
+    fill: QRectF
+    border: QRectF
+
+
+class _SelectionOverlayItem(QGraphicsItem):
+    """Selection strokes above every tile, so a later cell cannot cover them."""
+
+    def __init__(self, owner: FrameMatrixView) -> None:
+        super().__init__()
+        self._owner = weakref.ref(owner)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
+        self.setZValue(1)
+
+    def boundingRect(self) -> QRectF:  # type: ignore[override]
+        owner = self._owner()
+        if owner is None or sip.isdeleted(owner):
+            return QRectF()
+        return QRectF(0.0, 0.0, owner.matrix_width * owner.CELL_PITCH, owner.matrix_height * owner.CELL_PITCH)
+
+    def paint(  # type: ignore[override]
+        self,
+        painter: QPainter,
+        option: QStyleOptionGraphicsItem,
+        widget: QWidget | None = None,
+    ) -> None:
+        del widget
+        owner = self._owner()
+        if owner is None or sip.isdeleted(owner):
+            return
+        paints = owner._selection_paints
+        if not paints:
+            return
+        lod = owner.lod_level()
+        if lod is MatrixLod.OVERVIEW:
+            return
+        from kraken_core.theme import scene_color
+
+        exposed = option.exposedRect
+        pen = QPen(QColor(scene_color("selection")), 3.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        for item in paints:
+            if exposed.intersects(item.border):
+                painter.drawRect(item.border)
 
 
 if TYPE_CHECKING:

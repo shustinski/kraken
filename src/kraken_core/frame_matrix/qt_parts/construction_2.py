@@ -63,6 +63,8 @@ class Construction2Mixin:
         self._asset_futures: dict[tuple[int, int], tuple[int, Future]] = {}
         self._mosaic_futures: dict[tuple[object, ...], tuple[int, Future]] = {}
         self._mosaic_images: dict[tuple[object, ...], QPixmap] = {}
+        self._mosaic_requested: set[tuple[object, ...]] = set()
+        self._mosaic_requested_cells = 0
         self._mosaic_revision = ""
         self._thumbnail_batch_profile: profiling.ThumbnailBatchProfile | None = None
         self._thumbnail_batch_total = 0

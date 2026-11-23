@@ -173,7 +173,7 @@ def test_pyramid_covers_zoomed_out_tiles_from_small_previews(tmp_path):
 
     assert pyramid.read(x1=fine[0], y1=fine[1], x2=fine[2], y2=fine[3], orientation="y_down")
     assert pyramid.read(x1=coarse[0], y1=coarse[1], x2=coarse[2], y2=coarse[3], orientation="y_down")
-    assert (tmp_path / "pyramid" / "previews").is_dir()
+    assert (tmp_path / "pyramid" / "previews-256").is_dir()
 
 
 def test_zoom_keeps_the_loaded_mosaic_until_the_new_level_arrives(qapp):
@@ -198,6 +198,152 @@ def test_zoom_keeps_the_loaded_mosaic_until_the_new_level_arrives(qapp):
     view.close()
 
 
+def test_far_zoom_uses_the_layer_overview_when_it_is_larger_than_the_matrix(qapp):
+    from PyQt6.QtGui import QColor, QPixmap
+
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import _ViewportTileItem
+
+    view = FrameMatrixWidget(40, 40)
+    overview = QPixmap(64, 64)
+    overview.fill(QColor(12, 34, 56))
+    view._mosaic_revision = "rev"
+    view._mosaic_images[(0, 0, 64, "rev", view.orientation().value)] = overview
+    tile = _ViewportTileItem(view, 1, 0, 16)
+    pieces = view._mosaic_pieces(tile)
+
+    assert len(pieces) == 1
+    image, source, _dest = pieces[0]
+    assert image is overview
+    assert source.left() > 0
+    view.close()
+
+
 def test_y_up_slot_puts_the_larger_coordinate_at_the_top():
     assert mosaic_slot(2, 5, x1=2, y1=4, x2=3, y2=5, orientation="y_up") == (0, 0)
     assert mosaic_slot(2, 4, x1=2, y1=4, x2=3, y2=5, orientation="y_down") == (0, 0)
+
+
+def test_close_zoom_tile_gives_one_frame_the_whole_mosaic_edge(tmp_path):
+    import io
+
+    from PIL import Image
+
+    from kraken_core.frame_matrix.prepared_tiles import MatrixTileNotReady, PreparedTilePyramid
+
+    def load_index():
+        return "rev", 32, 32, ({"x": 3, "y": 5, "asset_sha256": "cc"},)
+
+    def read_image(cell):
+        del cell
+        image = Image.new("RGB", (1024, 1024))
+        for x in range(0, 1024, 64):
+            image.paste((255, 255, 255), (x, 0, x + 32, 1024))
+        output = io.BytesIO()
+        image.save(output, "PNG")
+        return output.getvalue()
+
+    pyramid = PreparedTilePyramid(tmp_path / "pyramid", load_index, read_image)
+    pyramid.build_now()
+    with pytest.raises(MatrixTileNotReady):
+        pyramid.read(x1=3, y1=5, x2=3, y2=5, orientation="y_down")
+    pyramid.build_now()
+    payload = pyramid.read(x1=3, y1=5, x2=3, y2=5, orientation="y_down")
+
+    with Image.open(io.BytesIO(payload)) as tile:
+        assert tile.size == (256, 256)
+        row = [tile.getpixel((x, 128))[0] for x in range(256)]
+    # 16 white stripes survive: the frame was not squeezed into a 16 px slot.
+    edges = sum(1 for left, right in zip(row, row[1:]) if (left > 128) != (right > 128))
+    assert edges >= 28
+
+
+def test_mosaic_level_follows_zoom_below_the_graphics_tile(qapp):
+    view = FrameMatrixWidget(64, 64)
+    view.set_zoom_factor(view.MAX_ZOOM)
+    assert view._effective_tile_cells() == view.BASE_TILE_CELLS
+    assert view._mosaic_tile_cells() == 1
+    view.set_zoom_factor(0.05)
+    assert view._mosaic_tile_cells() == view._effective_tile_cells()
+    view.close()
+
+
+def test_close_zoom_paints_one_cell_mosaics_over_the_graphics_tile(qapp):
+    from PyQt6.QtGui import QColor, QPixmap
+
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import _ViewportTileItem
+
+    view = FrameMatrixWidget(32, 32)
+    view.set_zoom_factor(view.MAX_ZOOM)
+    orientation = view.orientation().value
+    coarse = QPixmap(256, 256)
+    coarse.fill(QColor(20, 30, 40))
+    sharp = QPixmap(256, 256)
+    sharp.fill(QColor(200, 30, 40))
+    view._mosaic_revision = "rev"
+    view._mosaic_images[(0, 0, 16, "rev", orientation)] = coarse
+    view._mosaic_images[(2, 3, 1, "rev", orientation)] = sharp
+    view._mosaic_requested = {(2, 3, 1, "rev", orientation), (4, 4, 1, "rev", orientation)}
+    view._mosaic_requested_cells = 1
+    tile = _ViewportTileItem(view, 0, 0, 16)
+
+    pieces = view._mosaic_pieces(tile)
+    # One child is still loading, so the coarse tile stays underneath.
+    assert [piece[0] for piece in pieces] == [coarse, sharp]
+    _image, source, dest = pieces[1]
+    assert source.width() == 256
+    assert dest.left() == 2 * view.CELL_PITCH
+    assert dest.top() == 3 * view.CELL_PITCH
+    assert dest.width() == view.CELL_PITCH
+
+    view._mosaic_requested = {(2, 3, 1, "rev", orientation)}
+    assert [piece[0] for piece in view._mosaic_pieces(tile)] == [sharp]
+    view.close()
+
+
+def test_small_source_fills_the_whole_slot():
+    from PIL import Image
+
+    source = Image.new("RGB", (128, 64), (250, 250, 250))
+    output = io.BytesIO()
+    source.save(output, "PNG")
+
+    payload = compose_mosaic(width_cells=1, height_cells=1, images={(0, 0): output.getvalue()})
+
+    with Image.open(io.BytesIO(payload)) as tile:
+        assert tile.size == (256, 256)
+        # Wide frame: full width, half height, centred vertically.
+        assert tile.getbbox() == (0, 64, 256, 192)
+
+
+def test_urgent_tiles_are_written_smallest_first(tmp_path):
+    from kraken_core.frame_matrix.prepared_tiles import PreparedTilePyramid
+
+    pyramid = PreparedTilePyramid(tmp_path / "pyramid", lambda: ("rev", 70, 70, ()), lambda _cell: None)
+    written = []
+    pyramid._write_tile = lambda orientation, x1, y1, x2, y2, cells=None: written.append((x1, y1, x2, y2))
+    pyramid._urgent.put(("y_down", 1, 1, 70, 70))
+    pyramid._urgent.put(("y_down", 17, 1, 20, 4))
+    pyramid._urgent.put(("y_down", 1, 1, 16, 16))
+    pyramid._urgent.put(("y_down", 5, 5, 5, 5))
+
+    pyramid._drain_urgent()
+
+    # The whole-matrix overview no longer blocks the tiles on screen.
+    assert written == [(5, 5, 5, 5), (17, 1, 20, 4), (1, 1, 16, 16), (1, 1, 70, 70)]
+
+
+def test_connection_errors_are_retried_not_reported():
+    from kraken_core.frame_matrix.qt_parts.poll_background_results import _transient_mosaic_error
+
+    class RemoteServerError(RuntimeError):
+        pass
+
+    try:
+        try:
+            raise TimeoutError("timed out")
+        except TimeoutError as exc:
+            raise RemoteServerError("Cannot reach Kraken Server at http://127.0.0.1:8080") from exc
+    except RemoteServerError as wrapped:
+        assert _transient_mosaic_error(wrapped)
+    assert _transient_mosaic_error(ConnectionResetError())
+    assert not _transient_mosaic_error(ValueError("broken png"))

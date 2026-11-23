@@ -12,7 +12,7 @@ import re
 import sys
 from contextlib import contextmanager
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from logging import INFO, LogRecord
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -29,6 +29,7 @@ _KINDS = (
     "matrix_ui",
     "matrix_thumbnails_total",
     "layer_selection",
+    "matrix_zoom",
 )
 _DEFAULT_INI = """; Kraken profiling. Restart Kraken after editing.
 [profiling]
@@ -44,6 +45,8 @@ matrix_ui =
 matrix_thumbnails_total =
 ; Layer area selection: from the mouse press through the redraw after release.
 layer_selection =
+; Matrix zoom animation: frames per second and per-frame cost until the scale settles.
+matrix_zoom =
 top_lines = 25
 log_file = profiling.log
 """
@@ -272,6 +275,83 @@ class ThumbnailBatchProfile:
             self._workers.stream = report
             self._workers.strip_dirs().sort_stats("cumulative").print_stats(self.config.top_lines)
         _write_report(self.config.log_path, report.getvalue())
+
+
+@dataclass
+class MatrixZoomProfile:
+    """Frame timing for one wheel-zoom animation, in the same shape Contour reports."""
+
+    initial_zoom: float
+    target_zoom: float
+    config: _ProfileConfig
+    started_at: float = field(default_factory=perf_counter)
+    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    active: bool = False
+    frame_durations_ms: list[float] = field(default_factory=list)
+    frame_intervals_ms: list[float] = field(default_factory=list)
+    last_frame_at: float | None = None
+
+    def update_target(self, target_zoom: float) -> None:
+        self.target_zoom = max(0.0, float(target_zoom))
+
+    def record_frame(self, frame_started_at: float) -> None:
+        completed_at = perf_counter()
+        self.frame_durations_ms.append(max(0.0, (completed_at - frame_started_at) * 1000.0))
+        if self.last_frame_at is not None:
+            self.frame_intervals_ms.append(max(0.0, (completed_at - self.last_frame_at) * 1000.0))
+        self.last_frame_at = completed_at
+
+    def finish(self, *, status: str, final_zoom: float) -> None:
+        if self.active:
+            self.profiler.disable()
+            self.active = False
+        durations = sorted(self.frame_durations_ms)
+        average_ms = sum(durations) / len(durations) if durations else 0.0
+        p95_index = max(0, min(len(durations) - 1, round(len(durations) * 0.95) - 1))
+        p95_ms = durations[p95_index] if durations else 0.0
+        maximum_ms = durations[-1] if durations else 0.0
+        elapsed = max(0.0, (perf_counter() - self.started_at) * 1000.0)
+        if self.frame_intervals_ms:
+            mean_interval = sum(self.frame_intervals_ms) / len(self.frame_intervals_ms)
+            fps = 1000.0 / mean_interval if mean_interval > 0.0 else 0.0
+        else:
+            fps = len(durations) * 1000.0 / elapsed if elapsed > 0.0 else 0.0
+        skipped = " cprofile_skipped=yes" if not self.profiler.getstats() else ""
+        report = io.StringIO()
+        report.write(
+            f"[matrix_zoom] status={status} total={elapsed:.3f}ms "
+            f"zoom={self.initial_zoom:.4f}->{max(0.0, float(final_zoom)):.4f} "
+            f"target={self.target_zoom:.4f} frames={len(durations)} "
+            f"fps={fps:.2f} frame_avg={average_ms:.3f}ms "
+            f"frame_p95={p95_ms:.3f}ms frame_max={maximum_ms:.3f}ms{skipped}\n"
+        )
+        if self.profiler.getstats():
+            pstats.Stats(self.profiler, stream=report).strip_dirs().sort_stats("cumulative").print_stats(
+                self.config.top_lines
+            )
+        _write_report(self.config.log_path, report.getvalue())
+
+
+def begin_matrix_zoom(initial_zoom: float, target_zoom: float) -> MatrixZoomProfile | None:
+    config = _config
+    if config is None or not config.flags.get("matrix_zoom", False):
+        return None
+    session = MatrixZoomProfile(
+        initial_zoom=max(0.0, float(initial_zoom)),
+        target_zoom=max(0.0, float(target_zoom)),
+        config=config,
+    )
+    try:
+        session.profiler.enable()
+        session.active = True
+    except ValueError as exc:
+        if not _is_profiler_conflict(exc):
+            raise
+    _write_report(
+        config.log_path,
+        f"[matrix_zoom] started zoom={session.initial_zoom:.4f} target={session.target_zoom:.4f}\n",
+    )
+    return session
 
 
 def begin_thumbnail_batch() -> ThumbnailBatchProfile | None:

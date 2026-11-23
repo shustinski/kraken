@@ -58,8 +58,7 @@ def compose_mosaic(
             continue
         try:
             with Image.open(io.BytesIO(payload)) as source:
-                frame = source.convert("RGBA")
-                frame.thumbnail((slot, slot), Image.Resampling.LANCZOS)
+                frame = _fit_to_slot(source.convert("RGBA"), slot)
         except (UnidentifiedImageError, OSError, ValueError):
             continue
         left = int(slot_x) * slot + (slot - frame.width) // 2
@@ -68,6 +67,23 @@ def compose_mosaic(
     output = io.BytesIO()
     canvas.save(output, "PNG")
     return output.getvalue()
+
+
+def _fit_to_slot(frame: Image.Image, slot: int) -> Image.Image:
+    """Scale up or down so the longer side fills the slot, keeping the aspect ratio.
+
+    ``Image.thumbnail`` never enlarges, so a preview smaller than the slot would
+    sit as a small square in the middle of the cell.
+    """
+
+    width, height = frame.size
+    if width <= 0 or height <= 0:
+        return frame
+    scale = slot / max(width, height)
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    if size == frame.size:
+        return frame
+    return frame.resize(size, Image.Resampling.LANCZOS)
 
 
 def cached_mosaic(owner: object, key: tuple[object, ...], build: Callable[[], bytes]) -> bytes:

@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import math
 from PyQt6.QtCore import QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QPainter
 
+from kraken_core.frame_matrix.mosaic import MOSAIC_EDGE
 from kraken_core.frame_matrix.qt_parts.module_state import (
     GridOrientation,
-    STATUS_PRIORITY,
 )
 
 from kraken_core.frame_matrix.qt_parts.frame_rect import FrameRect
@@ -28,6 +28,29 @@ class UpdateVisibleTilesMixin:
     def zoom_factor(self) -> float:
         return abs(float(self.transform().m11()))
 
+    def _fitted_zoom_factor(self) -> float:
+        """Largest scale at which the whole layer still covers the viewport."""
+
+        scene_rect = self.sceneRect()
+        viewport = self.viewport().rect()
+        if (
+            scene_rect.width() <= 0
+            or scene_rect.height() <= 0
+            or viewport.width() <= 0
+            or viewport.height() <= 0
+        ):
+            return self.MIN_ZOOM
+        width = viewport.width()
+        height = viewport.height()
+        vertical_bar = self.verticalScrollBar()
+        horizontal_bar = self.horizontalScrollBar()
+        if vertical_bar.isVisible():
+            width += vertical_bar.width()
+        if horizontal_bar.isVisible():
+            height += horizontal_bar.height()
+        fitted = min(width / scene_rect.width(), height / scene_rect.height())
+        return max(self.MIN_ZOOM, min(self.MAX_ZOOM, fitted))
+
     def lod_level(self) -> MatrixLod:
         zoom = self.zoom_factor()
         if zoom < self.CELLS_LOD:
@@ -37,16 +60,19 @@ class UpdateVisibleTilesMixin:
         return MatrixLod.DETAILS
 
     def reset_zoom(self) -> None:
+        self._stop_zoom_animation(rebuild=False)
         self.resetTransform()
         self._after_transform()
 
     def set_zoom_factor(self, factor: float) -> None:
+        self._stop_zoom_animation(rebuild=False)
         bounded = max(self.MIN_ZOOM, min(self.MAX_ZOOM, float(factor)))
         self.resetTransform()
         self.scale(bounded, bounded)
         self._after_transform()
 
     def zoom_to_fit(self) -> None:
+        self._stop_zoom_animation(rebuild=False)
         scene_rect = self.sceneRect()
         if scene_rect.isEmpty():
             return
@@ -101,6 +127,26 @@ class UpdateVisibleTilesMixin:
         required = max(self.BASE_TILE_CELLS, math.ceil(self.TILE_DEVICE_TARGET / (self.CELL_PITCH * zoom)))
         return 1 << (required - 1).bit_length()
 
+    def _mosaic_tile_cells(self) -> int:
+        """Mosaic level whose per-cell slot is at least as large as a cell on screen.
+
+        Graphics tiles never drop below ``BASE_TILE_CELLS``, but at close zoom a
+        16-cell mosaic gives every frame only a few pixels. Finer mosaics cover
+        the same graphics tile in pieces, so the image stays sharp.
+        """
+
+        view_cells = self._effective_tile_cells()
+        try:
+            ratio = float(self.viewport().devicePixelRatioF())
+        except (AttributeError, RuntimeError):
+            ratio = 1.0
+        device_cell = self.CELL_PITCH * max(self.MIN_ZOOM, self.zoom_factor()) * max(ratio, 1.0)
+        fit = MOSAIC_EDGE / max(device_cell, 1.0e-9)
+        cells = self.FINEST_MOSAIC_CELLS
+        while cells * 2 <= fit and cells * 2 <= view_cells:
+            cells *= 2
+        return min(view_cells, cells)
+
     def _rebuild_tile_index(self, tile_cells: int) -> None:
         buckets: dict[tuple[int, int], list[FrameCellData]] = {}
         for cell in self._cells.values():
@@ -118,6 +164,8 @@ class UpdateVisibleTilesMixin:
 
     def _run_scheduled_update(self) -> None:
         self._update_scheduled = False
+        if getattr(self, "_zoom_animating", False):
+            return
         self._update_visible_tiles()
 
     def _update_visible_tiles(self) -> None:
@@ -169,6 +217,9 @@ class UpdateVisibleTilesMixin:
             self._update_visible_tiles()
         for item in self._visible_tiles.values():
             item.update()
+        overlay = getattr(self, "_selection_overlay", None)
+        if overlay is not None:
+            overlay.update()
         self.viewport().update()
         for child in self.viewport().children():
             if child.objectName() == "matrixMinimap":
@@ -178,51 +229,12 @@ class UpdateVisibleTilesMixin:
         candidate = QColor(self._status_colors.get(status, self._status_colors["empty"]))
         return candidate if candidate.isValid() else QColor("#1f2937")
 
-    def _tile_frame_rect(self, tile: _ViewportTileItem) -> FrameRect:
-        x1 = tile.tile_x * tile.tile_cells + 1
-        x2 = min(self.matrix_width, x1 + tile.tile_cells - 1)
-        row1 = tile.tile_y * tile.tile_cells
-        row2 = min(self.matrix_height - 1, row1 + tile.tile_cells - 1)
-        y_first = self._y_for_row(row1)
-        y_last = self._y_for_row(row2)
-        return FrameRect(x1, min(y_first, y_last), x2, max(y_first, y_last))
-
     def _paint_overview_tile(self, painter: QPainter, tile: _ViewportTileItem) -> None:
-        materialized = self._tile_index.get((tile.tile_x, tile.tile_y), ())
-        highest_status = "empty"
-        highest_priority = STATUS_PRIORITY["empty"]
-        for cell in materialized:
-            priority = STATUS_PRIORITY.get(cell.status, 1)
-            if priority > highest_priority:
-                highest_status = cell.status
-                highest_priority = priority
-        tile_frames = self._tile_frame_rect(tile)
-        for aggregate in self._aggregates:
-            bounds = aggregate.bounds
-            if not tile_frames.intersects(FrameRect(bounds.x1, bounds.y1, bounds.x2, bounds.y2)):
-                continue
-            for status, count in aggregate.status_counts.items():
-                if int(count) <= 0:
-                    continue
-                priority = STATUS_PRIORITY.get(str(status), 1)
-                if priority > highest_priority:
-                    highest_status = str(status)
-                    highest_priority = priority
-        rect = tile.boundingRect().adjusted(0.8, 0.8, -1.2, -1.2)
-        painter.fillRect(rect, self._status_color(highest_status))
-        self._paint_loaded_mosaic(painter, tile)
-        from kraken_core.theme import scene_color
+        """Far zoom shows the continuous layer image, not one status block per tile."""
 
-        border = QColor("#475569")
-        if any(rectangle.intersects(tile_frames) for rectangle in self._selection.rectangles):
-            border = QColor(scene_color("selection"))
-            shade = QColor(border)
-            shade.setAlphaF(0.2)
-            painter.fillRect(rect, shade)
-        pen = QPen(border, max(1.0, 1.5 / max(self.zoom_factor(), self.MIN_ZOOM)))
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        painter.drawRect(rect)
+        if self._paint_loaded_mosaic(painter, tile):
+            return
+        painter.fillRect(tile.boundingRect(), self._status_color("empty"))
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData

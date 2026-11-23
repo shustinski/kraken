@@ -1,9 +1,10 @@
 """Tile pyramid prepared ahead of a viewport request.
 
-The finest level covers 16 matrix cells. Each coarser level doubles that span,
-the same steps the view uses when it zooms out. A request only reads a PNG
-that was written earlier. Missing tiles are queued and the caller is told to
-try again.
+The finest prepared level covers 16 matrix cells. Each coarser level doubles
+that span, the same steps the view uses when it zooms out. Close zoom asks for
+smaller tiles (8, 4, 2 or 1 cell) so a frame gets more pixels; those are built
+only when requested. A request only reads a PNG that was written earlier.
+Missing tiles are queued and the caller is told to try again.
 """
 
 from __future__ import annotations
@@ -20,11 +21,14 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
-from kraken_core.frame_matrix.mosaic import compose_mosaic, mosaic_slot
+from kraken_core.frame_matrix.mosaic import MOSAIC_EDGE, compose_mosaic, mosaic_slot
 
 _LOGGER = logging.getLogger(__name__)
 FINEST_CELLS = 16
-_PREVIEW_EDGE = 128
+# A one-cell tile gives a frame the whole mosaic edge, so previews must be that large.
+_PREVIEW_EDGE = MOSAIC_EDGE
+# Bump when tile pixels change so tiles written by older code are not served.
+TILE_FORMAT = 2
 _BUILDING = threading.local()
 
 
@@ -126,7 +130,7 @@ def preview_png(payload: bytes, edge: int = _PREVIEW_EDGE) -> bytes | None:
             if source.format == "JPEG":
                 source.draft("RGB", (int(edge), int(edge)))
             frame = source.convert("RGBA")
-            frame.thumbnail((int(edge), int(edge)), Image.Resampling.BILINEAR)
+            frame.thumbnail((int(edge), int(edge)), Image.Resampling.LANCZOS)
     except (UnidentifiedImageError, OSError, ValueError):
         return None
     output = io.BytesIO()
@@ -152,6 +156,11 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         raise
 
 
+def _urgent_area(request: tuple[str, int, int, int, int]) -> tuple[int, int, int]:
+    _orientation, x1, y1, x2, y2 = request
+    return (int(x2) - int(x1) + 1) * (int(y2) - int(y1) + 1), int(y1), int(x1)
+
+
 def _newer_stamp(stored: str, observed: str) -> bool:
     if not stored or not observed or stored == observed:
         return False
@@ -175,6 +184,7 @@ class PreparedTilePyramid:
         self._lock = threading.Lock()
         self._run_lock = threading.Lock()
         self._urgent: queue.SimpleQueue[tuple[str, int, int, int, int]] = queue.SimpleQueue()
+        self._urgent_pending: set[tuple[str, int, int, int, int]] = set()
         self._thread: threading.Thread | None = None
         self._generation = 0
         self._stamp = ""
@@ -267,11 +277,25 @@ class PreparedTilePyramid:
         _LOGGER.info("Matrix tiles ready at %s (%sx%s, %s cells)", self.directory, width, height, len(cells))
 
     def _drain_urgent(self) -> None:
+        """Write requested tiles, smallest first.
+
+        A whole-matrix overview needs every preview and can take minutes on a
+        fresh cache; the close-zoom tiles the user is looking at must not wait
+        behind it. New requests are picked up after every tile.
+        """
+
+        pending = self._urgent_pending
         while True:
-            try:
-                orientation, x1, y1, x2, y2 = self._urgent.get_nowait()
-            except queue.Empty:
+            while True:
+                try:
+                    pending.add(self._urgent.get_nowait())
+                except queue.Empty:
+                    break
+            if not pending:
                 return
+            request = min(pending, key=_urgent_area)
+            pending.discard(request)
+            orientation, x1, y1, x2, y2 = request
             self._write_tile(orientation, x1, y1, x2, y2, cells=self._cells)
 
     def _write_tile(
@@ -323,16 +347,16 @@ class PreparedTilePyramid:
         safe = "".join(character for character in digest.lower() if character in "0123456789abcdef")
         if len(safe) < 4:
             safe = hashlib.sha256(digest.encode()).hexdigest()
-        return self.directory / "previews" / safe[:2] / safe
+        return self.directory / f"previews-{_PREVIEW_EDGE}" / safe[:2] / safe
 
     def _token(self) -> str:
-        return hashlib.sha256(self._stamp.encode()).hexdigest()
+        return hashlib.sha256(f"{TILE_FORMAT}:{self._stamp}".encode()).hexdigest()
 
     def _current_path(self) -> Path:
         return self.directory / "current"
 
     def _marker(self) -> Path:
-        return self.directory / "complete"
+        return self.directory / f"complete-{TILE_FORMAT}"
 
     def _published_token(self) -> str | None:
         path = self._current_path()

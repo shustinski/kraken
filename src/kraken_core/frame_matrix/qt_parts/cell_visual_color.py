@@ -1,32 +1,101 @@
 """qt: cell visual color."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
-import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QKeyEvent, QMouseEvent, QWheelEvent
+from PyQt6.QtGui import QColor, QKeyEvent, QMouseEvent
 
 from kraken_core.frame_matrix.qt_parts.frame_rect import FrameRect
 
-from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameSelection
+from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData, FrameSelection
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCellVisual:
+    """Border and fill already resolved for one materialized cell."""
+
+    x: int
+    y: int
+    border: QColor
+    fill: QColor
 
 
 class CellVisualColorMixin:
     def set_visual_modes(self, border: str, fill: str) -> None:
-        border_modes = {"time", "performer", "quality", "status"}
-        fill_modes = border_modes | {"thumbnail"}
+        border_modes = {"none", "time", "performer", "quality", "status"}
+        fill_modes = {"time", "performer", "quality", "status", "thumbnail"}
         if border not in border_modes or fill not in fill_modes:
             raise ValueError("Unsupported matrix visual mode")
         self._border_mode, self._fill_mode = border, fill
-        self.viewport().update()
+        self._store_cell_visuals(None)
+        self._invalidate_tiles()
 
     def visual_modes(self) -> tuple[str, str]:
         return self._border_mode, self._fill_mode
 
+    def border_colors(self) -> Mapping[tuple[int, int], QColor]:
+        return self._border_colors
+
+    def fill_colors(self) -> Mapping[tuple[int, int], QColor]:
+        return self._fill_colors
+
+    def cell_visuals(self) -> tuple[PreparedCellVisual, ...]:
+        """Return the stored border/fill array. This does not resolve colors."""
+        return self._prepared_visuals
+
+    def _store_cell_visuals(self, cells: Iterable[FrameCellData] | None) -> None:
+        """Resolve border and fill for changed cells and publish them as one array."""
+        self._refresh_time_span()
+        if cells is None or self._border_mode == "time" or self._fill_mode == "time":
+            self._border_colors = {}
+            self._fill_colors = {}
+            targets = tuple(self._cells.values())
+        else:
+            targets = tuple(cells)
+        for cell in targets:
+            key = (cell.x, cell.y)
+            self._border_colors[key] = self._cell_visual_color(cell, self._border_mode)
+            self._fill_colors[key] = self._cell_visual_color(cell, self._fill_mode)
+        sample = FrameCellData(1, 1)
+        self._empty_border = self._cell_visual_color(sample, self._border_mode)
+        self._empty_fill = self._cell_visual_color(sample, self._fill_mode)
+        prepared = {
+            key: PreparedCellVisual(key[0], key[1], self._border_colors[key], self._fill_colors[key])
+            for key in self._border_colors
+        }
+        self._prepared_by_cell = prepared
+        self._prepared_visuals = tuple(prepared.values())
+
+    def _refresh_time_span(self) -> None:
+        """Widen the layer time scale. The visible window and the selection do not shrink it."""
+
+        self._time_span_builds += 1
+        stamps = [
+            parsed
+            for value in self._cells.values()
+            if (
+                parsed := self._timestamp(
+                    (value.payload if isinstance(value.payload, Mapping) else {}).get("modified_at")
+                )
+            )
+            is not None
+        ]
+        if not stamps:
+            return
+        oldest, newest = min(stamps), max(stamps)
+        current = self._time_span
+        if current is None:
+            self._time_span = (oldest, newest)
+            return
+        self._time_span = (min(current[0], oldest), max(current[1], newest))
+
     def _cell_visual_color(self, cell: FrameCellData, mode: str) -> QColor:
         payload = cell.payload if isinstance(cell.payload, Mapping) else {}
         neutral = QColor("#475569")
+        if mode == "none":
+            return QColor()
         if mode == "thumbnail":
             return self._status_color(cell.status)
         if mode == "performer":
@@ -46,16 +115,10 @@ class CellVisualColorMixin:
             }.get(str(payload.get("review_status") or ""), self._status_color(cell.status))
         if mode == "time":
             stamp = self._timestamp(payload.get("modified_at"))
-            values = [
-                parsed
-                for value in self._cells.values()
-                if (parsed := self._timestamp(
-                    (value.payload if isinstance(value.payload, Mapping) else {}).get("modified_at")
-                )) is not None
-            ]
-            if stamp is None or not values:
+            span = self._time_span
+            if stamp is None or span is None:
                 return neutral
-            oldest, newest = min(values), max(values)
+            oldest, newest = span
             ratio = 1.0 if newest <= oldest else (stamp - oldest) / (newest - oldest)
             return QColor.fromRgbF(1.0 - ratio, ratio, 0.08)
         return neutral
@@ -75,30 +138,6 @@ class CellVisualColorMixin:
         self._indexed_tile_cells = 0
         self._update_visible_tiles()
         self._invalidate_tiles()
-
-    def wheelEvent(self, event: QWheelEvent) -> None:  # type: ignore[override]
-        delta = event.angleDelta().y()
-        if not delta:
-            super().wheelEvent(event)
-            return
-        modifiers = event.modifiers()
-        if modifiers & Qt.KeyboardModifier.ControlModifier:
-            current = self.zoom_factor()
-            target = max(self.MIN_ZOOM, min(self.MAX_ZOOM, current * math.pow(1.0015, delta)))
-            if not math.isclose(current, target):
-                factor = target / current
-                self.scale(factor, factor)
-                self._after_transform()
-        else:
-            scrollbar = (
-                self.horizontalScrollBar()
-                if modifiers & Qt.KeyboardModifier.ShiftModifier
-                else self.verticalScrollBar()
-            )
-            pixel_delta = event.pixelDelta()
-            step = pixel_delta.y() if not pixel_delta.isNull() else delta / 8.0
-            scrollbar.setValue(scrollbar.value() - round(step * 3))
-        event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         blocked_modifiers = (

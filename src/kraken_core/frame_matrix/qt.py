@@ -56,9 +56,11 @@ from .qt_parts.viewport_tile_item import (
     _ViewportTileItem,
 )
 from .qt_parts.frame_matrix_minimap import FrameMatrixMinimap
+from .qt_parts.zoom_animation import ZoomAnimationMixin
 
 class FrameMatrixView(
     ConstructionMixin,
+    ZoomAnimationMixin,
     UpdateVisibleTilesMixin,
     PaintTileCellsMixin,
     CellVisualColorMixin,
@@ -80,6 +82,7 @@ class FrameMatrixView(
     CELL_GAP = 0.0
     CELL_PITCH = CELL_SIZE + CELL_GAP
     BASE_TILE_CELLS = 16
+    FINEST_MOSAIC_CELLS = 1
     TILE_DEVICE_TARGET = 110.0
     MIN_ZOOM = 1.0e-8
     MAX_ZOOM = 8.0

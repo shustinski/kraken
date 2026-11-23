@@ -4,6 +4,7 @@ from __future__ import annotations
 from kraken_core.frame_matrix.models import (
     MatrixViewportResult,
 )
+from kraken_core.frame_matrix.prepared_tiles import TILE_FORMAT
 from kraken_core.frame_matrix.storage import ThumbnailKey
 
 from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData
@@ -136,7 +137,7 @@ class ApplyViewportResultMixin:
         load_mosaic = self._mosaic_loader()
         if load_mosaic is None or self._thumbnail_cache is None:
             return False
-        cells = self._effective_tile_cells()
+        cells = self._mosaic_tile_cells()
         self._mosaic_source_items = tuple(item for item in result.items if item.asset is not None)
         wanted: set[tuple[int, int]] = set()
         for item in result.items:
@@ -148,6 +149,8 @@ class ApplyViewportResultMixin:
         revision = result.source_revision or "0"
         orientation = self.orientation().value
         self._mosaic_revision = revision
+        self._mosaic_requested_cells = cells
+        self._mosaic_requested = {(tile_x, tile_y, cells, revision, orientation) for tile_x, tile_y in wanted}
         previous = self._mosaic_futures
         self._mosaic_futures = {}
         kept = 0
@@ -167,7 +170,7 @@ class ApplyViewportResultMixin:
                 kept += 1
                 continue
             cache_key = ThumbnailKey(
-                source_key=f"mosaic:{x1}:{y1}:{x2}:{y2}:{orientation}",
+                source_key=f"mosaic:v{TILE_FORMAT}:{x1}:{y1}:{x2}:{y2}:{orientation}",
                 source_revision=revision,
                 lod=cells,
                 width=256,
@@ -192,7 +195,8 @@ class ApplyViewportResultMixin:
                 batch.track(future)
             self._mosaic_futures[key] = (self._viewport_generation, future)
         overview = self._overview_tile_cells()
-        if (0, 0, overview, revision, orientation) not in self._mosaic_futures:
+        covers_matrix = cells >= max(self.matrix_width, self.matrix_height)
+        if not covers_matrix and (0, 0, overview, revision, orientation) not in self._mosaic_futures:
             kept += self._enqueue_mosaic(
                 0,
                 0,
@@ -240,7 +244,7 @@ class ApplyViewportResultMixin:
             self._mosaic_futures[key] = prior
             return 1
         cache_key = ThumbnailKey(
-            source_key=f"mosaic:{x1}:{y1}:{x2}:{y2}:{orientation}",
+            source_key=f"mosaic:v{TILE_FORMAT}:{x1}:{y1}:{x2}:{y2}:{orientation}",
             source_revision=revision,
             lod=cells,
             width=256,

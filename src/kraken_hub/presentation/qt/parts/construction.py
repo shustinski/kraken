@@ -130,11 +130,16 @@ class ConstructionMixin:
         self._project_workspaces: dict[str, ProjectWorkspacePage] = {}
         self._background_workers: set[QThread] = set()
         self._source_preparation_keys: set[tuple[str, str]] = set()
-        self._pending_wakes: dict[tuple[str, str, str], ProjectEventWake] = {}
+        self._pending_wakes: dict[tuple[str, str, str, str], ProjectEventWake] = {}
         self._pending_catalog_refresh = False
+        from kraken_hub.presentation.qt.remote_change_bus import RemoteChangeBus
+
+        self._change_bus = RemoteChangeBus(self.shell)
+        self._remote_status = "offline"
         self._remote_bridge = _RemoteSignalBridge(self.shell)
         self._remote_bridge.wakeReceived.connect(self._on_remote_wake)
         self._remote_bridge.statusChanged.connect(self.shell.set_sync_status)
+        self._remote_bridge.statusChanged.connect(self._on_remote_status)
         self._sync_timer = QTimer(self.shell)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._drain_live_wakes)

@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QMainWindow
 
 from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 from kraken_hub.presentation.qt.computed_stitch_dialog import ComputedStitchDialog, _STITCH_CALLS
+from kraken_hub.presentation.qt.remote_change_bus import RemoteChangeBus
 from tests.test_stitch_plan_workflow import geometry as geometry
 
 
@@ -158,3 +159,35 @@ def test_definitive_validation_rejection_releases_mutation_for_correction(qtbot,
     qtbot.waitUntil(lambda: dialog._worker is None, timeout=10000)
     assert "unresolved" in dialog.status.text()
     dialog.close()
+
+
+def test_remote_stitch_refreshes_on_signal_without_periodic_reads(qtbot, geometry, tmp_path, monkeypatch):
+    local, session, project, layer, _, args, command = geometry
+    command("plan_layer_stitch", args)
+    monkeypatch.setattr(local, "is_remote_project", lambda _project_id: True)
+    reads = []
+    original = local.get_multilayer_model
+
+    def measured(project_id):
+        reads.append(project_id)
+        return original(project_id)
+
+    monkeypatch.setattr(local, "get_multilayer_model", measured)
+    bus = RemoteChangeBus()
+    bus.status = "synchronized"
+    shell = QMainWindow()
+    qtbot.addWidget(shell)
+    controller = SimpleNamespace(shell=shell, service=local, session=session, _project_id=project.id,
+        agent_runtime=LocalAgentRuntime(tmp_path / "unused-agent"), _background_workers=set(), _change_bus=bus)
+    dialog = ComputedStitchDialog(controller, layer.id)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog._worker is None and bool(reads))
+    baseline = len(reads)
+    assert not dialog.timer.isActive()
+    bus.changed.emit(str(project.id), frozenset({"stitch"}), frozenset())
+    qtbot.waitUntil(lambda: len(reads) > baseline)
+    assert len(reads) == baseline + 1
+    dialog.close()
+    bus.statusChanged.emit("reconnecting")
+    assert not dialog.timer.isActive()

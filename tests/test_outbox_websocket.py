@@ -63,6 +63,37 @@ def test_connection_hub_fans_out_to_project_and_catalog_subscribers() -> None:
     assert not hidden_ws.messages
 
 
+def test_directory_change_reaches_all_catalog_subscribers() -> None:
+    hub = ConnectionHub()
+    catalog_ws = _FakeWebSocket()
+    hidden_ws = _FakeWebSocket()
+    project_ws = _FakeWebSocket()
+    hub.subscribe(catalog_ws, catalog=True, catalog_visible=lambda _project_id: True)
+    hub.subscribe(hidden_ws, catalog=True, catalog_visible=lambda _project_id: False)
+    hub.subscribe(project_ws, project_id="project")
+
+    asyncio.run(hub._fanout({"type": "directory_changed", "entity_kind": "performer", "entity_id": "person"}))
+
+    assert [item["type"] for item in catalog_ws.messages] == ["directory_changed"]
+    assert [item["type"] for item in hidden_ws.messages] == ["directory_changed"]
+    assert not project_ws.messages
+
+
+def test_role_revocation_wakes_catalog_without_disclosing_project_id() -> None:
+    hub = ConnectionHub()
+    revoked = _FakeWebSocket()
+    hub.subscribe(revoked, project_id="secret", catalog=True, catalog_visible=lambda _project_id: False)
+
+    asyncio.run(hub._fanout({"type": "catalog_changed", "event_type": "ProjectRoleRevoked"}))
+
+    assert revoked.messages == [{"type": "catalog_changed", "event_type": "ProjectRoleRevoked"}]
+    asyncio.run(hub._fanout({"type": "project_event", "project_id": "secret",
+                             "event_type": "ProjectRoleRevoked"}))
+    asyncio.run(hub._fanout({"type": "project_event", "project_id": "secret",
+                             "event_type": "LayerCreated"}))
+    assert len(revoked.messages) == 1
+
+
 def test_websocket_subscribe_protocol_with_fastapi() -> None:
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient

@@ -11,7 +11,7 @@ from kraken_manager.application.errors import ConflictError, NotFoundError
 from kraken_manager.domain.common import PerformerId, PrincipalId
 from kraken_manager.domain.identity import Performer
 
-from .event_store import _sqlalchemy
+from .event_store import _sqlalchemy, enqueue_directory_notice
 from .identity_store import _identity_tables
 
 
@@ -125,6 +125,7 @@ class PostgresPerformerStore:
             inserted_id = connection.execute(statement).scalar_one_or_none()
             if inserted_id is None:
                 raise ConflictError("performer id or principal link already exists")
+            enqueue_directory_notice(connection, "performer", str(performer.id))
         return performer
 
     def update(self, performer: Performer) -> Performer:
@@ -163,6 +164,7 @@ class PostgresPerformerStore:
                 )
             except sa.exc.IntegrityError as exc:
                 raise ConflictError("principal is already linked to another performer") from exc
+            enqueue_directory_notice(connection, "performer", str(performer.id))
         return performer
 
     def archive(self, performer_id: PerformerId) -> Performer:
@@ -177,6 +179,7 @@ class PostgresPerformerStore:
             row = connection.execute(statement).mappings().first()
             if row is None:
                 raise NotFoundError(f"Performer {performer_id} was not found")
+            enqueue_directory_notice(connection, "performer", str(performer_id))
         return self._performer(row)
 
 

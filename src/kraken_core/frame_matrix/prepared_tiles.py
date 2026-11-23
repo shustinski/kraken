@@ -177,10 +177,12 @@ class PreparedTilePyramid:
         directory: Path,
         load_index: Callable[[], tuple[str, int, int, tuple[Mapping[str, object], ...]]],
         read_image: Callable[[Mapping[str, object]], bytes | None],
+        on_ready: Callable[[], None] | None = None,
     ) -> None:
         self.directory = Path(directory)
         self._load_index = load_index
         self._read_image = read_image
+        self._on_ready = on_ready
         self._lock = threading.Lock()
         self._run_lock = threading.Lock()
         self._urgent: queue.SimpleQueue[tuple[str, int, int, int, int]] = queue.SimpleQueue()
@@ -275,6 +277,7 @@ class PreparedTilePyramid:
             return
         _atomic_write(self._marker(), b"ok")
         _LOGGER.info("Matrix tiles ready at %s (%sx%s, %s cells)", self.directory, width, height, len(cells))
+        self._notify_ready()
 
     def _drain_urgent(self) -> None:
         """Write requested tiles, smallest first.
@@ -297,6 +300,14 @@ class PreparedTilePyramid:
             pending.discard(request)
             orientation, x1, y1, x2, y2 = request
             self._write_tile(orientation, x1, y1, x2, y2, cells=self._cells)
+            self._notify_ready()
+
+    def _notify_ready(self) -> None:
+        if self._on_ready is not None:
+            try:
+                self._on_ready()
+            except Exception:
+                _LOGGER.exception("Could not notify that matrix tiles are ready in %s", self.directory)
 
     def _write_tile(
         self,
@@ -378,6 +389,7 @@ def pyramid_for(
     key: tuple[object, ...],
     load_index: Callable[[], tuple[str, int, int, tuple[Mapping[str, object], ...]]],
     read_image: Callable[[Mapping[str, object]], bytes | None],
+    on_ready: Callable[[], None] | None = None,
 ) -> PreparedTilePyramid:
     store = getattr(owner, "_prepared_pyramids", None)
     if not isinstance(store, dict):
@@ -387,7 +399,7 @@ def pyramid_for(
     if isinstance(found, PreparedTilePyramid):
         return found
     directory = tile_root_for(owner) / _directory_name(key)
-    found = PreparedTilePyramid(directory, load_index, read_image)
+    found = PreparedTilePyramid(directory, load_index, read_image, on_ready=on_ready)
     store[key] = found
     return found
 

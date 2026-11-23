@@ -328,11 +328,18 @@ class MatrixViewportMixin:
                 _LOGGER.warning("Skipping mosaic source at (%s, %s)", cell.get("x"), cell.get("y"), exc_info=True)
                 return None
 
+        def notify_ready() -> None:
+            from kraken_server.outbox import enqueue_notice
+
+            with self.engine.begin() as connection:
+                enqueue_notice(connection, project_id, "tiles.ready", "layer", layer_id)
+
         return pyramid_for(
             self,
             schedule_key(project_id, layer_id, representation_ids),
             load_index,
             read_image,
+            on_ready=notify_ready,
         )
 
     def prepare_matrix_tiles(self, project_id: str, *, layer_id: str, representation_ids: Iterable[str] = ()) -> None:

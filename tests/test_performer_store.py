@@ -127,6 +127,9 @@ class PostgresPerformerStoreContractTests(unittest.TestCase, PerformerStoreContr
             {"options": f"-csearch_path={self._schema}"}
         )
         self.engine = create_engine(scoped)
+        from kraken_manager.infrastructure.postgres.event_store import _shared_tables
+
+        _shared_tables()[0].create_all(self.engine)
         identities = PostgresIdentityAclStore(self.engine, create_schema_for_tests=True)
         self.performer_store = PostgresPerformerStore(self.engine, create_schema_for_tests=True)
         with self.engine.begin() as connection:

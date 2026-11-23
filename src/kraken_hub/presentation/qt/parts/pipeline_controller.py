@@ -33,6 +33,7 @@ class PipelineControllerMixin:
             plugin_versions=versions,
             background_workers=self._background_workers,
             state_changed=lambda _state: self._schedule_pipeline_cycle(),
+            change_bus=getattr(self, "_change_bus", None),
         )
         self._pipeline_dialog = dialog
         dialog.show()
@@ -45,7 +46,10 @@ class PipelineControllerMixin:
         def cycle():
             # Pipelines still advancing; the Hub keeps polling only while some are.
             active = 0
-            for project in service.list_projects():
+            projects = getattr(self, "_known_projects", None)
+            if projects is None:
+                projects = service.list_projects()
+            for project in projects:
                 is_remote = getattr(service, "is_remote_project", lambda _: False)
                 if is_remote(project.id):
                     continue

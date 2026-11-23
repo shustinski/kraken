@@ -15,6 +15,9 @@ from kraken_manager.presentation.qt.models import ProjectListItem
 class RenameProjectMixin:
     def refresh_projects(self) -> None:
         label_for = getattr(self.service, "project_storage_label", None)
+        projects = tuple(self.service.list_projects(include_archived=True))
+        self._known_projects = projects
+        show_archived = self.catalog_page.show_archived_check.isChecked()
         items = [
             ProjectListItem(
                 project_id=str(project.id),
@@ -34,9 +37,7 @@ class RenameProjectMixin:
                     "storage_profile": project.storage_profile,
                 },
             )
-            for project in self.service.list_projects(
-                include_archived=self.catalog_page.show_archived_check.isChecked()
-            )
+            for project in projects if show_archived or project.state.value != "archived"
         ]
         self.catalog_page.project_model.replace_items(items)
 

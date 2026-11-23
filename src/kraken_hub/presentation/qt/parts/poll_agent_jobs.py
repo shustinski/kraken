@@ -11,6 +11,7 @@ from kraken_hub.application.workspace import ProjectEventWake
 from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
 from kraken_hub.presentation.qt.parts.my_work_panel import _call_with_projects, _catalog_projects
 from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
+from kraken_hub.presentation.qt.remote_change_bus import topics_for_event
 
 # Job states that advance without anyone acting. Waiting, partial, authorization
 # and recovery states need a person, so polling them only repeats the same reads.
@@ -86,19 +87,26 @@ class PollAgentJobsMixin:
                 wake.project_id,
                 wake.entity_kind or wake.stream_id,
                 wake.entity_id or wake.stream_id,
+                wake.event_type,
             )
             self._pending_wakes[key] = wake
         if not self._sync_timer.isActive():
             self._sync_timer.start(50)
 
-    def _apply_wake_to_active(self, project_id: str) -> None:
+    def _apply_wake_to_active(self, project_id: str, topics: frozenset[str] = frozenset({"project"})) -> None:
         workspace = self._project_workspaces.get(str(project_id))
+        if workspace is not None and topics == frozenset({"tiles"}):
+            matrix = getattr(workspace, "matrix_view", None)
+            retry = getattr(matrix, "_retry_mosaics_now", None)
+            if callable(retry):
+                retry()
+            return
         project = self.service.get_project(project_id)
         if workspace is None or project is None:
             return
         workspace.set_project_title(project.name)
         matrix = getattr(workspace, "matrix_view", None)
-        if matrix is not None:
+        if matrix is not None and topics & {"project", "layers", "tiles"}:
             session = getattr(matrix, "session", None)
             if session is not None:
                 if callable(session):
@@ -116,7 +124,8 @@ class PollAgentJobsMixin:
                         data_source=getattr(workspace, "_matrix_data_source", None),
                         asset_source=getattr(workspace, "_matrix_asset_source", None),
                     )
-        self._load_layers(workspace, project)
+        if topics & {"project", "layers"}:
+            self._load_layers(workspace, project)
 
     def _apply_retained_wakes(self, project_id: str) -> None:
         project_id = str(project_id)
@@ -124,14 +133,40 @@ class PollAgentJobsMixin:
         for key in [key for key in self._pending_wakes if key[0] == project_id]:
             del self._pending_wakes[key]
         if retained:
-            self._apply_wake_to_active(project_id)
+            topics = frozenset().union(*(topics_for_event(wake.event_type) for wake in retained))
+            if topics & {"project", "layers", "tiles", "catalog"}:
+                self._apply_wake_to_active(project_id, topics)
+
+    def _on_remote_status(self, status: str) -> None:
+        previous = getattr(self, "_remote_status", "offline")
+        self._remote_status = status
+        bus = getattr(self, "_change_bus", None)
+        if bus is not None:
+            bus.status = status
+            bus.statusChanged.emit(status)
+            if status == "synchronized" and previous == "reconnecting":
+                is_remote = getattr(self.service, "is_remote_project", lambda _id: False)
+                for project_id in self._project_workspaces:
+                    if is_remote(project_id):
+                        self._on_remote_wake(ProjectEventWake(
+                            project_id=project_id, event_type="sync.reconnected", event_id="",
+                        ))
 
     def _drain_live_wakes(self) -> None:
         wakes = list(self._pending_wakes.values())
         self._pending_wakes.clear()
+        grouped: dict[str, tuple[set[str], set[str]]] = {}
+        for wake in wakes:
+            topics, entity_ids = grouped.setdefault(wake.project_id, (set(), set()))
+            topics.update(topics_for_event(wake.event_type))
+            if wake.entity_id:
+                entity_ids.add(wake.entity_id)
+        bus = getattr(self, "_change_bus", None)
+        if bus is not None:
+            for project_id, (topics, entity_ids) in grouped.items():
+                bus.changed.emit(project_id, frozenset(topics), frozenset(entity_ids))
         catalog_changed = self._pending_catalog_refresh or any(
-            wake.event_type.startswith("Project") or wake.event_type.startswith("project.")
-            for wake in wakes
+            "catalog" in topics for topics, _ in grouped.values()
         )
         self._pending_catalog_refresh = False
         if catalog_changed:
@@ -139,13 +174,19 @@ class PollAgentJobsMixin:
         # Server-side job and order changes reach My Work here instead of via
         # a periodic re-read; a hidden panel only marks itself stale.
         my_work_refresh = getattr(self, "my_work_refresh", None)
-        if (catalog_changed or wakes) and my_work_refresh is not None:
-            my_work_refresh()
+        affected_work = [project_id for project_id, (topics, _) in grouped.items()
+                         if topics & {"jobs", "work", "layers", "pipeline", "project"}]
+        if my_work_refresh is not None:
+            if catalog_changed or (bus is None and affected_work):
+                my_work_refresh()
+            elif bus is not None:
+                for project_id in affected_work:
+                    my_work_refresh(project_id)
         active = self._project_id
         if active is not None and active in self._project_workspaces:
-            has_wakes = any(wake.project_id == active for wake in wakes)
-            if catalog_changed or has_wakes:
-                self._apply_wake_to_active(active)
+            active_topics = grouped.get(active, (set(), set()))[0]
+            if active_topics & {"project", "layers", "tiles", "catalog"}:
+                self._apply_wake_to_active(active, frozenset(active_topics))
         for wake in wakes:
             if wake.project_id in self._project_workspaces and wake.project_id != active:
                 self._pending_wakes[
@@ -153,6 +194,7 @@ class PollAgentJobsMixin:
                         wake.project_id,
                         wake.entity_kind or wake.stream_id,
                         wake.entity_id or wake.stream_id,
+                        wake.event_type,
                     )
                 ] = wake
 
@@ -186,7 +228,9 @@ class PollAgentJobsMixin:
 
     def _resume_agent_jobs(self) -> None:
         try:
-            projects = _catalog_projects(self.service)
+            projects = getattr(self, "_known_projects", None)
+            if projects is None:
+                projects = _catalog_projects(self.service)
             local_jobs = tuple(
                 job for job in _call_with_projects(self.service.plugin_jobs, projects)
                 if job.state.value not in {"succeeded", "failed", "cancelled"}
@@ -223,9 +267,13 @@ class PollAgentJobsMixin:
             schedule_pipeline()
         gateway = self._agent_gateway
         if projects is None:
-            projects = _catalog_projects(self.service)
+            projects = getattr(self, "_known_projects", None)
+            if projects is None:
+                projects = _catalog_projects(self.service)
+        is_remote = getattr(self.service, "is_remote_project", lambda _id: False)
+        projects = None if projects is None else tuple(project for project in projects if not is_remote(project.id))
         if gateway is None:
-            if self.my_work_refresh is not None:
+            if not hasattr(self, "_known_projects") and self.my_work_refresh is not None:
                 self.my_work_refresh()
             settle_agent_followup(self, progressing=False)
             return
@@ -253,8 +301,10 @@ class PollAgentJobsMixin:
                 self._import_agent_job_in_background(job.id, gateway)
                 started_import = True
                 break
-            if self.my_work_refresh is not None:
+            signature = tuple(sorted((str(job.id), job.state.value) for job in jobs))
+            if self.my_work_refresh is not None and signature != getattr(self, "_last_local_job_signature", None):
                 self.my_work_refresh()
+            self._last_local_job_signature = signature
             if not started_import:
                 self._agent_poll_error = ""
             settle_agent_followup(

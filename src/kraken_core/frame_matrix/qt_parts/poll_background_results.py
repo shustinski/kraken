@@ -169,10 +169,10 @@ class PollBackgroundResultsMixin:
                 if self._thumbnail_batch_profile is not None:
                     self._thumbnail_batch_completed += 1
             except MatrixTileNotReady:
-                self._schedule_mosaic_retry()
+                self._schedule_mosaic_retry(backoff=True)
             except Exception as exc:
                 if "not prepared" in str(exc):
-                    self._schedule_mosaic_retry()
+                    self._schedule_mosaic_retry(backoff=True)
                     continue
                 if _transient_mosaic_error(exc):
                     # A busy or restarting server must not leave the matrix half drawn.
@@ -194,7 +194,18 @@ class PollBackgroundResultsMixin:
         if getattr(self, "_mosaic_retry_scheduled", False):
             return
         self._mosaic_retry_scheduled = True
-        QTimer.singleShot(delay, self._retry_mosaics)
+        generation = getattr(self, "_mosaic_retry_generation", 0) + 1
+        self._mosaic_retry_generation = generation
+        QTimer.singleShot(delay, lambda: self._retry_mosaics_if_current(generation))
+
+    def _retry_mosaics_if_current(self, generation: int) -> None:
+        if generation == self._mosaic_retry_generation:
+            self._retry_mosaics()
+
+    def _retry_mosaics_now(self) -> None:
+        self._mosaic_retry_generation = getattr(self, "_mosaic_retry_generation", 0) + 1
+        self._mosaic_retry_scheduled = False
+        self._retry_mosaics()
 
     def _retry_mosaics(self) -> None:
         self._mosaic_retry_scheduled = False
@@ -213,7 +224,7 @@ class PollBackgroundResultsMixin:
 
 _FINE_MOSAIC_LIMIT = 384
 _MOSAIC_RETRY_MS = 750
-_MOSAIC_RETRY_MAX_MS = 8000
+_MOSAIC_RETRY_MAX_MS = 30000
 
 
 def _transient_mosaic_error(exc: BaseException) -> bool:

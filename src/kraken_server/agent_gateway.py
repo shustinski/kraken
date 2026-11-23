@@ -16,6 +16,7 @@ from kraken_manager.infrastructure.filesystem._codec import decode_model, encode
 
 from .agent_auth import AgentIdentity, PostgresAgentTokenStore
 from .agent_resources import QueueAdmission, QueueResourceBudget, requested_resources, validate_telemetry
+from .outbox import enqueue_notice
 
 DESKTOP_CAPABILITIES = frozenset(
     {
@@ -157,6 +158,7 @@ class PostgresAgentGateway:
             if row["state"] != "completed":
                 connection.execute(sa.update(self.jobs).where(self.jobs.c.job_id == request.job_id).values(
                     state="completed", lease_owner=None, lease_claim=None, lease_until=None, last_error=None, updated_at=datetime.now(UTC)))
+                enqueue_notice(connection, str(row["project_id"]), "job.state_changed", "job", request.job_id)
 
     def _submit_payload(self, job_id, project_id, payload) -> None:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -164,7 +166,7 @@ class PostgresAgentGateway:
         requested_resources(payload.get("parameters", {}))
         now = datetime.now(UTC)
         with self.engine.begin() as connection:
-            connection.execute(
+            inserted = connection.execute(
                 pg_insert(self.jobs)
                 .values(
                     job_id=job_id,
@@ -179,6 +181,7 @@ class PostgresAgentGateway:
                     updated_at=now,
                 )
                 .on_conflict_do_nothing(index_elements=[self.jobs.c.job_id])
+                .returning(self.jobs.c.job_id)
             )
             import sqlalchemy as sa
 
@@ -187,6 +190,8 @@ class PostgresAgentGateway:
                 payload, sort_keys=True, separators=(",", ":")
             ):
                 raise ValueError("Job ID was already enqueued with a different immutable manifest")
+            if inserted.scalar_one_or_none() is not None:
+                enqueue_notice(connection, project_id, "job.state_changed", "job", job_id)
 
     def cancel(self, job_id: object) -> None:
         """Stop a queued or leased agent, and ignore a queue row that is already finished.
@@ -199,10 +204,10 @@ class PostgresAgentGateway:
 
         terminal = {"cancelled", "completed", "failed"}
         with self.engine.begin() as connection:
-            state = connection.execute(
-                sa.select(self.jobs.c.state).where(self.jobs.c.job_id == str(job_id))
-            ).scalar_one_or_none()
-            if state is None or state in terminal:
+            row = connection.execute(
+                sa.select(self.jobs.c.state, self.jobs.c.project_id).where(self.jobs.c.job_id == str(job_id))
+            ).one_or_none()
+            if row is None or row.state in terminal:
                 return
             result = connection.execute(
                 sa.update(self.jobs)
@@ -218,6 +223,7 @@ class PostgresAgentGateway:
                 )
             )
             if result.rowcount == 1:
+                enqueue_notice(connection, str(row.project_id), "job.state_changed", "job", str(job_id))
                 return
             state = connection.execute(
                 sa.select(self.jobs.c.state).where(self.jobs.c.job_id == str(job_id))
@@ -304,6 +310,7 @@ class PostgresAgentGateway:
                     updated_at=now,
                 )
             )
+            enqueue_notice(connection, str(row["project_id"]), "job.state_changed", "job", str(row["job_id"]))
             publications = connection.execute(sa.select(self.publications.c.payload).where(
                 self.publications.c.job_id == row["job_id"])).scalars().all()
         return {
@@ -339,6 +346,7 @@ class PostgresAgentGateway:
                     raise ValueError("Checkpoint file has not been uploaded")
             connection.execute(sa.update(self.jobs).where(self.jobs.c.job_id == job_id).values(
                 execution_state={**previous, **snapshot}, updated_at=datetime.now(UTC)))
+            self._enqueue_job_notice(connection, job_id)
 
     def checkpoint_blob(self, job_id: str, digest: str, agent: AgentIdentity) -> BlobRef:
         import sqlalchemy as sa
@@ -369,8 +377,20 @@ class PostgresAgentGateway:
             now = datetime.now(UTC)
             lease_until = now + timedelta(seconds=max(15, min(int(seconds), 300)))
             values = {"lease_until": lease_until, "updated_at": now}
+            notify_telemetry = False
             if telemetry is not None:
-                values["telemetry"] = {"received_at": now.isoformat(), "sample": validate_telemetry(telemetry)}
+                sample = validate_telemetry(telemetry)
+                previous = connection.execute(sa.select(self.jobs.c.telemetry).where(
+                    self.jobs.c.job_id == job_id)).scalar_one_or_none() or {}
+                notified_at = previous.get("notified_at") or previous.get("received_at")
+                last_notice = datetime.fromisoformat(notified_at) if notified_at else None
+                if last_notice is not None and last_notice.tzinfo is None:
+                    last_notice = last_notice.replace(tzinfo=UTC)
+                notify_telemetry = last_notice is None or now - last_notice >= timedelta(seconds=5)
+                values["telemetry"] = {
+                    "received_at": now.isoformat(), "sample": sample,
+                    "notified_at": now.isoformat() if notify_telemetry else notified_at,
+                }
             result = connection.execute(
                 sa.update(self.jobs)
                 .where(
@@ -382,6 +402,8 @@ class PostgresAgentGateway:
                 )
                 .values(**values)
             )
+            if result.rowcount == 1 and notify_telemetry:
+                self._enqueue_job_notice(connection, job_id)
         if result.rowcount != 1:
             raise PermissionError("Agent does not own an active lease for this job")
         return lease_until.isoformat()
@@ -495,6 +517,14 @@ class PostgresAgentGateway:
         ):
             raise PermissionError("Agent lease expired or claim superseded; acquire a new lease")
         return dict(row["payload"])
+
+    def _enqueue_job_notice(self, connection: Any, job_id: str) -> None:
+        import sqlalchemy as sa
+
+        project_id = connection.execute(
+            sa.select(self.jobs.c.project_id).where(self.jobs.c.job_id == job_id)
+        ).scalar_one()
+        enqueue_notice(connection, str(project_id), "job.state_changed", "job", job_id)
 
     def publish(self, job_id: str, agent: AgentIdentity, payload: Mapping[str, Any]) -> bool:
         manifest = self.manifest(job_id, agent)
@@ -635,6 +665,8 @@ class PostgresAgentGateway:
                     updated_at=now,
                 )
             )
+            if result.rowcount == 1:
+                self._enqueue_job_notice(connection, job_id)
         if result.rowcount != 1:
             raise PermissionError("Agent does not own this job")
         return imported

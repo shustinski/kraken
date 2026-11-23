@@ -5,8 +5,9 @@ from __future__ import annotations
 import functools
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Iterator
+from uuid import uuid4
 
 from kraken_manager.application.errors import ConcurrencyError
 from kraken_manager.domain.common import PerformerId, PrincipalId, ProjectId
@@ -16,6 +17,37 @@ from kraken_manager.domain.identity import PrincipalProvider
 
 class PostgresRevisionConflict(ConcurrencyError):
     pass
+
+
+_DIRECTORY_PROJECT_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def enqueue_notice(
+    connection: Any, project_id: str, event_type: str, entity_kind: str, entity_id: str
+) -> None:
+    """Add a wake for a write that does not have a domain event."""
+    sa, _ = _sqlalchemy()
+    # The lightweight SQLite server used by local tests has no WebSocket
+    # publisher or transactional outbox. Keep that existing mode usable.
+    if (
+        getattr(getattr(connection, "dialect", None), "name", None) == "sqlite"
+        and not sa.inspect(connection).has_table("transactional_outbox")
+    ):
+        return
+    statement = sa.text("""
+        INSERT INTO transactional_outbox
+            (event_id, project_id, event_type, payload, created_at)
+        VALUES (:event_id, :project_id, :event_type, :payload, :created_at)
+    """).bindparams(sa.bindparam("payload", type_=sa.JSON))
+    connection.execute(statement, {
+        "event_id": str(uuid4()), "project_id": str(project_id), "event_type": event_type,
+        "payload": {"entity_kind": entity_kind, "entity_id": str(entity_id)},
+        "created_at": datetime.now(UTC),
+    })
+
+
+def enqueue_directory_notice(connection: Any, entity_kind: str, entity_id: str) -> None:
+    enqueue_notice(connection, _DIRECTORY_PROJECT_ID, f"directory.{entity_kind}_changed", entity_kind, entity_id)
 
 
 def _sqlalchemy() -> Any:

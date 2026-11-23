@@ -11,7 +11,7 @@ from uuid import uuid4
 import weakref
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QEvent, QObject, QTimer
 from PyQt6.QtWidgets import QFileDialog, QLabel, QPushButton
 
 from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
@@ -21,7 +21,8 @@ _ACTIVE_CALLS = set()
 
 
 class RemoteAnalysisController(QObject):
-    def __init__(self, workspace, service, project_id, *, language="Русский", background_workers=None):
+    def __init__(self, workspace, service, project_id, *, language="Русский", background_workers=None,
+                 change_bus=None):
         super().__init__(workspace)
         self.workspace = weakref.ref(workspace)
         self.service, self.project_id = service, str(project_id)
@@ -34,6 +35,8 @@ class RemoteAnalysisController(QObject):
         self._refresh_after = False
         self._retry = None
         self._map_waiting = None
+        self._change_bus = change_bus
+        self._wake_pending = False
         panel = workspace.analysis_runs_panel
         self.status = QLabel()
         self.status.setObjectName("remoteAnalysisStatus")
@@ -58,10 +61,46 @@ class RemoteAnalysisController(QObject):
         panel.runtimeRequested.connect(self.runtime_details)
         panel.map_button.setToolTip(self._t("Построить карту по сохранённым версиям входов", "Render using the saved input versions"))
         self.timer = QTimer(self)
-        self.timer.setInterval(2000)
+        self.timer.setInterval(60000 if change_bus is not None else 2000)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start()
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setSingleShot(True)
+        self._wake_timer.timeout.connect(self.refresh)
+        if change_bus is not None:
+            change_bus.changed.connect(self._on_remote_change)
+            change_bus.statusChanged.connect(self._on_remote_status)
+            workspace.installEventFilter(self)
+            self._on_remote_status(getattr(change_bus, "status", "offline"))
+        else:
+            self.timer.start()
         QTimer.singleShot(0, self.refresh)
+
+    def _on_remote_status(self, status: str) -> None:
+        if status == "synchronized" or self._panel() is None:
+            self.timer.stop()
+        elif self.workspace().isVisible():
+            self.timer.start()
+
+    def _on_remote_change(self, project_id: str, topics: frozenset[str], _entity_ids: frozenset[str]) -> None:
+        if project_id != self.project_id or not topics & {"analysis", "project"}:
+            return
+        owner = self.workspace()
+        if owner is None or not owner.isVisible():
+            self._wake_pending = True
+        elif not self._wake_timer.isActive():
+            self._wake_timer.start(150)
+
+    def eventFilter(self, watched, event):
+        if watched is self.workspace():
+            if event.type() == QEvent.Type.Hide:
+                self.timer.stop()
+            elif event.type() == QEvent.Type.Show:
+                if self._wake_pending:
+                    self._wake_pending = False
+                    self._wake_timer.start(150)
+                if self._change_bus is not None:
+                    self._on_remote_status(getattr(self._change_bus, "status", "offline"))
+        return super().eventFilter(watched, event)
 
     def _t(self, ru, en):
         return ru if self.language.lower().startswith(("ru", "рус")) else en
@@ -135,7 +174,10 @@ class RemoteAnalysisController(QObject):
 
     def refresh(self):
         panel = self._panel()
-        if panel is None or self._worker is not None:
+        if panel is None:
+            return
+        if self._worker is not None:
+            self._refresh_after = True
             return
         service, project = self.service, self.project_id
         selected = self._preferred_run or panel.selected_run_id()

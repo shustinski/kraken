@@ -10,7 +10,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from kraken_manager.infrastructure.postgres.event_store import enqueue_notice as _enqueue_notice
+
 LOGGER = logging.getLogger(__name__)
+
+
+def enqueue_notice(
+    connection: Any, project_id: str, event_type: str, entity_kind: str, entity_id: str
+) -> None:
+    """Record a project wake in the caller's transaction, without a domain event."""
+    _enqueue_notice(connection, project_id, event_type, entity_kind, entity_id)
 
 
 @dataclass
@@ -48,10 +57,10 @@ class ConnectionHub:
             self._project_subs.setdefault(websocket, set())
             if project_id:
                 self._project_subs[websocket].add(str(project_id))
+            if catalog_visible is not None:
+                self._catalog_access[websocket] = catalog_visible
             if catalog:
                 self._catalog_subs.add(websocket)
-                if catalog_visible is not None:
-                    self._catalog_access[websocket] = catalog_visible
 
     def unsubscribe(self, websocket: Any, *, project_id: str | None = None, catalog: bool = False) -> None:
         with self._lock:
@@ -59,7 +68,8 @@ class ConnectionHub:
                 self._project_subs[websocket].discard(str(project_id))
             if catalog:
                 self._catalog_subs.discard(websocket)
-                self._catalog_access.pop(websocket, None)
+                if not self._project_subs.get(websocket):
+                    self._catalog_access.pop(websocket, None)
 
     def publish(self, envelope: Mapping[str, object]) -> None:
         loop = self._loop
@@ -72,15 +82,20 @@ class ConnectionHub:
     def _targets(self, envelope: Mapping[str, object]) -> list[Any]:
         project_id = str(envelope.get("project_id", ""))
         with self._lock:
-            targets = [
-                websocket
-                for websocket, projects in self._project_subs.items()
-                if project_id and project_id in projects
-            ]
-            if envelope.get("type") == "catalog_changed":
-                for websocket in self._catalog_subs:
+            targets = []
+            for websocket, projects in self._project_subs.items():
+                if not project_id or project_id not in projects:
+                    continue
+                if envelope.get("event_type") == "ProjectRoleRevoked":
                     visible = self._catalog_access.get(websocket)
                     if visible is not None and not visible(project_id):
+                        projects.discard(project_id)
+                        continue
+                targets.append(websocket)
+            if envelope.get("type") in {"catalog_changed", "directory_changed"}:
+                for websocket in self._catalog_subs:
+                    visible = self._catalog_access.get(websocket)
+                    if envelope.get("type") == "catalog_changed" and project_id and visible is not None and not visible(project_id):
                         continue
                     targets.append(websocket)
             seen: set[int] = set()
@@ -160,6 +175,7 @@ class OutboxPublisher:
             for row in rows:
                 stream_id = "" if row["stream_id"] is None else str(row["stream_id"])
                 entity_kind, separator, entity_id = stream_id.partition(":")
+                notice = row["payload"] if isinstance(row["payload"], Mapping) else {}
                 envelope = {
                     "type": "project_event",
                     "project_id": str(row["project_id"]),
@@ -168,15 +184,24 @@ class OutboxPublisher:
                     "position": None if row["position"] is None else int(row["position"]),
                     "revision": None if row["revision"] is None else int(row["revision"]),
                     "stream_id": stream_id,
-                    "entity_kind": entity_kind if separator else "",
-                    "entity_id": entity_id if separator else "",
+                    "entity_kind": entity_kind if separator else str(notice.get("entity_kind", "")),
+                    "entity_id": entity_id if separator else str(notice.get("entity_id", "")),
                 }
-                self.hub.publish(envelope)
+                if str(row["event_type"]).startswith("directory."):
+                    self.hub.publish({
+                        "type": "directory_changed",
+                        "event_type": str(row["event_type"]),
+                        "entity_kind": envelope["entity_kind"],
+                        "entity_id": envelope["entity_id"],
+                    })
+                else:
+                    self.hub.publish(envelope)
                 if str(row["event_type"]).startswith("Project"):
+                    role_change = str(row["event_type"]).startswith("ProjectRole")
                     self.hub.publish(
                         {
                             "type": "catalog_changed",
-                            "project_id": str(row["project_id"]),
+                            **({} if role_change else {"project_id": str(row["project_id"])}),
                             "event_type": str(row["event_type"]),
                             "event_id": str(row["event_id"]),
                         }
@@ -204,4 +229,4 @@ class OutboxPublisher:
                 break
 
 
-__all__ = ["ConnectionHub", "OutboxPublisher"]
+__all__ = ["ConnectionHub", "OutboxPublisher", "enqueue_notice"]

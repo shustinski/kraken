@@ -8,6 +8,7 @@ from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QDialog, QLabel
 
 from kraken_hub.presentation.qt.remote_analysis import RemoteAnalysisController, _ACTIVE_CALLS
+from kraken_hub.presentation.qt.remote_change_bus import RemoteChangeBus
 from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel
 
 
@@ -166,3 +167,37 @@ def test_remote_map_checksum_failure_does_not_show_a_wrong_image(qtbot):
     qtbot.waitUntil(lambda: "checksum" in controller.status.text(), timeout=5000)
     assert widget.findChild(QDialog, "remoteAnalysisMapDialog") is None
     qtbot.waitUntil(lambda: controller._worker is None)
+
+
+def test_analysis_wakes_coalesce_without_periodic_poll(qtbot):
+    service = Service()
+    reads = []
+    original = service.server_analysis_runs
+
+    def tracked(project_id):
+        reads.append(project_id)
+        return original(project_id)
+
+    service.server_analysis_runs = tracked
+    bus = RemoteChangeBus()
+    bus.status = "synchronized"
+    widget = QWidget()
+    widget.analysis_runs_panel = AnalysisRunsPanel(widget)
+    QVBoxLayout(widget).addWidget(widget.analysis_runs_panel)
+    qtbot.addWidget(widget)
+    widget.show()
+    controller = RemoteAnalysisController(widget, service, "project", change_bus=bus)
+    qtbot.waitUntil(lambda: controller._worker is None and bool(reads))
+    baseline = len(reads)
+    assert not controller.timer.isActive()
+
+    for _ in range(50):
+        bus.changed.emit("project", frozenset({"analysis"}), frozenset({"run"}))
+    qtbot.waitUntil(lambda: len(reads) > baseline)
+    qtbot.wait(250)
+    assert len(reads) == baseline + 1
+
+    bus.statusChanged.emit("reconnecting")
+    assert controller.timer.isActive() and controller.timer.interval() == 60000
+    bus.statusChanged.emit("synchronized")
+    assert not controller.timer.isActive()

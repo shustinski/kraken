@@ -3,6 +3,7 @@
 import pytest
 
 from kraken_hub.presentation.qt.layer_pipeline_dialog import LayerPipelineDialog
+from kraken_hub.presentation.qt.remote_change_bus import RemoteChangeBus
 from tests.test_pipeline_runtime_integration import setup
 
 
@@ -65,3 +66,43 @@ def test_local_controller_continues_after_workflow_dialog_is_closed(qtbot, tmp_p
     controller._schedule_pipeline_cycle()
     qtbot.waitUntil(lambda: controller._pipeline_worker is None, timeout=10000)
     assert len(gateway.deliveries) == 1
+
+
+def test_remote_workflow_uses_signal_and_incremental_history(qtbot, tmp_path, monkeypatch):
+    local, actor, project, layer, definition, state = setup(tmp_path)
+    monkeypatch.setattr(local, "is_remote_project", lambda _id: True)
+    full_reads = []
+    incremental_reads = []
+    original_history = local.history
+
+    def history(project_id):
+        full_reads.append(project_id)
+        class Positioned:
+            def __init__(self, event, position):
+                self.event, self.position = event, position
+
+            def __getattr__(self, name):
+                return getattr(self.event, name)
+
+        return tuple(Positioned(event, index + 1) for index, event in enumerate(original_history(project_id)))
+
+    monkeypatch.setattr(local, "history", history)
+    monkeypatch.setattr(local, "history_since", lambda project_id, position:
+                        incremental_reads.append((project_id, position)) or (), raising=False)
+    bus = RemoteChangeBus()
+    bus.status = "synchronized"
+    dialog = LayerPipelineDialog(local, actor, project.id, layer.id, change_bus=bus)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    wait_done(qtbot, dialog)
+    assert not dialog._timer.isActive()
+    baseline = len(full_reads)
+
+    bus.changed.emit(str(project.id), frozenset({"pipeline"}), frozenset({str(layer.id)}))
+    qtbot.waitUntil(lambda: bool(incremental_reads))
+    wait_done(qtbot, dialog)
+    assert len(full_reads) == baseline
+    assert incremental_reads[0][1] > 0
+    dialog.close()
+    bus.statusChanged.emit("reconnecting")
+    assert not dialog._timer.isActive()

@@ -257,6 +257,36 @@ def test_close_zoom_tile_gives_one_frame_the_whole_mosaic_edge(tmp_path):
     assert edges >= 28
 
 
+def test_prepared_tile_notifies_when_requested_tile_becomes_ready(tmp_path):
+    from kraken_core.frame_matrix.prepared_tiles import PreparedTilePyramid
+
+    notices = []
+    pyramid = PreparedTilePyramid(tmp_path / "tiles", lambda: ("rev", 32, 32, ()),
+                                  lambda _cell: None, on_ready=lambda: notices.append(True))
+    pyramid.build_now()
+    baseline = len(notices)
+    pyramid._urgent.put(("y_down", 3, 5, 3, 5))
+    pyramid.build_now()
+    assert len(notices) > baseline
+
+
+def test_tile_wake_cancels_pending_backoff_retry(qtbot):
+    from kraken_core.frame_matrix.qt_parts.poll_background_results import PollBackgroundResultsMixin
+
+    class Matrix(PollBackgroundResultsMixin):
+        def __init__(self):
+            self.calls = 0
+
+        def _retry_mosaics(self):
+            self.calls += 1
+
+    matrix = Matrix()
+    matrix._schedule_mosaic_retry(backoff=True)
+    matrix._retry_mosaics_now()
+    qtbot.wait(900)
+    assert matrix.calls == 1
+
+
 def test_mosaic_level_follows_zoom_below_the_graphics_tile(qapp):
     view = FrameMatrixWidget(64, 64)
     view.set_zoom_factor(view.MAX_ZOOM)

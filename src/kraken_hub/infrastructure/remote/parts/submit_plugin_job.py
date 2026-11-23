@@ -1,5 +1,7 @@
 """remote_client: submit plugin job."""
 from __future__ import annotations
+import base64
+import json
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -149,8 +151,26 @@ class SubmitPluginJobMixin:
     def history(
         self, project_id: object, *, as_of: datetime | None = None, event_types=None
     ) -> tuple[object, ...]:
+        events = self._history_pages(project_id, cursor=None)
+        allowed = None if event_types is None else frozenset(event_types)
+        return tuple(
+            event for event in events
+            if (as_of is None or event.recorded_at <= as_of)
+            and (allowed is None or event.event_type in allowed)
+        )
+
+    def history_since(self, project_id: object, position: int) -> tuple[object, ...]:
+        """Fetch events after a position already displayed by a remote monitor."""
+        if position < 0:
+            raise ValueError("History position must not be negative")
+        cursor = None
+        if position:
+            raw = json.dumps({"position": position}, separators=(",", ":")).encode()
+            cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        return self._history_pages(project_id, cursor=cursor)
+
+    def _history_pages(self, project_id: object, *, cursor: str | None) -> tuple[_RemoteHistoryEvent, ...]:
         events = []
-        cursor: str | None = None
         while True:
             query = urllib.parse.urlencode(
                 {"limit": 500, **({} if cursor is None else {"cursor": cursor})}
@@ -172,12 +192,7 @@ class SubmitPluginJobMixin:
             )
             if cursor is None:
                 break
-        allowed = None if event_types is None else frozenset(event_types)
-        return tuple(
-            event for event in events
-            if (as_of is None or event.recorded_at <= as_of)
-            and (allowed is None or event.event_type in allowed)
-        )
+        return tuple(events)
 
     def activity_records(self) -> tuple[object, ...]:
         from kraken_manager.application.reporting import ActivityRecord

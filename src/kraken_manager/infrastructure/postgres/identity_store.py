@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from kraken_manager.domain.identity import (
     parse_project_role,
 )
 
-from .event_store import _sqlalchemy
+from .event_store import _sqlalchemy, enqueue_directory_notice
 
 
 def _identity_tables() -> tuple[Any, Any, Any]:
@@ -164,56 +165,67 @@ class PostgresIdentityAclStore:
         # columns are never touched, so a manual avatar or status survives
         # every subsequent save.
         p = self.principals.c
+        updated_fields = (
+            "external_key", "provider", "issuer", "subject", "display_name", "email",
+            "enabled", "system_roles", "login", "login_key",
+        )
         with self._scope(write=True) as connection:
-            connection.execute(
+            changed = connection.execute(
                 pg_insert(self.principals)
                 .values(**values)
                 .on_conflict_do_update(
                     index_elements=[p.principal_id],
-                    set_={
-                        p.external_key: values["external_key"],
-                        p.provider: values["provider"],
-                        p.issuer: values["issuer"],
-                        p.subject: values["subject"],
-                        p.display_name: values["display_name"],
-                        p.email: values["email"],
-                        p.enabled: values["enabled"],
-                        p.system_roles: values["system_roles"],
-                        p.login: values["login"],
-                        p.login_key: values["login_key"],
-                    },
+                    set_={getattr(p, name): values[name] for name in updated_fields},
+                    where=sa.or_(
+                        *(getattr(p, name).is_distinct_from(values[name]) for name in updated_fields
+                          if name != "system_roles"),
+                        sa.cast(p.system_roles, sa.Text).is_distinct_from(json.dumps(values["system_roles"])),
+                    ),
                 )
-            )
+                .returning(p.principal_id)
+            ).scalar_one_or_none()
+            if changed is not None:
+                enqueue_directory_notice(connection, "principal", str(principal.id))
 
     def sync_avatar(self, principal_id: PrincipalId, avatar_url: str | None) -> None:
         sa, _ = _sqlalchemy()
         with self._scope(write=True) as connection:
-            connection.execute(
+            changed = connection.execute(
                 sa.update(self.principals)
                 .where(
                     self.principals.c.principal_id == str(principal_id),
                     sa.func.coalesce(self.principals.c.avatar_source, "") != "manual",
+                    self.principals.c.avatar_url.is_distinct_from(avatar_url),
                 )
                 .values(avatar_url=avatar_url, avatar_source="ldap", profile_updated_at=sa.func.now())
             )
+            if changed.rowcount:
+                enqueue_directory_notice(connection, "principal", str(principal_id))
 
     def set_manual_avatar(self, principal_id: PrincipalId, avatar_url: str) -> None:
         sa, _ = _sqlalchemy()
         with self._scope(write=True) as connection:
-            connection.execute(
+            changed = connection.execute(
                 sa.update(self.principals)
-                .where(self.principals.c.principal_id == str(principal_id))
+                .where(self.principals.c.principal_id == str(principal_id),
+                       sa.or_(self.principals.c.avatar_url.is_distinct_from(avatar_url),
+                              self.principals.c.avatar_source.is_distinct_from("manual")))
                 .values(avatar_url=avatar_url, avatar_source="manual", profile_updated_at=sa.func.now())
             )
+            if changed.rowcount:
+                enqueue_directory_notice(connection, "principal", str(principal_id))
 
     def set_status(self, principal_id: PrincipalId, status_text: str) -> None:
         sa, _ = _sqlalchemy()
         with self._scope(write=True) as connection:
-            connection.execute(
+            changed = connection.execute(
                 sa.update(self.principals)
-                .where(self.principals.c.principal_id == str(principal_id))
+                .where(self.principals.c.principal_id == str(principal_id),
+                       self.principals.c.status_text.is_distinct_from(status_text))
                 .values(status_text=status_text, profile_updated_at=sa.func.now())
             )
+            if changed.rowcount:
+                enqueue_directory_notice(connection, "principal", str(principal_id))
 
     def roles_for(self, project_id: ProjectId, principal_id: PrincipalId) -> frozenset[ProjectRole]:
         sa, _ = _sqlalchemy()

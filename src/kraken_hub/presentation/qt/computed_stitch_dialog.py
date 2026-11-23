@@ -63,6 +63,9 @@ class _AsyncDialog(QDialog):
             owner = ref()
             if owner is not None and not sip.isdeleted(owner):
                 owner._worker = None
+                after_call = getattr(owner, "_after_call", None)
+                if callable(after_call):
+                    after_call()
 
         worker.succeeded.connect(loaded)
         worker.failed.connect(failed)
@@ -186,6 +189,10 @@ class ComputedStitchDialog(_AsyncDialog):
         self.principal, self.runtime = controller.session.principal, controller.agent_runtime
         self._worker, self._background = None, getattr(controller, "_background_workers", None)
         self.snapshot, self._pending, self._gateway, self._pending_import = None, None, None, None
+        self._remote = service.is_remote_project(self.project_id)
+        self._change_bus = getattr(controller, "_change_bus", None) if self._remote else None
+        self._refresh_after = False
+        self._retry_delay_ms = 1000
         self._notice = ""
         self.setWindowTitle("Вычисляемая сшивка слоя")
         self.resize(840, 420)
@@ -217,17 +224,73 @@ class ComputedStitchDialog(_AsyncDialog):
         self.cancel_button.clicked.connect(self.cancel)
         self.view_button.clicked.connect(self.view)
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
+        self.timer.setInterval(60000 if self._change_bus is not None else 1000)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start()
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setSingleShot(True)
+        self._wake_timer.timeout.connect(self.refresh)
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._retry_pending)
+        if self._change_bus is not None:
+            self._change_bus.changed.connect(self._on_remote_change)
+            self._change_bus.statusChanged.connect(self._on_remote_status)
+            self._on_remote_status(self._change_bus.status)
+        else:
+            self.timer.start()
         self.refresh()
+
+    def _on_remote_status(self, status):
+        if status == "synchronized":
+            self.timer.stop()
+        else:
+            self.timer.start()
+
+    def _disconnect_change_bus(self):
+        bus = self._change_bus
+        if bus is not None:
+            bus.changed.disconnect(self._on_remote_change)
+            bus.statusChanged.disconnect(self._on_remote_status)
+            self._change_bus = None
+
+    def _on_remote_change(self, project_id, topics, _entity_ids):
+        if project_id != self.project_id or not topics & {"stitch", "jobs", "project"}:
+            return
+        if self._worker is not None:
+            self._refresh_after = True
+        elif not self._wake_timer.isActive():
+            self._wake_timer.start(150)
+
+    def _after_call(self):
+        if self._change_bus is None:
+            return
+        if self._pending is not None or self._pending_import is not None:
+            if not self._retry_timer.isActive():
+                self._retry_timer.start(self._retry_delay_ms)
+                self._retry_delay_ms = min(30000, self._retry_delay_ms * 2)
+        elif self._refresh_after:
+            self._refresh_after = False
+            self._wake_timer.start(150)
+
+    def _retry_pending(self):
+        if self._pending_import is not None:
+            self._retry_import()
+        elif self._pending is not None:
+            self._retry_mutation()
 
     def refresh(self):
         if self._pending_import is not None:
+            if self._change_bus is not None:
+                return
             self._retry_import()
             return
         if self._pending is not None:
+            if self._change_bus is not None:
+                return
             self._retry_mutation()
+            return
+        if self._worker is not None:
+            self._refresh_after = True
             return
         service, project_id, principal, runtime = self.service, self.project_id, self.principal, self.runtime
         gateway = self._gateway
@@ -260,6 +323,7 @@ class ComputedStitchDialog(_AsyncDialog):
         kind, payload, extra = value
         if kind == "rejected":
             self._pending, self._pending_import = None, None
+            self._retry_timer.stop()
             self._notice = payload
             self.status.setText(payload)
             return
@@ -274,8 +338,12 @@ class ComputedStitchDialog(_AsyncDialog):
         self.snapshot, self._gateway = payload, extra or self._gateway
         if kind == "mutation":
             self._pending = None
+            self._retry_delay_ms = 1000
+            self._retry_timer.stop()
         if kind == "geometry":
             self._pending_import = None
+            self._retry_delay_ms = 1000
+            self._retry_timer.stop()
         selected = self.plans.currentData()
         self.plans.clear()
         model = self.snapshot["model"]
@@ -369,9 +437,15 @@ class ComputedStitchDialog(_AsyncDialog):
             self._loaded(("remote_view", None, {"loader": loader, "exporter": exporter}))
 
     def reject(self):
+        self._disconnect_change_bus()
         self.timer.stop()
+        self._wake_timer.stop()
+        self._retry_timer.stop()
         super().reject()
 
     def closeEvent(self, event):
+        self._disconnect_change_bus()
         self.timer.stop()
+        self._wake_timer.stop()
+        self._retry_timer.stop()
         super().closeEvent(event)

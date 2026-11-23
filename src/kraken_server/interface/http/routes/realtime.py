@@ -76,9 +76,7 @@ def register(ctx: HttpContext) -> None:
                         websocket,
                         project_id=None if project_id is None else str(project_id),
                         catalog=catalog,
-                        catalog_visible=(lambda project_id, subject=session: has_project_access(project_id, subject))
-                        if catalog
-                        else None,
+                        catalog_visible=(lambda project_id, subject=session: has_project_access(project_id, subject)),
                     )
                     await websocket.send_json(
                         {

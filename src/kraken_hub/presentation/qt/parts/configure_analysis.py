@@ -49,7 +49,8 @@ class ConfigureAnalysisMixin:
             workspace._analysis_store = None
             workspace._analysis_coordinator = RemoteAnalysisController(
                 workspace, self.service, project_id, language=getattr(self, "language", "Русский"),
-                background_workers=getattr(self, "_background_workers", None))
+                background_workers=getattr(self, "_background_workers", None),
+                change_bus=getattr(self, "_change_bus", None))
             workspace._analysis_timer = workspace._analysis_coordinator.timer
             workspace.analysisRequested.connect(
                 lambda configuration: self._start_analysis(workspace, project_id, configuration)

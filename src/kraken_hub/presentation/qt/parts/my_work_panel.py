@@ -47,20 +47,30 @@ def _refresh_while_visible(host, load):
         def __init__(self) -> None:
             super().__init__(host)
             self._stale = True
+            self._stale_all = True
+            self._stale_projects: set[str] = set()
             host.installEventFilter(self)
 
         def eventFilter(self, watched, event) -> bool:
             if watched is host and self._stale and event.type() == QEvent.Type.Show:
                 self._stale = False
-                load()
+                projects = None if self._stale_all else tuple(self._stale_projects)
+                self._stale_all = False
+                self._stale_projects.clear()
+                load(projects)
             return False
 
-        def request(self) -> None:
+        def request(self, project_id: str | None = None) -> None:
             if host.isVisible():
                 self._stale = False
-                load()
+                load(None if project_id is None else (str(project_id),))
             else:
                 self._stale = True
+                if project_id is None:
+                    self._stale_all = True
+                    self._stale_projects.clear()
+                elif not self._stale_all:
+                    self._stale_projects.add(str(project_id))
 
     host._refresh_while_visible = _VisibleRefresh()
     return host._refresh_while_visible.request
@@ -316,9 +326,17 @@ def _my_work_panel(
         except Exception as exc:
             QMessageBox.warning(host, "Не удалось запустить плагин", str(exc))
 
-    def refresh() -> None:
+    project_cache: dict[str, object] = {}
+    permissions_cache: dict[str, object] = {}
+    layers_cache: dict[str, dict[str, str]] = {}
+    batches_cache: dict[str, tuple] = {}
+    jobs_cache: dict[str, tuple] = {}
+    orders_cache: dict[str, tuple] = {}
+    performer_cache: tuple = ()
+
+    def refresh(project_ids: tuple[str, ...] | None = None) -> None:
         try:
-            populate()
+            populate(project_ids)
         except RemoteServerError as exc:
             load_error.setText(f"Не удалось обновить список работ. Нажмите «Обновить», чтобы повторить.\n{exc}")
             load_error.show()
@@ -328,33 +346,67 @@ def _my_work_panel(
         load_error.hide()
         launch_button.setEnabled(True)
 
-    def populate() -> None:
-        project_rows = _catalog_projects(service)
+    def populate(project_ids: tuple[str, ...] | None = None) -> None:
+        nonlocal performer_cache
+        full_refresh = project_ids is None or not project_cache or any(pid not in project_cache for pid in project_ids)
+        if full_refresh:
+            project_rows = _catalog_projects(service)
+            project_cache.clear()
+            project_cache.update((str(project.id), project) for project in (() if project_rows is None else project_rows))
+            permissions_cache.clear()
+            layers_cache.clear()
+            batches_cache.clear()
+            jobs_cache.clear()
+            orders_cache.clear()
+            performer_cache = tuple(service.list_performers(include_archived=True))
+            target_rows = tuple(project_cache.values())
+        else:
+            project_rows = tuple(project_cache.values())
+            target_rows = tuple(project_cache[pid] for pid in project_ids)
+        for project in target_rows:
+            project_id = str(project.id)
+            permissions_cache[project_id] = service.project_permissions(project_id, session.principal)
+            layers_cache[project_id] = {
+                str(layer.id): layer.name for layer in service.list_layers(project_id, include_archived=True)
+            }
+            if not full_refresh:
+                selected = (project,)
+                batches_cache[project_id] = tuple(_call_with_projects(service.review_batches, selected))
+                jobs_cache[project_id] = tuple(_call_with_projects(service.plugin_jobs, selected))
+                orders_cache[project_id] = (
+                    tuple(_call_with_projects(service.work_orders, selected)) if hasattr(service, "work_orders") else ()
+                )
+        if full_refresh and project_rows:
+            for cache, method in (
+                (batches_cache, service.review_batches),
+                (jobs_cache, service.plugin_jobs),
+                (orders_cache, getattr(service, "work_orders", None)),
+            ):
+                grouped = {project_id: [] for project_id in project_cache}
+                if method is not None:
+                    for item in _call_with_projects(method, project_rows):
+                        grouped.setdefault(str(item.project_id), []).append(item)
+                cache.update({project_id: tuple(items) for project_id, items in grouped.items()})
         projects = {
             str(project.id): project.name
             for project in (() if project_rows is None else project_rows)
         }
-        project_permissions = {
-            project_id: service.project_permissions(
-                project_id,
-                session.principal,
-            )
-            for project_id in projects
-        }
+        project_permissions = permissions_cache
         layers = {
-            str(layer.id): layer.name
-            for project_id in projects
-            for layer in service.list_layers(project_id, include_archived=True)
+            layer_id: name
+            for project_layers in layers_cache.values()
+            for layer_id, name in project_layers.items()
         }
-        performer_rows = tuple(service.list_performers(include_archived=True))
+        performer_rows = performer_cache
         performers = {str(performer.id): performer.name for performer in performer_rows}
-        batches = _call_with_projects(service.review_batches, project_rows)
-        jobs = _call_with_projects(service.plugin_jobs, project_rows)
-        orders = (
-            _call_with_projects(service.work_orders, project_rows)
-            if hasattr(service, "work_orders")
-            else ()
-        )
+        if not project_rows:
+            batches = tuple(_call_with_projects(service.review_batches, project_rows))
+            jobs = tuple(_call_with_projects(service.plugin_jobs, project_rows))
+            orders = tuple(_call_with_projects(service.work_orders, project_rows)) if hasattr(service, "work_orders") else ()
+        else:
+            batches = tuple(item for rows in batches_cache.values() for item in rows)
+            jobs = tuple(item for rows in jobs_cache.values() for item in rows)
+            orders = tuple(item for rows in orders_cache.values() for item in rows)
         principal_id = str(getattr(getattr(session, "principal", None), "id", "") or "")
         if principal_id:
             assigned = {
@@ -512,7 +564,7 @@ def _my_work_panel(
             table.setCellWidget(offset, 7, action_host)
         _fit_my_work_table(table)
 
-    refresh_button.clicked.connect(refresh)
+    refresh_button.clicked.connect(lambda: refresh())
     launch_button.clicked.connect(launch_selected)
     controller.my_work_refresh = _refresh_while_visible(host, refresh)
     return host

@@ -129,6 +129,10 @@ class RemoteSyncClient:
                     self._on_event(wake)
             elif kind == "catalog_changed" and self._on_catalog is not None:
                 self._on_catalog()
+            elif kind == "directory_changed" and self._on_catalog is not None:
+                self._on_catalog()
+            elif kind in {"error", "authorization.denied"}:
+                LOGGER.warning("Kraken remote WebSocket %s: %s", kind, payload)
 
         def on_open(ws: Any) -> None:
             self._ws = ws

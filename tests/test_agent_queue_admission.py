@@ -60,6 +60,33 @@ def expire(queue, job_id):
         ))
 
 
+def test_job_state_changes_and_telemetry_enqueue_project_notices(queue):
+    job = manifest(parameters=declared())
+
+    def notices():
+        with queue.engine.connect() as connection:
+            return connection.execute(sa.text("""
+                SELECT event_type, payload FROM transactional_outbox
+                WHERE project_id = :project_id AND payload ->> 'entity_id' = :job_id
+                ORDER BY outbox_id
+            """), {"project_id": job.project_id, "job_id": job.job_id}).all()
+
+    queue.submit(job)
+    assert len(notices()) == 1
+    queue.submit(job)
+    assert len(notices()) == 1
+    leased, identity = claim(queue, job_id=job.job_id)
+    assert len(notices()) == 2
+    sample = {"schema": "kraken.host-telemetry.v1", "scope": "whole_host", "host_id": "a" * 32,
+              "observed_at": datetime.now(UTC).isoformat()}
+    queue.heartbeat(job.job_id, identity, telemetry=sample)
+    queue.heartbeat(job.job_id, identity, telemetry=sample)
+    assert len(notices()) == 3
+    queue.finish(job.job_id, identity, failed=False)
+    assert len(notices()) == 4
+    assert all(row.event_type == "job.state_changed" for row in notices())
+
+
 def test_concurrent_admission_serializes_across_projects_and_process_gateways(queue):
     for _ in range(4):
         queue.submit(manifest(parameters=declared()))

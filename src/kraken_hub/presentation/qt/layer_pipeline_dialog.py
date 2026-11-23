@@ -48,6 +48,7 @@ class LayerPipelineDialog(QDialog):
         coordinates=(),
         background_workers=None,
         state_changed=None,
+        change_bus=None,
     ):
         super().__init__(parent)
         self.service, self.principal = service, principal
@@ -67,6 +68,8 @@ class LayerPipelineDialog(QDialog):
         self._dirty = False
         self._loading = False
         self._pending = None
+        self._change_bus = change_bus if getattr(service, "is_remote_project", lambda _id: False)(project_id) else None
+        self._refresh_after = False
         self.setWindowTitle(self._t("Технологический процесс слоя", "Layer process workflow"))
         self.resize(1150, 850)
         root = QVBoxLayout(self)
@@ -266,10 +269,39 @@ class LayerPipelineDialog(QDialog):
         self._applied_signature = None
         self._quiet_refresh = False
         self._timer = QTimer(self)
-        self._timer.setInterval(2000)
+        self._timer.setInterval(60000 if self._change_bus is not None else 2000)
         self._timer.timeout.connect(lambda: self.refresh(quiet=True))
-        self._timer.start()
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setSingleShot(True)
+        self._wake_timer.timeout.connect(lambda: self.refresh(quiet=True))
+        if self._change_bus is not None:
+            self._change_bus.changed.connect(self._on_remote_change)
+            self._change_bus.statusChanged.connect(self._on_remote_status)
+            self._on_remote_status(self._change_bus.status)
+        else:
+            self._timer.start()
         self.refresh()
+
+    def _on_remote_status(self, status):
+        if status == "synchronized":
+            self._timer.stop()
+        else:
+            self._timer.start()
+
+    def _disconnect_change_bus(self):
+        bus = self._change_bus
+        if bus is not None:
+            bus.changed.disconnect(self._on_remote_change)
+            bus.statusChanged.disconnect(self._on_remote_status)
+            self._change_bus = None
+
+    def _on_remote_change(self, project_id, topics, _entity_ids):
+        if project_id != self.project_id or not topics & {"pipeline", "layers", "artifacts", "project"}:
+            return
+        if self._worker is not None:
+            self._refresh_after = True
+        elif not self._wake_timer.isActive():
+            self._wake_timer.start(150)
 
     def _t(self, ru, en):
         return en if self.language == "English" else ru
@@ -309,7 +341,12 @@ class LayerPipelineDialog(QDialog):
         from kraken_hub.presentation.qt.published_model_dialog import published_models
         project = self.service.get_project(self.project_id)
         representations = self.service.list_representations(self.project_id, self.layer_id)
-        history = self.service.history(self.project_id)
+        positions = [getattr(event, "position", None) for event in self._history]
+        load_since = getattr(self.service, "history_since", None)
+        if self._change_bus is not None and positions and all(position is not None for position in positions) and callable(load_since):
+            history = (*self._history, *load_since(self.project_id, max(positions)))
+        else:
+            history = self.service.history(self.project_id)
         try:
             state = self.service.get_layer_pipeline(self.project_id, self.layer_id)
         except Exception as exc:
@@ -347,6 +384,9 @@ class LayerPipelineDialog(QDialog):
             if not quiet:
                 self.controls.setEnabled(True)
                 self.buttons.setEnabled(True)
+            if self._refresh_after:
+                self._refresh_after = False
+                self._wake_timer.start(150)
 
         worker.finished.connect(finished)
         worker.finished.connect(worker.deleteLater)
@@ -354,8 +394,12 @@ class LayerPipelineDialog(QDialog):
 
     def refresh(self, quiet: bool = False):
         if self._worker is not None:
+            if self._change_bus is not None:
+                self._refresh_after = True
             return
         if quiet and self._editor_busy():
+            if self._change_bus is not None:
+                self._wake_timer.start(500)
             return
         self._quiet_refresh = quiet
         if self.isVisible() or self._project is None:
@@ -853,12 +897,16 @@ class LayerPipelineDialog(QDialog):
 
     def reject(self):
         if self._worker is None:
+            self._disconnect_change_bus()
             self._timer.stop()
+            self._wake_timer.stop()
             super().reject()
 
     def closeEvent(self, event):
         if self._worker is not None:
             event.ignore()
         else:
+            self._disconnect_change_bus()
             self._timer.stop()
+            self._wake_timer.stop()
             super().closeEvent(event)

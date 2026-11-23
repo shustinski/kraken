@@ -20,6 +20,11 @@ class _RemoteHistoryEvent:
         return str(self._payload.get("event_id", ""))
 
     @property
+    def position(self) -> int | None:
+        value = self._payload.get("position")
+        return None if value is None else int(value)
+
+    @property
     def event_type(self) -> str:
         return str(self._payload.get("event_type", ""))
 

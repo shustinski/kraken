@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "e9c07c1e-07e2-433d-b688-16a54fbffd38",
+  "kind": "vectorize",
+  "kind_title": "Векторизация",
+  "placement": "server",
+  "placement_title": "На сервере",
+  "transport": "http",
+  "project_id": "e61dfa91-e636-5891-9c23-71fb246b7bf5",
+  "layer_id": "17326d3a-a605-48ce-8336-8416ab848292",
+  "assignee_id": "5070ddd5-8e1f-4005-b85c-c75f7857e838",
+  "instructions": "",
+  "capability": "frames.vectorize.v1",
+  "launch_mode": "plugin-http",
+  "frames": [
+    {
+      "x": 1,
+      "y": 1,
+      "path": "images/1_1.png",
+      "frame_id": "db8b5f04-faa9-545c-bc74-7ffc924e1172"
+    }
+  ]
+}

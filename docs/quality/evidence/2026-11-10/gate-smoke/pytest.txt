@@ -1,5 +1,0 @@
-﻿..ss                                                                     [100%]
-=========================== short test summary info ===========================
-SKIPPED [1] tests\test_desktop_runtime_smoke.py:113: Set KRAKEN_SMOKE_SERVER_URL and KRAKEN_SMOKE_SERVER_TOKEN for an isolated test server
-SKIPPED [1] tests\test_desktop_runtime_smoke.py:148: Set KRAKEN_SMOKE_AGENT_URL and KRAKEN_SMOKE_AGENT_TOKEN for an isolated test agent
-2 passed, 2 skipped in 1.55s

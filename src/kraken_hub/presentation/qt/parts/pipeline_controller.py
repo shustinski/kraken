@@ -9,6 +9,8 @@ from kraken_manager.domain.identity import Permission
 from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
 from .layer_create_thread import _BackgroundCallThread
 
+_ADVANCING_PIPELINE_STATES = frozenset({"running", "cancelling"})
+
 
 class PipelineControllerMixin:
     def open_layer_pipeline(self, layer_id):
@@ -41,7 +43,8 @@ class PipelineControllerMixin:
         service, principal = self.service, self.session.principal
 
         def cycle():
-            count = 0
+            # Pipelines still advancing; the Hub keeps polling only while some are.
+            active = 0
             for project in service.list_projects():
                 is_remote = getattr(service, "is_remote_project", lambda _: False)
                 if is_remote(project.id):
@@ -53,6 +56,8 @@ class PipelineControllerMixin:
                         continue
                     if state["status"] in {"draft", "cancelled"}:
                         continue
+                    if state["status"] in _ADVANCING_PIPELINE_STATES:
+                        active += 1
                     coordinates = sorted(
                         {tuple(xy) for op in state["definition"]["operations"] for xy in op.get("coordinates", ())}
                     )
@@ -63,7 +68,6 @@ class PipelineControllerMixin:
                             staging_root=self.agent_runtime.data_dir / "staging")
                         service.tick_layer_pipeline(project_id=project.id, layer_id=layer.id, principal=principal,
                             stitch_gateway=stitch_gateway)
-                        count += 1
                         continue
                     context = SimpleNamespace(
                         project_id=project.id,
@@ -75,8 +79,7 @@ class PipelineControllerMixin:
                     service.tick_layer_pipeline(
                         project_id=project.id, layer_id=layer.id, principal=principal, gateway=gateway
                     )
-                    count += 1
-            return count
+            return active
 
         worker = _BackgroundCallThread(cycle, parent=self.shell)
         self._pipeline_worker = worker
@@ -84,6 +87,9 @@ class PipelineControllerMixin:
         worker.failed.connect(
             lambda message: self.shell.statusBar().showMessage(f"Технологический процесс: {message}", 10000)
         )
+        on_cycle = getattr(self, "_on_pipeline_cycle_finished", None)
+        if callable(on_cycle):
+            worker.succeeded.connect(on_cycle)
 
         def finished():
             self._background_workers.discard(worker)

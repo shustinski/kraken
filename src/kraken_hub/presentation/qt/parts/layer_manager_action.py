@@ -390,6 +390,9 @@ class LayerManagerActionMixin:
                 self.launch_selected_work("job", job)
             else:
                 self._gateway_for_job(job)
+                followup = getattr(self, "_request_agent_followup", None)
+                if callable(followup):
+                    followup()
                 self._poll_agent_jobs()
         except Exception as exc:
             self._error(f"Не удалось продолжить выполнение: {exc}")

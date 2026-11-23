@@ -12,8 +12,48 @@ from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
 from kraken_hub.presentation.qt.parts.my_work_panel import _call_with_projects, _catalog_projects
 from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
 
+# Job states that advance without anyone acting. Waiting, partial, authorization
+# and recovery states need a person, so polling them only repeats the same reads.
+_PROGRESSING_JOB_STATES = frozenset({"queued", "staging", "running", "importing"})
+
+
+def _live_agent_timer(controller):
+    timer = getattr(controller, "_agent_timer", None)
+    return None if timer is None or sip.isdeleted(timer) else timer
+
+
+def request_agent_followup(controller) -> None:
+    """Poll the agent until the work just started (or resumed) settles.
+
+    Call only from the GUI thread: Qt timers cannot be started elsewhere.
+    """
+    timer = _live_agent_timer(controller)
+    if timer is not None and not timer.isActive():
+        timer.start()
+
+
+def settle_agent_followup(controller, *, progressing: bool) -> None:
+    """Stop polling once no job and no layer pipeline still advances on its own."""
+    if progressing or getattr(controller, "_active_pipeline_count", 0) > 0:
+        return
+    timer = _live_agent_timer(controller)
+    if timer is not None:
+        timer.stop()
+
+
+def pipeline_cycle_finished(controller, active_count: object) -> None:
+    controller._active_pipeline_count = int(active_count or 0)
+    if controller._active_pipeline_count > 0:
+        request_agent_followup(controller)
+
 
 class PollAgentJobsMixin:
+    def _request_agent_followup(self) -> None:
+        request_agent_followup(self)
+
+    def _on_pipeline_cycle_finished(self, active_count: object) -> None:
+        pipeline_cycle_finished(self, active_count)
+
     def _emit_remote_signal(self, signal: str, value: object) -> None:
         bridge = self._remote_bridge
         if not sip.isdeleted(bridge):
@@ -96,6 +136,11 @@ class PollAgentJobsMixin:
         self._pending_catalog_refresh = False
         if catalog_changed:
             self.refresh_projects()
+        # Server-side job and order changes reach My Work here instead of via
+        # a periodic re-read; a hidden panel only marks itself stale.
+        my_work_refresh = getattr(self, "my_work_refresh", None)
+        if (catalog_changed or wakes) and my_work_refresh is not None:
+            my_work_refresh()
         active = self._project_id
         if active is not None and active in self._project_workspaces:
             has_wakes = any(wake.project_id == active for wake in wakes)
@@ -164,6 +209,7 @@ class PollAgentJobsMixin:
             if active is None:
                 return
             self._gateway_for_job(active)
+            request_agent_followup(self)
             self._poll_agent_jobs(projects)
         except Exception as exc:
             self.shell.statusBar().showMessage(
@@ -181,6 +227,7 @@ class PollAgentJobsMixin:
         if gateway is None:
             if self.my_work_refresh is not None:
                 self.my_work_refresh()
+            settle_agent_followup(self, progressing=False)
             return
         if getattr(self, "_agent_import_worker", None) is not None:
             return
@@ -191,7 +238,7 @@ class PollAgentJobsMixin:
                     arguments["projects"] = projects
                 return self.service.synchronize_plugin_jobs(**arguments)
 
-            jobs = _call_with_projects(synchronize, projects)
+            jobs = tuple(_call_with_projects(synchronize, projects))
             work_orders = getattr(self.service, "work_orders", None)
             file_jobs = _file_work_job_ids(
                 () if work_orders is None else _call_with_projects(work_orders, projects)
@@ -210,6 +257,11 @@ class PollAgentJobsMixin:
                 self.my_work_refresh()
             if not started_import:
                 self._agent_poll_error = ""
+            settle_agent_followup(
+                self,
+                progressing=started_import
+                or any(job.state.value in _PROGRESSING_JOB_STATES for job in jobs)
+            )
         except Exception as exc:
             message = str(exc)
             if message != self._agent_poll_error:

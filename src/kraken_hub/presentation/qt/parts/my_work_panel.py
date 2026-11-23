@@ -35,6 +35,37 @@ def _load_on_first_show(host, load) -> None:
     host._load_on_first_show = _FirstShow()
 
 
+def _refresh_while_visible(host, load):
+    """Return a refresh hook that reads only while ``host`` is shown.
+
+    Background callers (agent follow-up, live wakes) call the hook freely; a
+    hidden panel just remembers it is stale and loads once on its next show.
+    """
+    from PyQt6.QtCore import QEvent, QObject
+
+    class _VisibleRefresh(QObject):
+        def __init__(self) -> None:
+            super().__init__(host)
+            self._stale = True
+            host.installEventFilter(self)
+
+        def eventFilter(self, watched, event) -> bool:
+            if watched is host and self._stale and event.type() == QEvent.Type.Show:
+                self._stale = False
+                load()
+            return False
+
+        def request(self) -> None:
+            if host.isVisible():
+                self._stale = False
+                load()
+            else:
+                self._stale = True
+
+    host._refresh_while_visible = _VisibleRefresh()
+    return host._refresh_while_visible.request
+
+
 def _call_with_projects(method, projects: tuple[object, ...] | None):
     if projects is None:
         return method()
@@ -483,8 +514,7 @@ def _my_work_panel(
 
     refresh_button.clicked.connect(refresh)
     launch_button.clicked.connect(launch_selected)
-    controller.my_work_refresh = refresh
-    _load_on_first_show(host, refresh)
+    controller.my_work_refresh = _refresh_while_visible(host, refresh)
     return host
 
 def _fit_my_work_table(table) -> None:

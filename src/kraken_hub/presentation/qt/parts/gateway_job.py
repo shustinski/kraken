@@ -94,6 +94,9 @@ class GatewayJobMixin:
             job=job,
             idempotency_key=str(uuid4()),
         )
+        followup = getattr(self, "_request_agent_followup", None)
+        if callable(followup):
+            followup()
         if self.my_work_refresh is not None:
             self.my_work_refresh()
 
@@ -127,6 +130,9 @@ class GatewayJobMixin:
             job=job,
             idempotency_key=str(uuid4()),
         )
+        followup = getattr(self, "_request_agent_followup", None)
+        if callable(followup):
+            followup()
         if self.my_work_refresh is not None:
             self.my_work_refresh()
 

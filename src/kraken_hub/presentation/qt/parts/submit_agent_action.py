@@ -178,4 +178,7 @@ class SubmitAgentActionMixin:
         )
         if interactive_registry is not None:
             self._run_remote_interactive_job(job, registry=interactive_registry)
+        followup = getattr(self, "_request_agent_followup", None)
+        if callable(followup):
+            followup()
         return job

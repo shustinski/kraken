@@ -418,84 +418,102 @@ class AddArtifactVersionHandler(_ProjectHandler):
                 chunks, expected_sha256=command.expected_sha256
             )
         with self._uow_factory() as uow:
-            existing, project, series, active, parent_id, stream_id, actual_revision = self._prepare(uow, command)
-            if existing is not None:
-                return existing
-            if command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
-                raise ConflictError("Stored blob digest does not match the artifact command")
-            now = self._clock.now()
-            version = ArtifactVersion.managed(
-                series_id=series.id,
-                blob=stored.blob,
-                media_type=command.media_type,
-                filename=command.filename,
-                author_principal_id=command.context.actor.id,
-                created_at=now,
-                parent_version_id=parent_id,
-                input_version_ids=command.input_version_ids,
-                tool_name=command.tool_name,
-                tool_version=command.tool_version,
-                parameters=command.parameters,
-            )
-            activate = active is None or parent_id == active.id
-            event = EventEnvelope.create(
-                stream_id=stream_id,
-                project_id=project.id,
-                revision=actual_revision + 1,
-                event_type="ArtifactVersionCreated",
-                payload={
-                    "artifact_version_id": version.id,
-                    "series_id": series.id,
-                    "layer_id": series.layer_id,
-                    "representation_id": series.representation_id,
-                    "frame_id": series.frame_id,
-                    "sha256": version.sha256,
-                    "size_bytes": version.size_bytes,
-                    "media_type": version.media_type,
-                    "filename": version.filename,
-                    "blob": {
-                        "sha256": version.blob.sha256,
-                        "size_bytes": version.blob.size_bytes,
-                    },
-                    "parent_version_id": version.parent_version_id,
-                    "input_version_ids": version.input_version_ids,
-                    "tool_name": version.tool_name,
-                    "tool_version": version.tool_version,
-                    "parameters": version.parameters,
-                    "author_principal_id": version.author_principal_id,
-                    "created_at": version.created_at.isoformat(),
-                    "activated": activate,
-                    "branched": active is not None and parent_id != active.id,
-                    **(
-                        {"file_history": "batch", "batch_key": command.batch_key}
-                        if command.file_history == "batch" and command.batch_key
-                        else {}
-                    ),
-                },
-                actor=ActorSnapshot.from_principal(command.context.actor),
-                recorded_at=now,
-                effective_at=command.context.effective_at,
-                performer_id=command.context.performer_id,
-                correlation_id=command.context.correlation_id,
-                idempotency_key=command.context.idempotency_key,
-            )
-            uow.event_store.append(stream_id, expected_revision=actual_revision, events=(event,))
-            uow.projections.save_artifact_version(version, activate=activate)
-            uow.commit()
+            version, created = self.record(uow, command, stored)
+            if created:
+                uow.commit()
             return version
+
+    def record(
+        self,
+        uow: UnitOfWork,
+        command: AddArtifactVersionCommand,
+        stored: StoredContent,
+        *,
+        project: Project | None = None,
+    ) -> tuple[ArtifactVersion, bool]:
+        """Append the version inside ``uow`` without committing; ``project`` skips re-authorization."""
+        existing, project, series, active, parent_id, stream_id, actual_revision = self._prepare(
+            uow, command, project=project
+        )
+        if existing is not None:
+            return existing, False
+        if command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
+            raise ConflictError("Stored blob digest does not match the artifact command")
+        now = self._clock.now()
+        version = ArtifactVersion.managed(
+            series_id=series.id,
+            blob=stored.blob,
+            media_type=command.media_type,
+            filename=command.filename,
+            author_principal_id=command.context.actor.id,
+            created_at=now,
+            parent_version_id=parent_id,
+            input_version_ids=command.input_version_ids,
+            tool_name=command.tool_name,
+            tool_version=command.tool_version,
+            parameters=command.parameters,
+        )
+        activate = active is None or parent_id == active.id
+        event = EventEnvelope.create(
+            stream_id=stream_id,
+            project_id=project.id,
+            revision=actual_revision + 1,
+            event_type="ArtifactVersionCreated",
+            payload={
+                "artifact_version_id": version.id,
+                "series_id": series.id,
+                "layer_id": series.layer_id,
+                "representation_id": series.representation_id,
+                "frame_id": series.frame_id,
+                "sha256": version.sha256,
+                "size_bytes": version.size_bytes,
+                "media_type": version.media_type,
+                "filename": version.filename,
+                "blob": {
+                    "sha256": version.blob.sha256,
+                    "size_bytes": version.blob.size_bytes,
+                },
+                "parent_version_id": version.parent_version_id,
+                "input_version_ids": version.input_version_ids,
+                "tool_name": version.tool_name,
+                "tool_version": version.tool_version,
+                "parameters": version.parameters,
+                "author_principal_id": version.author_principal_id,
+                "created_at": version.created_at.isoformat(),
+                "activated": activate,
+                "branched": active is not None and parent_id != active.id,
+                **(
+                    {"file_history": "batch", "batch_key": command.batch_key}
+                    if command.file_history == "batch" and command.batch_key
+                    else {}
+                ),
+            },
+            actor=ActorSnapshot.from_principal(command.context.actor),
+            recorded_at=now,
+            effective_at=command.context.effective_at,
+            performer_id=command.context.performer_id,
+            correlation_id=command.context.correlation_id,
+            idempotency_key=command.context.idempotency_key,
+        )
+        uow.event_store.append(stream_id, expected_revision=actual_revision, events=(event,))
+        uow.projections.save_artifact_version(version, activate=activate)
+        return version, True
 
     def _prepare(
         self,
         uow: UnitOfWork,
         command: AddArtifactVersionCommand,
+        *,
+        project: Project | None = None,
     ) -> tuple[ArtifactVersion | None, Project, ArtifactSeries, ArtifactVersion | None, ArtifactVersionId | None, str, int]:
-        project, _ = self._load_project_and_authorize(
-            uow,
-            project_id=command.project_id,
-            actor=command.context.actor,
-            permission=Permission.IMPORT_ARTIFACT,
-            gitlab_identity_verified=command.context.gitlab_identity_verified,
-        )
+        if project is None:
+            project, _ = self._load_project_and_authorize(
+                uow,
+                project_id=command.project_id,
+                actor=command.context.actor,
+                permission=Permission.IMPORT_ARTIFACT,
+                gitlab_identity_verified=command.context.gitlab_identity_verified,
+            )
         previous_id = _prior_entity_id(
             uow,
             project.id,
@@ -540,66 +558,74 @@ class CreateArtifactSeriesHandler(_ProjectHandler):
                 permission=Permission.IMPORT_ARTIFACT,
                 gitlab_identity_verified=command.context.gitlab_identity_verified,
             )
-            previous_id = _prior_entity_id(
-                uow,
-                project.id,
-                command.context.idempotency_key,
-                "ArtifactSeriesCreated",
-                "artifact_series_id",
-            )
-            if previous_id is not None:
-                existing = uow.projections.get_artifact_series(ArtifactSeriesId(previous_id))
-                if existing is not None:
-                    return existing
-            series = ArtifactSeries(
-                id=command.series_id,
-                project_id=project.id,
-                scope=command.scope,
-                name=command.name,
-                layer_id=command.layer_id,
-                representation_id=command.representation_id,
-                frame_id=command.frame_id,
-            )
-            if series.layer_id is not None:
-                layer = uow.projections.get_layer(series.layer_id)
-                if layer is None or layer.project_id != project.id:
-                    raise NotFoundError("Artifact series layer was not found in the project")
-            if series.representation_id is not None:
-                representation = uow.projections.get_representation(series.representation_id)
-                if representation is None or representation.project_id != project.id:
-                    raise NotFoundError("Artifact series representation was not found in the project")
-            now = self._clock.now()
-            stream_id = _series_stream(str(series.id))
-            event = EventEnvelope.create(
-                stream_id=stream_id,
-                project_id=project.id,
-                revision=1,
-                event_type="ArtifactSeriesCreated",
-                payload={
-                    "artifact_series_id": series.id,
-                    "scope": series.scope.value,
-                    "name": series.name,
-                    "layer_id": series.layer_id,
-                    "representation_id": series.representation_id,
-                    "frame_id": series.frame_id,
-                    "archived": series.archived,
-                    **(
-                        {"file_history": "batch", "batch_key": command.batch_key}
-                        if command.file_history == "batch" and command.batch_key
-                        else {}
-                    ),
-                },
-                actor=ActorSnapshot.from_principal(command.context.actor),
-                recorded_at=now,
-                effective_at=command.context.effective_at,
-                performer_id=command.context.performer_id,
-                correlation_id=command.context.correlation_id,
-                idempotency_key=command.context.idempotency_key,
-            )
-            uow.event_store.append(stream_id, expected_revision=0, events=(event,))
-            uow.projections.save_artifact_series(series)
-            uow.commit()
+            series, created = self.record(uow, project, command)
+            if created:
+                uow.commit()
             return series
+
+    def record(
+        self, uow: UnitOfWork, project: Project, command: CreateArtifactSeriesCommand
+    ) -> tuple[ArtifactSeries, bool]:
+        """Append the series inside ``uow`` (already authorized for ``project``) without committing."""
+        previous_id = _prior_entity_id(
+            uow,
+            project.id,
+            command.context.idempotency_key,
+            "ArtifactSeriesCreated",
+            "artifact_series_id",
+        )
+        if previous_id is not None:
+            existing = uow.projections.get_artifact_series(ArtifactSeriesId(previous_id))
+            if existing is not None:
+                return existing, False
+        series = ArtifactSeries(
+            id=command.series_id,
+            project_id=project.id,
+            scope=command.scope,
+            name=command.name,
+            layer_id=command.layer_id,
+            representation_id=command.representation_id,
+            frame_id=command.frame_id,
+        )
+        if series.layer_id is not None:
+            layer = uow.projections.get_layer(series.layer_id)
+            if layer is None or layer.project_id != project.id:
+                raise NotFoundError("Artifact series layer was not found in the project")
+        if series.representation_id is not None:
+            representation = uow.projections.get_representation(series.representation_id)
+            if representation is None or representation.project_id != project.id:
+                raise NotFoundError("Artifact series representation was not found in the project")
+        now = self._clock.now()
+        stream_id = _series_stream(str(series.id))
+        event = EventEnvelope.create(
+            stream_id=stream_id,
+            project_id=project.id,
+            revision=1,
+            event_type="ArtifactSeriesCreated",
+            payload={
+                "artifact_series_id": series.id,
+                "scope": series.scope.value,
+                "name": series.name,
+                "layer_id": series.layer_id,
+                "representation_id": series.representation_id,
+                "frame_id": series.frame_id,
+                "archived": series.archived,
+                **(
+                    {"file_history": "batch", "batch_key": command.batch_key}
+                    if command.file_history == "batch" and command.batch_key
+                    else {}
+                ),
+            },
+            actor=ActorSnapshot.from_principal(command.context.actor),
+            recorded_at=now,
+            effective_at=command.context.effective_at,
+            performer_id=command.context.performer_id,
+            correlation_id=command.context.correlation_id,
+            idempotency_key=command.context.idempotency_key,
+        )
+        uow.event_store.append(stream_id, expected_revision=0, events=(event,))
+        uow.projections.save_artifact_series(series)
+        return series, True
 
 
 class ReviewReturnComparator:

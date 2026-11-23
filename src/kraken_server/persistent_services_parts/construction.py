@@ -99,6 +99,7 @@ class ConstructionMixin:
         self._update_representation_note = self.commands.execute
         self._create_artifact_series = self.commands.execute
         self._add_artifact_version = self.commands.execute
+        self._import_frame_artifacts = self.commands.execute
         self._rename_artifact_series = self.commands.execute
         self._archive_artifact_series = self.commands.execute
         self._activate_artifact_version = self.commands.execute

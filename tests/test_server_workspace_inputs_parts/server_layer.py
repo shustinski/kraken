@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from kraken_hub.composition import EmbeddedProjectService
+from kraken_manager.application.frame_artifact_import import ImportFrameArtifactsHandler
 from kraken_manager.application.use_cases import AddArtifactVersionHandler, CreateArtifactSeriesHandler
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.infrastructure.filesystem import FilesystemEventStore
@@ -77,6 +78,9 @@ def _server_layer(tmp_path: Path, orientation=GridOrientation.Y_DOWN, *, images:
         local._uow(str(project.id)), local.profiles, local.clock
     )
     server._add_artifact_version = AddArtifactVersionHandler(local._uow(str(project.id)), local.profiles, local.clock)
+    server._import_frame_artifacts = ImportFrameArtifactsHandler(
+        local._uow(str(project.id)), local.profiles, local.clock
+    )
     context = CommandContext(str(session.principal.id), "prepare", None)
     return server, local, session, project, layer, binding, representation, context
 
@@ -123,6 +127,9 @@ def _unbound_server_layer(tmp_path: Path):
         local._uow(str(project.id)), local.profiles, local.clock
     )
     server._add_artifact_version = AddArtifactVersionHandler(local._uow(str(project.id)), local.profiles, local.clock)
+    server._import_frame_artifacts = ImportFrameArtifactsHandler(
+        local._uow(str(project.id)), local.profiles, local.clock
+    )
     context = CommandContext(str(session.principal.id), "prepare", None)
     return server, local, session, project, layer, representation, context
 

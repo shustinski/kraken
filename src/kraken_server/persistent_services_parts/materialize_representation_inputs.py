@@ -1,12 +1,18 @@
 """persistent_services: materialize representation inputs."""
 from __future__ import annotations
+import functools
 import mimetypes
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from kraken_core.safe_files import contained_path, ensure_regular_directory, open_regular_read
 from kraken_manager.application.dto import (
     AddArtifactVersionCommand,
     CreateArtifactSeriesCommand,
+)
+from kraken_manager.application.frame_artifact_import import (
+    FrameArtifactImport,
+    ImportFrameArtifactsCommand,
 )
 from kraken_manager.application.errors import (
     NotFoundError as ApplicationNotFoundError,
@@ -33,6 +39,12 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
     _project_id,
     resolve_storage_path,
 )
+
+
+@contextmanager
+def _read_chunks(path, root):
+    with open_regular_read(path, root=root) as stream:
+        yield iter(lambda: stream.read(1024 * 1024), b"")
 
 
 def _input_directory(service, representation, binding, frame_count: int):
@@ -94,7 +106,7 @@ class MaterializeRepresentationInputsMixin:
             binding = None if files is None else files.registry.get_layer(project_id, layer_id)
             root, frame_positions = _input_directory(self, representation, binding, project.frame_count)
             application_context = self._application_context(context)
-            prepared = 0
+            items = []
             for filename, position in sorted(frame_positions.items(), key=lambda item: item[1]):
                 if Path(filename).name != filename or not 1 <= position <= project.frame_count:
                     raise ValueError("Invalid registered image position or filename")
@@ -104,8 +116,9 @@ class MaterializeRepresentationInputsMixin:
                 frame_id = project.frame_id_at(x, y)
                 series_id = deterministic_frame_series_id(representation.id, frame_id)
                 key = f"workspace-input:{representation.id}:{frame_id}"
-                self._create_artifact_series(
-                    CreateArtifactSeriesCommand(
+                path = contained_path(root, (filename,))
+                items.append(FrameArtifactImport(
+                    series=CreateArtifactSeriesCommand(
                         context=replace(application_context, idempotency_key=f"{key}:series"),
                         project_id=project.id,
                         scope=ArtifactScope.FRAME_REPRESENTATION,
@@ -116,28 +129,24 @@ class MaterializeRepresentationInputsMixin:
                         series_id=series_id,
                         file_history="batch",
                         batch_key=f"workspace-input:{representation.id}",
-                    )
-                )
-                if self.projections.get_active_artifact_version(series_id) is not None:
-                    prepared += 1
-                    continue
-                path = contained_path(root, (filename,))
-                with open_regular_read(path, root=root) as stream:
-                    self._add_artifact_version(
-                        AddArtifactVersionCommand(
-                            context=replace(application_context, idempotency_key=f"{key}:version"),
-                            project_id=project.id,
-                            series_id=series_id,
-                            filename=filename,
-                            media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
-                            expected_series_revision=self.artifact_stream_revision(project_id, str(series_id)),
-                            parameters={"x": x, "y": y, "source_path": str(path)},
-                            file_history="batch",
-                            batch_key=f"workspace-input:{representation.id}",
-                        ),
-                        iter(lambda: stream.read(1024 * 1024), b""),
-                    )
-                prepared += 1
+                    ),
+                    version=AddArtifactVersionCommand(
+                        context=replace(application_context, idempotency_key=f"{key}:version"),
+                        project_id=project.id,
+                        series_id=series_id,
+                        filename=filename,
+                        media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                        expected_series_revision=0,
+                        parameters={"x": x, "y": y, "source_path": str(path)},
+                        file_history="batch",
+                        batch_key=f"workspace-input:{representation.id}",
+                    ),
+                    open_content=functools.partial(_read_chunks, path, root),
+                ))
+            # One action: rights are checked once for all frames, not per frame.
+            prepared = self._import_frame_artifacts(ImportFrameArtifactsCommand(
+                context=application_context, project_id=project.id, items=tuple(items),
+            ))
             return {"prepared_frames": prepared}
         except (OSError, WorkspaceValidationError) as exc:
             raise ValidationError(f"Не удалось подготовить исходные изображения: {exc}") from exc

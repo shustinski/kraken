@@ -14,6 +14,10 @@ from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.application.dto import ReviewPackagePlan
 
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
+from kraken_manager.application.frame_artifact_import import (
+    ImportFrameArtifactsCommand,
+    ImportFrameArtifactsHandler,
+)
 from kraken_manager.application.artifact_lifecycle import (
     ActivateArtifactVersionHandler,
     AddExternalArtifactVersionHandler,
@@ -118,6 +122,9 @@ _COMMAND_HANDLERS = {
     ),
     AddArtifactVersionCommand: ProjectCommandDefinition(
         AddArtifactVersionCommand, AddArtifactVersionHandler, ArtifactVersion, CommandAudience.CONTENT_PORT
+    ),
+    ImportFrameArtifactsCommand: ProjectCommandDefinition(
+        ImportFrameArtifactsCommand, ImportFrameArtifactsHandler, int, CommandAudience.CONTENT_PORT
     ),
     AddExternalArtifactVersionCommand: ProjectCommandDefinition(
         AddExternalArtifactVersionCommand,

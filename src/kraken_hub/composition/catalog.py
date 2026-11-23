@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -173,8 +173,12 @@ class DualCatalogService(ProjectApplication):
         remote_projects: list[Project] = []
         if self.remote is not None:
             try:
-                remote_projects = list(self.remote.list_projects(include_archived=include_archived))
-                self._remote_ids = {str(project.id) for project in self.remote.list_projects(include_archived=True)}
+                remote_projects = list(self.remote.list_projects(include_archived=True))
+                self._remote_ids = {str(project.id) for project in remote_projects}
+                if not include_archived:
+                    remote_projects = [
+                        project for project in remote_projects if project.state.value != "archived"
+                    ]
             except (OSError, RemoteServerError, ValueError):
                 LOGGER.exception("Could not refresh the remote project catalog")
                 remote_projects = []
@@ -457,9 +461,18 @@ class DualCatalogService(ProjectApplication):
             raise ValueError("Artifact version was not found")
         return self._backend(series).external_artifact_changed(version)
 
-    def work_orders(self):
-        local_orders = list(self.local.work_orders())
-        remote_orders = [] if self.remote is None else list(self.remote.work_orders())
+    def _scoped_projects(
+        self, projects: Iterable[Project] | None
+    ) -> tuple[tuple[Project, ...], tuple[Project, ...]]:
+        selected = tuple(self.list_projects(include_archived=True) if projects is None else projects)
+        local_projects = tuple(project for project in selected if not self.is_remote_project(project.id))
+        remote_projects = tuple(project for project in selected if self.is_remote_project(project.id))
+        return local_projects, remote_projects
+
+    def work_orders(self, *, projects: Iterable[Project] | None = None):
+        local_projects, remote_projects = self._scoped_projects(projects)
+        local_orders = list(self.local.work_orders(projects=local_projects))
+        remote_orders = [] if self.remote is None else list(self.remote.work_orders(projects=remote_projects))
         return tuple(sorted((*local_orders, *remote_orders), key=lambda item: (item.updated_at, item.id), reverse=True))
 
     def dispatch_stitch(self, **kwargs):
@@ -516,9 +529,10 @@ class DualCatalogService(ProjectApplication):
             kwargs["principal"] = self.remote.auth.principal
         return backend.mutate_quality_issue(**kwargs)
 
-    def review_batches(self):
-        local_batches = list(self.local.review_batches())
-        remote_batches = [] if self.remote is None else list(self.remote.review_batches())
+    def review_batches(self, *, projects: Iterable[Project] | None = None):
+        local_projects, remote_projects = self._scoped_projects(projects)
+        local_batches = list(self.local.review_batches(projects=local_projects))
+        remote_batches = [] if self.remote is None else list(self.remote.review_batches(projects=remote_projects))
         return tuple(
             sorted(
                 (*local_batches, *remote_batches),
@@ -550,9 +564,10 @@ class DualCatalogService(ProjectApplication):
             return self.remote.review_return_preflight(**kwargs)
         return self.local.review_return_preflight(**kwargs)
 
-    def plugin_jobs(self):
-        local_jobs = list(self.local.plugin_jobs())
-        remote_jobs = [] if self.remote is None else list(self.remote.plugin_jobs())
+    def plugin_jobs(self, *, projects: Iterable[Project] | None = None):
+        local_projects, remote_projects = self._scoped_projects(projects)
+        local_jobs = list(self.local.plugin_jobs(projects=local_projects))
+        remote_jobs = [] if self.remote is None else list(self.remote.plugin_jobs(projects=remote_projects))
         return tuple(
             sorted(
                 (*local_jobs, *remote_jobs),
@@ -562,8 +577,13 @@ class DualCatalogService(ProjectApplication):
         )
 
     def synchronize_plugin_jobs(self, **kwargs):
-        local_jobs = self.local.synchronize_plugin_jobs(**kwargs)
-        remote_jobs = () if self.remote is None else self.remote.synchronize_plugin_jobs(**kwargs)
+        local_projects, remote_projects = self._scoped_projects(kwargs.pop("projects", None))
+        local_jobs = self.local.synchronize_plugin_jobs(**kwargs, projects=local_projects)
+        remote_jobs = (
+            ()
+            if self.remote is None
+            else self.remote.synchronize_plugin_jobs(**kwargs, projects=remote_projects)
+        )
         return (*local_jobs, *remote_jobs)
 
     def create_initial_account(self, username: str, display_name: str, password: str):

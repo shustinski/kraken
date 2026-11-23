@@ -96,8 +96,8 @@ class CellVisualColorMixin:
                 else self.verticalScrollBar()
             )
             pixel_delta = event.pixelDelta()
-            amount = pixel_delta.y() if not pixel_delta.isNull() else delta / 8.0
-            scrollbar.setValue(scrollbar.value() - round(amount))
+            step = pixel_delta.y() if not pixel_delta.isNull() else delta / 8.0
+            scrollbar.setValue(scrollbar.value() - round(step * 3))
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
@@ -141,6 +141,7 @@ class CellVisualColorMixin:
                         if modifiers & Qt.KeyboardModifier.ControlModifier
                         else ()
                     )
+                self._begin_layer_selection_profile()
                 self.set_selection(
                     FrameSelection(
                         self._drag_base_rectangles
@@ -185,6 +186,7 @@ class CellVisualColorMixin:
         if event.button() is Qt.MouseButton.LeftButton and self._drag_anchor is not None:
             self._drag_anchor = None
             self._drag_base_rectangles = ()
+            self._finish_layer_selection_profile_after_paint()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -197,6 +199,35 @@ class CellVisualColorMixin:
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
+
+    def _begin_layer_selection_profile(self) -> None:
+        from kraken_core.frame_matrix import profiling
+
+        current = getattr(self, "_layer_selection_profile", None)
+        if current is not None:
+            current.finish()
+        self._layer_selection_profile = profiling.begin_region("layer_selection")
+
+    def _finish_layer_selection_profile_after_paint(self) -> None:
+        session = getattr(self, "_layer_selection_profile", None)
+        if session is None:
+            return
+        self._layer_selection_profile = None
+        from PyQt6.QtCore import QEvent, QObject, QTimer
+
+        viewport = self.viewport()
+
+        class _Ready(QObject):
+            def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
+                if watched is viewport and event.type() == QEvent.Type.Paint:
+                    viewport.removeEventFilter(self)
+                    QTimer.singleShot(0, lambda: session.finish(ready=True))
+                return False
+
+        ready = _Ready(self)
+        self._layer_selection_ready = ready
+        viewport.installEventFilter(ready)
+        viewport.update()
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData

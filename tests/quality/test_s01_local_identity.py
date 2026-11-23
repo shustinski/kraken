@@ -11,6 +11,7 @@ from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QLineEdit, QMessageBox, QTabWidget
 
+import kraken_core.settings as kraken_settings
 from kraken_hub.composition.catalog import build_workspace_service
 from kraken_hub.presentation.qt.parts import login as login_parts
 
@@ -21,7 +22,12 @@ def local_service(tmp_path, monkeypatch):
     monkeypatch.setattr(login_parts, "_remember_credentials", lambda *args, **kwargs: None)
     monkeypatch.setattr(login_parts, "domain_server_status", lambda *args, **kwargs: "disabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda *args, **kwargs: "http://127.0.0.1:8080")
-    return build_workspace_service(data_dir=tmp_path)
+    saved_settings = kraken_settings._directory
+    kraken_settings.configure_settings_directory(tmp_path / "settings")
+    try:
+        yield build_workspace_service(data_dir=tmp_path)
+    finally:
+        kraken_settings._directory = saved_settings
 
 
 def _drive_dialog(service, action):

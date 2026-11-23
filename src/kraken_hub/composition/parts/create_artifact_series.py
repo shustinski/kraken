@@ -81,10 +81,17 @@ class CreateArtifactSeriesMixin:
         identifier = str(project_id)
         events = FilesystemEventStore(self.catalog_root, identifier)
         with events.lock.hold(events.lock_timeout):
+            position = events.last_global_position()
+            cache: dict[str, SQLiteProjectionStore] = getattr(self, "_projection_cache", {})
+            cached = cache.get(identifier)
+            if cached is not None and cached.checkpoint == position:
+                return cached
             projections = SQLiteProjectionStore(self.catalog_root, identifier)
-            if projections.checkpoint != events.last_global_position():
+            if projections.checkpoint != position:
                 rebuild_filesystem_index(events, projections, acl=self.identities)
                 projections = SQLiteProjectionStore(self.catalog_root, identifier)
+            cache[identifier] = projections
+            self._projection_cache = cache
         return projections
 
     def list_projects(self, *, include_archived: bool = False) -> tuple[Project, ...]:

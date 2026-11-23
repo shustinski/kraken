@@ -3,7 +3,7 @@ from __future__ import annotations
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 from kraken_agent.runner import PluginRegistry
@@ -41,9 +41,10 @@ class SubmitPluginJobMixin:
         )
         return decode_model(PluginJob, payload)
 
-    def plugin_jobs(self) -> tuple[PluginJob, ...]:
+    def plugin_jobs(self, *, projects: Iterable[object] | None = None) -> tuple[PluginJob, ...]:
         jobs: list[PluginJob] = []
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             payload = self._call("GET", f"/api/v1/projects/{project.id}/jobs")
             items = payload.get("items", ()) if isinstance(payload, Mapping) else ()
             jobs.extend(
@@ -121,10 +122,10 @@ class SubmitPluginJobMixin:
         return decode_model(PluginJob, payload)
 
     def synchronize_plugin_jobs(
-        self, *, principal: Principal, gateway: object
+        self, *, principal: Principal, gateway: object, projects: Iterable[object] | None = None
     ) -> tuple[PluginJob, ...]:
         del principal, gateway
-        return self.plugin_jobs()
+        return self.plugin_jobs(projects=projects)
 
     def project_workspace(self, project_id: object):
         from kraken_manager.workspace import ProjectWorkspaceBinding

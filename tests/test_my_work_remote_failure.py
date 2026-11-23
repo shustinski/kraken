@@ -22,15 +22,19 @@ def test_my_work_survives_remote_failure_and_preserves_rows_on_retry(qtbot):
         def review_batches(self):
             return ()
 
-        def plugin_jobs(self):
+        def plugin_jobs(self, *, projects=None):
+            self.calls += 1
             if self.failure is not None:
                 raise self.failure
             return ()
 
     service = Service()
+    service.calls = 0
     controller = SimpleNamespace()
     panel = _my_work_panel(service, SimpleNamespace(principal=None), controller)
     qtbot.addWidget(panel)
+    assert service.calls == 0
+    panel.show()
     table = panel.findChild(QTableWidget)
     error = next(label for label in panel.findChildren(QLabel) if "HTTP 500" in label.text())
     launch = next(button for button in panel.findChildren(QPushButton) if button.text() == "Запустить плагин")

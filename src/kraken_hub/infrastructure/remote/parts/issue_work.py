@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,9 +27,10 @@ class IssueWorkMixin:
             payload={"expected_plan_digest": expected_plan_digest}, idempotency_key=idempotency_key,
             timeout=max(180, self._http.timeout))
 
-    def work_orders(self) -> tuple[WorkOrder, ...]:
+    def work_orders(self, *, projects: Iterable[object] | None = None) -> tuple[WorkOrder, ...]:
         orders: list[WorkOrder] = []
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             payload = self._call("GET", f"/api/v1/projects/{project.id}/work-orders")
             items = payload.get("items", ()) if isinstance(payload, Mapping) else ()
             orders.extend(decode_model(WorkOrder, item) for item in items if isinstance(item, Mapping))

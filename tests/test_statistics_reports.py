@@ -361,6 +361,34 @@ class StatisticsReportTests(unittest.TestCase):
 
         self.assertEqual("p1", record.project_id)
         self.assertEqual("ProjectCreated", record.event_type)
+        self.assertEqual("user", record.actor_id)
+
+    def test_remote_history_actor_type_is_stable_across_accesses(self) -> None:
+        from kraken_hub.infrastructure.remote.client import _RemoteHistoryEvent
+
+        event = _RemoteHistoryEvent(
+            {
+                "event_id": "e1",
+                "event_type": "ProjectCreated",
+                "recorded_at": "2026-09-24T10:00:00+00:00",
+                "payload": {},
+                "actor": {"principal_id": "user", "display_name": "User"},
+            },
+            project_id="p1",
+        )
+
+        first = event.actor
+        second = event.actor
+
+        self.assertIs(type(first), type(second))
+        self.assertEqual("user", first.principal_id)
+        self.assertEqual("User", second.display_name)
+        self.assertIsNone(
+            _RemoteHistoryEvent(
+                {"recorded_at": "2026-09-24T10:00:00+00:00", "actor": None},
+                project_id="p1",
+            ).actor
+        )
 
     def test_metric_serialization_preserves_fractional_values_and_integer_counts(self) -> None:
         from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model

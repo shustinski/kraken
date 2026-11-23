@@ -1,7 +1,17 @@
 """persistent_services: matrix viewport."""
 from __future__ import annotations
-from collections.abc import Iterable
+import logging
+from collections.abc import Iterable, Mapping
 from typing import Any
+from kraken_core.frame_matrix.prepared_tiles import (
+    MatrixTileNotReady,
+    building_tiles,
+    content_stamp,
+    grid_size,
+    pyramid_for,
+    schedule_key,
+    tile_build_scope,
+)
 from kraken_manager.domain.common import (
     RepresentationId,
     validate_uuid,
@@ -15,6 +25,9 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
     _layer_id,
     _project_id,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MatrixViewportMixin:
@@ -265,7 +278,7 @@ class MatrixViewportMixin:
                 counts = bucket["status_counts"]
                 status = str(cell.get("status", "empty"))
                 counts[status] = counts.get(status, 0) + 1
-        return {
+        payload = {
             "project_id": project_id,
             "layer_id": layer_id,
             "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
@@ -276,3 +289,74 @@ class MatrixViewportMixin:
                 tuple(buckets[key] for key in sorted(buckets)) if lod > 0 else ()
             ),
         }
+        self._schedule_matrix_tiles(project_id, layer_id, representation_ids, str(payload["revision"]))
+        return payload
+
+    def _schedule_matrix_tiles(self, project_id, layer_id, representation_ids, stamp: str) -> None:
+        if building_tiles():
+            return
+        try:
+            self._prepared_pyramid(project_id, layer_id, representation_ids).note_content_stamp(stamp)
+        except Exception:
+            _LOGGER.exception("Could not schedule matrix tiles for %s", layer_id)
+
+    def _prepared_pyramid(self, project_id, layer_id, representation_ids):
+        def load_index():
+            with tile_build_scope():
+                width, height = grid_size(self.get_project(project_id))
+                viewport = self.matrix_viewport(
+                    project_id,
+                    layer_id=layer_id,
+                    representation_ids=representation_ids,
+                    x1=1,
+                    y1=1,
+                    x2=width,
+                    y2=height,
+                    lod=0,
+                    include_missing=False,
+                )
+                stamp = str(viewport.get("revision") or content_stamp(self.get_project(project_id), ""))
+            return stamp, width, height, tuple(viewport.get("cells") or ())
+
+        def read_image(cell: Mapping[str, object]) -> bytes | None:
+            version_id = str(cell.get("asset_source_key") or "")
+            if not version_id:
+                return None
+            try:
+                return b"".join(self.iter_artifact_bytes(project_id, version_id))
+            except (OSError, ValueError, KeyError, RuntimeError):
+                _LOGGER.warning("Skipping mosaic source at (%s, %s)", cell.get("x"), cell.get("y"), exc_info=True)
+                return None
+
+        return pyramid_for(
+            self,
+            schedule_key(project_id, layer_id, representation_ids),
+            load_index,
+            read_image,
+        )
+
+    def prepare_matrix_tiles(self, project_id: str, *, layer_id: str, representation_ids: Iterable[str] = ()) -> None:
+        self._prepared_pyramid(project_id, layer_id, representation_ids).build_now()
+
+    def matrix_mosaic(
+        self,
+        project_id: str,
+        *,
+        layer_id: str,
+        representation_ids: Iterable[str] = (),
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        orientation: str = "y_down",
+    ) -> bytes:
+        try:
+            return self._prepared_pyramid(project_id, layer_id, representation_ids).read(
+                x1=int(x1),
+                y1=int(y1),
+                x2=int(x2),
+                y2=int(y2),
+                orientation=str(orientation),
+            )
+        except MatrixTileNotReady as exc:
+            raise NotFoundError("matrix tile is not prepared") from exc

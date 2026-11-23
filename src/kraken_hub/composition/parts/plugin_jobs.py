@@ -80,9 +80,10 @@ class PluginJobsMixin:
                     batches[str(batch.id)] = batch
         return tuple(sorted(batches.values(), key=lambda item: (item.due_at is None, item.due_at, str(item.id))))
 
-    def review_batches(self) -> tuple[ReviewBatch, ...]:
+    def review_batches(self, *, projects: Iterable[object] | None = None) -> tuple[ReviewBatch, ...]:
         batches: dict[str, ReviewBatch] = {}
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             projection = self._projection(project.id)
             for batch in projection.list_review_batches(project.id):
                 batches[str(batch.id)] = batch
@@ -94,9 +95,10 @@ class PluginJobsMixin:
             )
         )
 
-    def plugin_jobs(self) -> tuple[object, ...]:
+    def plugin_jobs(self, *, projects: Iterable[object] | None = None) -> tuple[object, ...]:
         jobs: dict[str, object] = {}
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             removed = {
                 str(event.payload.get("plugin_job_id", ""))
                 for event in self.history(project.id)

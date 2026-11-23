@@ -1,12 +1,14 @@
 """qt: frame matrix minimap."""
+
 from __future__ import annotations
 from typing import TYPE_CHECKING
 import weakref
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QWidget,
 )
+
 
 class FrameMatrixMinimap(QWidget):
     """Compact matrix overview with viewport indication and click navigation."""
@@ -25,12 +27,21 @@ class FrameMatrixMinimap(QWidget):
         self.setToolTip("Нажмите или перетащите, чтобы перейти к нужной области")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         matrix_view.viewportChanged.connect(self._viewport_changed)
+        self._content_update_timer = QTimer(self)
+        self._content_update_timer.setSingleShot(True)
+        self._content_update_timer.setInterval(100)
+        self._content_update_timer.timeout.connect(self.update)
+        matrix_view.cellsChanged.connect(self._schedule_content_update)
         self._reposition()
         self.show()
         self.raise_()
 
     def apply_kraken_scene_theme(self) -> None:
         self.update()
+
+    def _schedule_content_update(self) -> None:
+        if not self._content_update_timer.isActive():
+            self._content_update_timer.start()
 
     def _viewport_changed(self, _visible_rect: QRectF) -> None:
         self._reposition()
@@ -96,12 +107,58 @@ class FrameMatrixMinimap(QWidget):
         painter.setBrush(QColor(scene_color("minimap_matrix")))
         painter.drawRect(matrix)
 
+        scene = self._matrix_view.sceneRect()
+        if not scene.isEmpty():
+            painter.save()
+            painter.setClipRect(matrix)
+            for cell in self._matrix_view._cells.values():
+                thumbnail = cell.thumbnail
+                if thumbnail is None or thumbnail.isNull():
+                    continue
+                frame = self._matrix_view.scene_rect_for_frame(cell.x, cell.y)
+                target = self._map_scene_rect(frame)
+                if not target.isEmpty():
+                    painter.drawPixmap(target, thumbnail, QRectF(thumbnail.rect()))
+            for scene_rect, pixmap in self._layer_tiles():
+                target = self._map_scene_rect(scene_rect)
+                if not target.isEmpty():
+                    painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+            painter.restore()
+
         visible = self._map_scene_rect(self._matrix_view.visible_scene_rect())
         if not visible.isEmpty():
             painter.setPen(QPen(QColor("#60a5fa"), 1.5))
             painter.setBrush(QColor(37, 99, 235, 75))
             painter.drawRect(visible)
         painter.end()
+
+    def _layer_tiles(self) -> tuple[tuple[QRectF, QPixmap], ...]:
+        """Loaded mosaic tiles, coarse first, so the whole layer stays visible."""
+
+        view = self._matrix_view
+        images = getattr(view, "_mosaic_images", None)
+        if not images:
+            return ()
+        orientation = view.orientation().value
+        revision = getattr(view, "_mosaic_revision", None)
+        chosen: dict[tuple[int, int, int], QPixmap] = {}
+        for key, pixmap in images.items():
+            if pixmap is None or pixmap.isNull() or len(key) < 5 or key[4] != orientation:
+                continue
+            slot = (int(key[0]), int(key[1]), int(key[2]))
+            if slot not in chosen or key[3] == revision:
+                chosen[slot] = pixmap
+        tiles: list[tuple[QRectF, QPixmap]] = []
+        pitch = view.CELL_PITCH
+        for tile_x, tile_y, cells in sorted(chosen, key=lambda slot: slot[2], reverse=True):
+            left = tile_x * cells * pitch
+            top = tile_y * cells * pitch
+            columns = min(cells, view.matrix_width - tile_x * cells)
+            rows = min(cells, view.matrix_height - tile_y * cells)
+            if columns <= 0 or rows <= 0:
+                continue
+            tiles.append((QRectF(left, top, columns * pitch, rows * pitch), chosen[(tile_x, tile_y, cells)]))
+        return tuple(tiles)
 
     def _navigate(self, position: QPointF) -> None:
         matrix = self._matrix_rect()
@@ -128,6 +185,7 @@ class FrameMatrixMinimap(QWidget):
             event.accept()
             return
         super().mouseMoveEvent(event)
+
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt import FrameMatrixView

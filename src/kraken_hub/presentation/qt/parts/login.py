@@ -1,13 +1,12 @@
 """manager_app: login."""
+
 from __future__ import annotations
 import os
 import urllib.parse
 from kraken_manager.application.results import UserSession as DesktopSession
 from kraken_hub.application.remote_error import RemoteServerError
 from kraken_hub.application.workspace import ProjectWorkspaceService
-from kraken_hub.infrastructure.credentials import windows as windows_credentials
 from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
-from kraken_hub.presentation.qt import windows_hello
 from kraken_hub.presentation.qt.parts.development_session import (
     _autofill_credentials,
     _remember_credentials,
@@ -21,9 +20,12 @@ from kraken_hub.presentation.qt.parts.domain_login import (
     upsert_program_account,
 )
 from kraken_hub.presentation.qt.preferences_dialog import (
+    last_login_username,
     program_server_url,
+    save_last_login_username,
     save_program_server_url,
 )
+
 
 def _build_domain_tab():
     """«Доменная учётная запись» page: server, LDAP status, credentials, submit."""
@@ -42,7 +44,7 @@ def _build_domain_tab():
     form.addRow("Статус", status)
     username = QLineEdit()
     username.setObjectName("loginDomainUsername")
-    username.setText(os.environ.get("USERNAME", ""))
+    username.setText(last_login_username("domain") or os.environ.get("USERNAME", ""))
     form.addRow("Логин", username)
     password = QLineEdit()
     password.setObjectName("loginDomainPassword")
@@ -85,7 +87,7 @@ def _build_server_tab():
     form.addRow("Статус", status)
     username = QLineEdit()
     username.setObjectName("loginServerUsername")
-    username.setText(os.environ.get("USERNAME", ""))
+    username.setText(last_login_username("server") or os.environ.get("USERNAME", ""))
     form.addRow("Логин", username)
     password = QLineEdit()
     password.setObjectName("loginServerPassword")
@@ -139,28 +141,6 @@ def _build_local_tab(service: ProjectWorkspaceService):
     autofill.setAutoDefault(False)
     layout.addWidget(autofill)
     return page
-
-
-def _try_local_autologin(dialog, service: ProjectWorkspaceService) -> DesktopSession | None:
-    """Complete the mandatory local session after a successful remote sign-in.
-
-    Mirrors ``development_session._autofill_credentials``: Windows identity
-    verification first, then the remembered local credentials. Any failure
-    (nothing remembered, verification cancelled, exception) leaves the user
-    on the local tab to sign in manually.
-    """
-    try:
-        target = windows_credentials.credential_target(service.data_dir)
-        if not windows_credentials.credentials_available(target=target):
-            return None
-        if not windows_hello.verify_windows_identity(int(dialog.winId())):
-            return None
-        remembered = windows_credentials.load_credentials(target=target)
-        if remembered is None:
-            return None
-    except Exception:
-        return None
-    return service.login(remembered[0], remembered[1])
 
 
 def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
@@ -281,9 +261,7 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
     # Native Windows verification is modal. Request it only from the visible
     # login window so it cannot block startup before the user sees the app.
     autofill = dialog.findChild(QPushButton, "loginAutofill")
-    autofill.clicked.connect(
-        lambda: _autofill_credentials(dialog, username, password, data_directory=service.data_dir)
-    )
+    autofill.clicked.connect(lambda: _autofill_credentials(dialog, username, password, data_directory=service.data_dir))
 
     def refresh_status(url: str | None = None) -> str:
         if url is None:
@@ -316,18 +294,14 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
     def complete_remote_sign_in(
         *, url: str, entered_username: str, entered_password: str, password_field: QLineEdit
     ) -> DesktopSession | None:
-        """Завершить вход после успешной удалённой авторизации: сохранённая локальная
-        сессия, иначе вход в локальную учётку-зеркало (создаётся при отсутствии),
-        иначе вкладка «Локальная» с подсказкой."""
+        """После удалённого входа проверить локальную учётку-зеркало или показать локальный вход."""
         upsert_program_account(entered_username, entered_password)
         save_program_server_url(url)
-        session = _try_local_autologin(dialog, service)
-        if session is None:
-            # Удалённо проверенного входа достаточно: локальная учётка-зеркало
-            # создаётся, если её нет; чужой локальный пароль не перезаписывается.
-            session = service.login_or_create_local(entered_username, entered_password)
-            if session is not None:
-                _remember_credentials(entered_username, entered_password, data_directory=service.data_dir)
+        # Удалённо проверенного входа достаточно: локальная учётка-зеркало
+        # создаётся, если её нет; чужой локальный пароль не перезаписывается.
+        session = service.login_or_create_local(entered_username, entered_password)
+        if session is not None:
+            _remember_credentials(entered_username, entered_password, data_directory=service.data_dir)
         if session is not None:
             password_field.clear()
             dialog.accept()
@@ -437,6 +411,46 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
     submit.clicked.connect(try_domain_login)
     server_sign_in.clicked.connect(try_server_sign_in)
     server_register.clicked.connect(try_server_register)
+    server.returnPressed.connect(try_domain_login)
+    domain_username.returnPressed.connect(try_domain_login)
+    domain_password.returnPressed.connect(try_domain_login)
+    server_address.returnPressed.connect(try_server_sign_in)
+    server_username.returnPressed.connect(try_server_sign_in)
+    server_password.returnPressed.connect(try_server_sign_in)
+    username.returnPressed.connect(dialog.accept)
+    password.returnPressed.connect(dialog.accept)
+
+    def _store_typed_logins() -> None:
+        save_last_login_username("domain", domain_username.text())
+        save_last_login_username("server", server_username.text())
+
+    def _enter_signs_in(index: int) -> None:
+        """Enter нажимает «Войти» видимой вкладки, а не «Создать и войти»."""
+        submit.setAutoDefault(index == 0)
+        submit.setDefault(index == 0)
+        server_sign_in.setAutoDefault(index == 1)
+        server_sign_in.setDefault(index == 1)
+        if index == 2:
+            local_ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+            local_ok.setAutoDefault(True)
+            local_ok.setDefault(True)
+
+    def _focus_credentials(index: int) -> None:
+        if index == 0:
+            name_field, secret_field = domain_username, domain_password
+        elif index == 1:
+            name_field, secret_field = server_username, server_password
+        else:
+            name_field, secret_field = username, password
+        if name_field.text().strip():
+            secret_field.setFocus()
+        else:
+            name_field.setFocus()
+
+    dialog.finished.connect(lambda _code: _store_typed_logins())
+    tabs.currentChanged.connect(_enter_signs_in)
+    _enter_signs_in(tabs.currentIndex())
+    _focus_credentials(tabs.currentIndex())
     while dialog.exec() == QDialog.DialogCode.Accepted:
         if domain_session is not None:
             return domain_session

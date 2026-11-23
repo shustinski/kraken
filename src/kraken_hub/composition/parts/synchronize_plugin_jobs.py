@@ -1,5 +1,6 @@
 """composition: synchronize plugin jobs."""
 from __future__ import annotations
+from collections.abc import Iterable
 from kraken_core.job_recovery import progress_fraction
 from kraken_manager.application.dto import (
     CommandContext,
@@ -72,13 +73,16 @@ class SynchronizePluginJobsMixin:
         *,
         principal: Principal,
         gateway: object,
+        projects: Iterable[object] | None = None,
     ) -> tuple[object, ...]:
         synchronized: list[object] = []
+        selected = tuple(self.list_projects(include_archived=True) if projects is None else projects)
         external_jobs = {
-            order.related_job_id for order in self.work_orders()
+            order.related_job_id
+            for order in self.work_orders(projects=selected)
             if order.transport == "files" and order.related_job_id
         }
-        for job in self.plugin_jobs():
+        for job in self.plugin_jobs(projects=selected):
             if str(job.id) in external_jobs or job.state.value in {"succeeded", "failed", "cancelled"}:
                 synchronized.append(job)
                 continue

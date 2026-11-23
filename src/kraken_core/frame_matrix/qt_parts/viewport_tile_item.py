@@ -1,4 +1,5 @@
 """qt: viewport tile item."""
+
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from collections.abc import Iterator
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
 from kraken_core.frame_matrix.qt_parts.frame_rect import FrameRect
 
 from kraken_core.frame_matrix.qt_parts.matrix_lod import MatrixLod
+
 
 @dataclass(frozen=True, slots=True)
 class FrameSelection:
@@ -50,6 +52,7 @@ class FrameSelection:
                     raise ValueError(f"selection contains more than {maximum} frames")
                 yield coordinate
 
+
 @dataclass(frozen=True, slots=True)
 class FrameCellData:
     """Presentation data for one materialized layer/frame state."""
@@ -71,6 +74,7 @@ class FrameCellData:
         object.__setattr__(self, "y", int(self.y))
         object.__setattr__(self, "status", str(self.status or "empty"))
 
+
 @dataclass(frozen=True, slots=True)
 class FrameContext:
     """Value emitted for a frame context menu request."""
@@ -79,6 +83,7 @@ class FrameContext:
     y: int
     cell: FrameCellData
     selection: FrameSelection
+
 
 class _ViewportTileItem(QGraphicsItem):
     """One visible tile; it paints either an aggregate or its individual cells."""
@@ -96,6 +101,7 @@ class _ViewportTileItem(QGraphicsItem):
         rows = min(tile_cells, owner.matrix_height - tile_y * tile_cells)
         self._bounds = QRectF(left, top, columns * pitch, rows * pitch)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
 
     def boundingRect(self) -> QRectF:  # type: ignore[override]
         return self._bounds
@@ -106,7 +112,7 @@ class _ViewportTileItem(QGraphicsItem):
         option: QStyleOptionGraphicsItem,
         widget: QWidget | None = None,
     ) -> None:
-        del option, widget
+        del widget
         owner = self._owner()
         if owner is None or sip.isdeleted(owner):
             return
@@ -114,7 +120,8 @@ class _ViewportTileItem(QGraphicsItem):
         if lod is MatrixLod.OVERVIEW or self.tile_cells > owner.BASE_TILE_CELLS:
             owner._paint_overview_tile(painter, self)
             return
-        owner._paint_tile_cells(painter, self, lod)
+        owner._paint_tile_cells(painter, self, lod, option.exposedRect)
+
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt import FrameMatrixView

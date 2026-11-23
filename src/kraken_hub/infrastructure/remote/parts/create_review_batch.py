@@ -4,7 +4,7 @@ import hashlib
 import os
 import shutil
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from kraken_core.safe_files import open_regular_read
@@ -130,9 +130,10 @@ class CreateReviewBatchMixin:
         shutil.copy2(source.resolve(strict=True), target)
         return target
 
-    def review_batches(self) -> tuple[ReviewBatch, ...]:
+    def review_batches(self, *, projects: Iterable[object] | None = None) -> tuple[ReviewBatch, ...]:
         batches: list[ReviewBatch] = []
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             payload = self._call("GET", f"/api/v1/projects/{project.id}/reviews")
             items = payload.get("items", ()) if isinstance(payload, Mapping) else ()
             batches.extend(

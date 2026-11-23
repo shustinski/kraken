@@ -170,6 +170,9 @@ class UpdateVisibleTilesMixin:
         for item in self._visible_tiles.values():
             item.update()
         self.viewport().update()
+        for child in self.viewport().children():
+            if child.objectName() == "matrixMinimap":
+                child.update()
 
     def _status_color(self, status: str) -> QColor:
         candidate = QColor(self._status_colors.get(status, self._status_colors["empty"]))
@@ -207,11 +210,15 @@ class UpdateVisibleTilesMixin:
                     highest_priority = priority
         rect = tile.boundingRect().adjusted(0.8, 0.8, -1.2, -1.2)
         painter.fillRect(rect, self._status_color(highest_status))
+        self._paint_loaded_mosaic(painter, tile)
         from kraken_core.theme import scene_color
 
         border = QColor("#475569")
         if any(rectangle.intersects(tile_frames) for rectangle in self._selection.rectangles):
             border = QColor(scene_color("selection"))
+            shade = QColor(border)
+            shade.setAlphaF(0.2)
+            painter.fillRect(rect, shade)
         pen = QPen(border, max(1.0, 1.5 / max(self.zoom_factor(), self.MIN_ZOOM)))
         pen.setCosmetic(True)
         painter.setPen(pen)

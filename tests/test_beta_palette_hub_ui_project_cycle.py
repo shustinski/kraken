@@ -137,7 +137,6 @@ def test_s10_tabbed_login_local_and_server_tabs_visible_ldap_hidden(monkeypatch,
     config = _ui_config()
     assert _stand_health(config)["domain_auth"] is False
     _isolate_settings(monkeypatch, tmp_path)
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     save_program_server_url(config["server_url"])
     service = build_workspace_service(data_dir=tmp_path)
     _local_account(service)
@@ -194,7 +193,6 @@ def test_s10_wrong_server_credentials_blocked_message(monkeypatch, tmp_path, qtb
     del qtbot
     config = _ui_config()
     _isolate_settings(monkeypatch, tmp_path)
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     save_program_server_url(config["server_url"])
     service = build_workspace_service(data_dir=tmp_path)
     _local_account(service)

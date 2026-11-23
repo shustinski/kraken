@@ -10,6 +10,42 @@ from kraken_hub.application.remote_error import RemoteServerError
 from kraken_manager.presentation.qt.text_bounds import TABLE_ROW_HEIGHT_LIMIT, bounded_popup_text
 from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
 
+def _catalog_projects(service: object) -> tuple[object, ...] | None:
+    list_projects = getattr(service, "list_projects", None)
+    if not callable(list_projects):
+        return None
+    return tuple(list_projects(include_archived=True))
+
+
+def _load_on_first_show(host, load) -> None:
+    from PyQt6.QtCore import QEvent, QObject
+
+    class _FirstShow(QObject):
+        def __init__(self) -> None:
+            super().__init__(host)
+            self._loaded = False
+            host.installEventFilter(self)
+
+        def eventFilter(self, watched, event) -> bool:
+            if watched is host and not self._loaded and event.type() == QEvent.Type.Show:
+                self._loaded = True
+                load()
+            return False
+
+    host._load_on_first_show = _FirstShow()
+
+
+def _call_with_projects(method, projects: tuple[object, ...] | None):
+    if projects is None:
+        return method()
+    try:
+        return method(projects=projects)
+    except TypeError as exc:
+        if not exc.args or "unexpected keyword argument 'projects'" not in str(exc):
+            raise
+        return method()
+
+
 def _my_work_panel(
     service: ProjectWorkspaceService,
     session: DesktopSession,
@@ -262,9 +298,10 @@ def _my_work_panel(
         launch_button.setEnabled(True)
 
     def populate() -> None:
+        project_rows = _catalog_projects(service)
         projects = {
             str(project.id): project.name
-            for project in service.list_projects(include_archived=True)
+            for project in (() if project_rows is None else project_rows)
         }
         project_permissions = {
             project_id: service.project_permissions(
@@ -280,9 +317,13 @@ def _my_work_panel(
         }
         performer_rows = tuple(service.list_performers(include_archived=True))
         performers = {str(performer.id): performer.name for performer in performer_rows}
-        batches = service.review_batches()
-        jobs = service.plugin_jobs()
-        orders = service.work_orders() if hasattr(service, "work_orders") else ()
+        batches = _call_with_projects(service.review_batches, project_rows)
+        jobs = _call_with_projects(service.plugin_jobs, project_rows)
+        orders = (
+            _call_with_projects(service.work_orders, project_rows)
+            if hasattr(service, "work_orders")
+            else ()
+        )
         principal_id = str(getattr(getattr(session, "principal", None), "id", "") or "")
         if principal_id:
             assigned = {
@@ -443,7 +484,7 @@ def _my_work_panel(
     refresh_button.clicked.connect(refresh)
     launch_button.clicked.connect(launch_selected)
     controller.my_work_refresh = refresh
-    refresh()
+    _load_on_first_show(host, refresh)
     return host
 
 def _fit_my_work_table(table) -> None:

@@ -1,4 +1,5 @@
 """qt: construction."""
+
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from collections.abc import Iterable, Mapping
@@ -145,11 +146,33 @@ class ConstructionMixin:
         self._invalidate_tiles()
 
     def update_cells(self, cells: Iterable[FrameCellData]) -> None:
+        changed_tiles: dict[tuple[int, int], list[FrameCellData]] = {}
         for cell in cells:
             self._ensure_inside(cell.x, cell.y)
             self._cells[(cell.x, cell.y)] = cell
-        self._indexed_tile_cells = 0
-        self._invalidate_tiles()
+            if self._indexed_tile_cells:
+                key = ((cell.x - 1) // self._indexed_tile_cells, self._row_for_y(cell.y) // self._indexed_tile_cells)
+                changed_tiles.setdefault(key, []).append(cell)
+        if self._indexed_tile_cells:
+            for key, replacements in changed_tiles.items():
+                indexed = {(cell.x, cell.y): cell for cell in self._tile_index.get(key, ())}
+                indexed.update({(cell.x, cell.y): cell for cell in replacements})
+                self._tile_index[key] = tuple(indexed.values())
+                tile = self._visible_tiles.get(key)
+                if tile is not None:
+                    for cell in replacements:
+                        column = cell.x - 1
+                        row = self._row_for_y(cell.y)
+                        tile.update(
+                            QRectF(
+                                column * self.CELL_PITCH,
+                                row * self.CELL_PITCH,
+                                self.CELL_SIZE,
+                                self.CELL_SIZE,
+                            ).adjusted(-4.0, -4.0, 4.0, 4.0)
+                        )
+        else:
+            self._invalidate_tiles()
         self._emit_cells_changed()
 
     def remove_cells(self, coordinates: Iterable[tuple[int, int]]) -> None:
@@ -264,6 +287,7 @@ class ConstructionMixin:
     def frame_at_viewport_pos(self, position: QPoint | QPointF) -> tuple[int, int] | None:
         point = position.toPoint() if isinstance(position, QPointF) else position
         return self.frame_at_scene_pos(self.mapToScene(point))
+
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt_parts.matrix_lod import MatrixLod

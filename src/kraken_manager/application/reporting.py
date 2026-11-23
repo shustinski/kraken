@@ -53,6 +53,7 @@ class ActivityRecord:
         if not isinstance(representation_snapshot, Mapping):
             representation_snapshot = {}
         program = getattr(event, "program", None)
+        actor = getattr(event, "actor", None)
         raw_size = payload.get("size_bytes", payload.get("bytes_count", 0))
         size = raw_size if isinstance(raw_size, int) and not isinstance(raw_size, bool) else 0
         return cls(
@@ -68,7 +69,7 @@ class ActivityRecord:
                 or representation_snapshot.get("id")
             ),
             frame_id=_optional_text(payload.get("frame_id")),
-            actor_id="" if getattr(event, "actor", None) is None else str(event.actor.principal_id),
+            actor_id="" if actor is None else str(actor.principal_id),
             performer_id=_optional_text(getattr(event, "performer_id", None)),
             tool=(
                 _optional_text(getattr(program, "name", None))

@@ -1,13 +1,17 @@
 """qt: construction 2."""
+
 from __future__ import annotations
 import math
 import weakref
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWidget,
 )
 from kraken_core.frame_matrix.cache import ThumbnailCacheCoordinator
+from kraken_core.frame_matrix import profiling
 from kraken_core.frame_matrix.models import (
     LodBand,
     MatrixBounds,
@@ -17,13 +21,15 @@ from kraken_core.frame_matrix.models import (
 )
 from kraken_core.frame_matrix.ports import MatrixAssetSource, MatrixDataSource, MatrixLayerRenderer
 from kraken_core.frame_matrix.qt_renderers import DEFAULT_RENDERERS
-from kraken_core.frame_matrix.storage import StoreNamespace, StorePolicy, ThumbnailStore
+from kraken_core.frame_matrix.storage import StoreNamespace, StorePolicy, ThumbnailKey, ThumbnailStore
 
 from kraken_core.frame_matrix.qt_parts.module_state import GridOrientation
 from kraken_core.frame_matrix.qt_parts.background_resources import MatrixBackgroundResources
 
 
 class Construction2Mixin:
+    _MAX_DECODED_THUMBNAILS = 4096
+
     def __init__(
         self,
         width: int = 1,
@@ -41,6 +47,8 @@ class Construction2Mixin:
         self._asset_source = asset_source
         self._thumbnail_store = thumbnail_store
         self._thumbnail_cache: ThumbnailCacheCoordinator | None = None
+        self._decoded_thumbnails: OrderedDict[ThumbnailKey, QPixmap] = OrderedDict()
+        self._cell_thumbnail_keys: dict[tuple[int, int], ThumbnailKey] = {}
         self._renderers: list[MatrixLayerRenderer] = [renderer() for renderer in DEFAULT_RENDERERS]
         self._viewport_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kraken-matrix-viewport")
         self._background_resources = MatrixBackgroundResources(self._viewport_executor)
@@ -53,6 +61,15 @@ class Construction2Mixin:
         self._viewport_generation = 0
         self._loading = False
         self._asset_futures: dict[tuple[int, int], tuple[int, Future]] = {}
+        self._mosaic_futures: dict[tuple[object, ...], tuple[int, Future]] = {}
+        self._mosaic_images: dict[tuple[object, ...], QPixmap] = {}
+        self._mosaic_revision = ""
+        self._thumbnail_batch_profile: profiling.ThumbnailBatchProfile | None = None
+        self._thumbnail_batch_total = 0
+        self._thumbnail_batch_completed = 0
+        self._thumbnail_batch_failed = 0
+        self._thumbnail_batch_superseded = 0
+        self._thumbnail_batch_error_types: dict[str, int] = {}
         self._viewport_request_timer = QTimer(self)
         self._viewport_request_timer.setSingleShot(True)
         self._viewport_request_timer.setInterval(60)
@@ -69,7 +86,18 @@ class Construction2Mixin:
         *,
         asset_source: MatrixAssetSource | None = None,
     ) -> None:
+        if data_source is not self._data_source:
+            self._decoded_thumbnails.clear()
+            self._cell_thumbnail_keys.clear()
         self._viewport_generation += 1
+        if self._thumbnail_batch_profile is not None:
+            self._thumbnail_batch_profile.cancel()
+        self._thumbnail_batch_profile = profiling.begin_thumbnail_batch()
+        self._thumbnail_batch_total = 0
+        self._thumbnail_batch_completed = 0
+        self._thumbnail_batch_failed = 0
+        self._thumbnail_batch_superseded = 0
+        self._thumbnail_batch_error_types = {}
         self._last_applied_signature = None
         self._data_source = data_source
         if asset_source is not None:
@@ -83,7 +111,28 @@ class Construction2Mixin:
         data_source: MatrixDataSource | None = None,
         asset_source: MatrixAssetSource | None = None,
     ) -> None:
+        previous_session = self._matrix_session
+        same_project = previous_session is not None and previous_session.namespace == session.namespace
+        same_content = (
+            same_project
+            and bool(session.source_revision)
+            and previous_session.source_revision == session.source_revision
+            and self.matrix_size() == (session.width, session.height)
+            and self.orientation().value == session.orientation.value
+            and (data_source is None or data_source is self._data_source)
+            and (asset_source is None or asset_source is self._asset_source)
+        )
+        if not same_project:
+            self._decoded_thumbnails.clear()
         self._viewport_generation += 1
+        if self._thumbnail_batch_profile is not None:
+            self._thumbnail_batch_profile.cancel()
+        self._thumbnail_batch_profile = profiling.begin_thumbnail_batch()
+        self._thumbnail_batch_total = 0
+        self._thumbnail_batch_completed = 0
+        self._thumbnail_batch_failed = 0
+        self._thumbnail_batch_superseded = 0
+        self._thumbnail_batch_error_types = {}
         self._last_applied_signature = None
         self._viewport_request_deferred = False
         self._matrix_session = session
@@ -91,13 +140,21 @@ class Construction2Mixin:
             self._data_source = data_source
         if asset_source is not None:
             self._asset_source = asset_source
-        self.set_matrix_size(session.width, session.height, session.orientation)
-        self.clear_cells()
-        if self._thumbnail_cache is not None:
+        if (
+            self.matrix_size() != (session.width, session.height)
+            or self.orientation().value != session.orientation.value
+        ):
+            self.set_matrix_size(session.width, session.height, session.orientation)
+        if not same_content:
+            self.clear_cells()
+            self._cell_thumbnail_keys.clear()
+            self._mosaic_images.clear()
+            self._mosaic_futures.clear()
+        if self._thumbnail_cache is not None and not same_project:
             self._thumbnail_cache.close()
             self._thumbnail_cache = None
             self._background_resources.cache = None
-        if self._thumbnail_store is not None:
+        if self._thumbnail_store is not None and self._thumbnail_cache is None:
             self._thumbnail_store.open(
                 StoreNamespace(
                     plugin="matrix",
@@ -128,6 +185,7 @@ class Construction2Mixin:
             self.viewport().update()
 
     def clear_thumbnail_cache(self) -> None:
+        self._decoded_thumbnails.clear()
         if self._thumbnail_cache is not None:
             self._thumbnail_cache.clear_ram()
         if self._thumbnail_store is None:
@@ -136,6 +194,18 @@ class Construction2Mixin:
             self._thumbnail_store.clear_namespace()
         except Exception as exc:
             self.errorOccurred.emit(str(exc))
+
+    def _cached_thumbnail(self, key: ThumbnailKey) -> QPixmap | None:
+        pixmap = self._decoded_thumbnails.get(key)
+        if pixmap is not None:
+            self._decoded_thumbnails.move_to_end(key)
+        return pixmap
+
+    def _remember_thumbnail(self, key: ThumbnailKey, pixmap: QPixmap) -> None:
+        self._decoded_thumbnails[key] = pixmap
+        self._decoded_thumbnails.move_to_end(key)
+        while len(self._decoded_thumbnails) > self._MAX_DECODED_THUMBNAILS:
+            self._decoded_thumbnails.popitem(last=False)
 
     def semantic_lod(self) -> LodBand:
         session = self._matrix_session
@@ -215,7 +285,18 @@ class Construction2Mixin:
             return
         self._viewport_request_deferred = False
         self._viewport_future_signature = signature
-        self._viewport_future = self._viewport_executor.submit(self._data_source.load_viewport, request, None)
+        if self._thumbnail_batch_profile is None:
+            self._thumbnail_batch_profile = profiling.begin_thumbnail_batch()
+        batch = self._thumbnail_batch_profile
+        source = self._data_source
+        if batch is None:
+            self._viewport_future = self._viewport_executor.submit(source.load_viewport, request, None)
+        else:
+
+            def load_viewport():
+                return source.load_viewport(request, None)
+
+            self._viewport_future = self._viewport_executor.submit(batch.profile_call, load_viewport)
         self._set_loading(True)
         if not self._result_poll_timer.isActive():
             self._result_poll_timer.start()

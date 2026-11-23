@@ -10,6 +10,7 @@ must be a different timer from the watcher that dismisses the warning. A
 single-shot deadline rejects a stuck login dialog so a broken dialog fails
 the test instead of hanging the run.
 """
+
 from __future__ import annotations
 
 import os
@@ -34,9 +35,11 @@ from PyQt6.QtWidgets import (
     QTabWidget,
 )
 
+import kraken_core.settings as kraken_settings
 import kraken_hub.presentation.qt.parts.login as login_parts
 from kraken_hub.composition.catalog import build_workspace_service
 from kraken_hub.infrastructure.credentials import windows as windows_credentials
+from kraken_hub.presentation.qt import windows_hello
 
 _ISOLATED_ENV = ("KRAKEN_SERVER_URL", "KRAKEN_GITLAB_TOKEN", "KRAKEN_SERVER_TOKEN", "KRAKEN_UPDATE_URL")
 
@@ -59,10 +62,15 @@ def service_with_account(tmp_path, monkeypatch):
     for name in _ISOLATED_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(windows_credentials, "save_credentials", lambda *_args, **_kwargs: True)
+    saved_settings = kraken_settings._directory
+    kraken_settings.configure_settings_directory(tmp_path / "settings")
     service = build_workspace_service(data_dir=tmp_path)
     assert service.remote is None
     service.create_initial_account(username="mark", display_name="Mark", password="pw")
-    return service
+    try:
+        yield service
+    finally:
+        kraken_settings._directory = saved_settings
 
 
 def _post_action(actors: list, action: Callable[[], None]) -> None:
@@ -352,15 +360,16 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
     данных; зеркальная локальная учётка создаётся и диалог закрывается сразу с сессией."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     calls: dict = {}
     monkeypatch.setattr(
-        login_parts, "upsert_program_account",
+        login_parts,
+        "upsert_program_account",
         lambda username, password, **kw: calls.setdefault("upsert", (username, password)),
     )
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: calls.setdefault("url", url))
     monkeypatch.setattr(
-        login_parts, "_remember_credentials",
+        login_parts,
+        "_remember_credentials",
         lambda username, password, **kw: calls.setdefault("remembered", (username, password)),
     )
 
@@ -409,20 +418,24 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
     assert service_with_account.login("server-user", "server-pw") is not None
 
 
-def test_saved_local_autologin_keeps_priority_over_mirror(qapp, tmp_path, monkeypatch, service_with_account):
-    """Сохранённая локальная сессия (`_try_local_autologin`) важнее зеркала: при её успехе
-    `login_or_create_local` не вызывается и возвращается именно авологиновая сессия."""
+def test_remote_sign_in_does_not_request_windows_pin(qapp, tmp_path, monkeypatch, service_with_account):
+    """Explicit remote credentials must continue through the local mirror without Windows Hello."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
     monkeypatch.setattr(login_parts, "upsert_program_account", lambda *a, **kw: None)
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: None)
+    hello_attempts = []
     sentinel = object()
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: sentinel)
+    monkeypatch.setattr(
+        windows_hello,
+        "verify_windows_identity",
+        lambda window: hello_attempts.append(window) or True,
+    )
     seen: dict = {}
 
     def fake_mirror(username, password):
         seen["mirror"] = (username, password)
-        return object()
+        return sentinel
 
     monkeypatch.setattr(service_with_account, "login_or_create_local", fake_mirror)
 
@@ -462,7 +475,8 @@ def test_saved_local_autologin_keeps_priority_over_mirror(qapp, tmp_path, monkey
         for actor in actors:
             actor.stop()
     assert session is sentinel
-    assert "mirror" not in seen
+    assert seen["mirror"] == ("server-user", "server-pw")
+    assert not hello_attempts
 
 
 def test_server_sign_in_keeps_local_tab_when_local_account_rejects_password(
@@ -472,7 +486,6 @@ def test_server_sign_in_keeps_local_tab_when_local_account_rejects_password(
     перезаписывает; подсказка и вкладка «Локальная», локальный вход mark/pw завершает сессию."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     monkeypatch.setattr(login_parts, "upsert_program_account", lambda *a, **kw: None)
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: None)
 
@@ -544,10 +557,10 @@ def test_server_sign_in_works_when_domain_auth_disabled(qapp, tmp_path, monkeypa
     дедлайн-отказ, а не висел."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "disabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     calls: dict = {}
     monkeypatch.setattr(
-        login_parts, "upsert_program_account",
+        login_parts,
+        "upsert_program_account",
         lambda username, password, **kw: calls.setdefault("upsert", (username, password)),
     )
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: calls.setdefault("url", url))
@@ -687,10 +700,10 @@ def test_server_register_creates_account_then_signs_in(qapp, tmp_path, monkeypat
     зеркальная локальная учётка создаётся и диалог закрывается сразу с сессией."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
-    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
     calls: dict = {}
     monkeypatch.setattr(
-        login_parts, "upsert_program_account",
+        login_parts,
+        "upsert_program_account",
         lambda username, password, **kw: calls.setdefault("upsert", (username, password)),
     )
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: calls.setdefault("url", url))
@@ -760,7 +773,8 @@ def test_server_register_shows_server_error_as_is(qapp, tmp_path, monkeypatch, s
     monkeypatch.setattr(login_parts.RemoteServerProjectService, "register_local", forbidden_register)
     calls: dict = {}
     monkeypatch.setattr(
-        service_with_account, "configure_remote_local",
+        service_with_account,
+        "configure_remote_local",
         lambda base_url, username, password: calls.setdefault("configure", (base_url, username, password)),
     )
     seen: dict = {}
@@ -822,3 +836,114 @@ def test_server_register_shows_server_error_as_is(qapp, tmp_path, monkeypatch, s
     assert session is not None
     assert seen["warning_text"] == message
     assert "configure" not in calls
+
+
+def test_server_tab_remembers_last_entered_login(qapp, tmp_path, monkeypatch, service_with_account):
+    """Введённый логин серверной вкладки подставляется при следующем открытии окна."""
+    saved_settings = kraken_settings._directory
+    kraken_settings.configure_settings_directory(tmp_path / "settings")
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "disabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
+
+    def run(action) -> None:
+        actors: list = []
+        timer = QTimer()
+        timer.setInterval(25)
+        fired = {"done": False}
+
+        def poll() -> None:
+            dialog = QApplication.activeModalWidget()
+            if not _is_login_dialog(dialog) or fired["done"]:
+                return
+            fired["done"] = True
+            _post_action(actors, lambda: action(dialog))
+
+        timer.timeout.connect(poll)
+        timer.start()
+        deadline = _start_deadline_reject()
+        try:
+            login_parts._login(None, service_with_account)
+        finally:
+            timer.stop()
+            deadline.stop()
+            for actor in actors:
+                actor.stop()
+
+    def type_login(dialog) -> None:
+        dialog.findChild(QTabWidget, "loginTabs").setCurrentIndex(1)
+        username = dialog.findChild(QLineEdit, "loginServerUsername")
+        username.setText("kept-user")
+        username.clearFocus()
+        dialog.reject()
+
+    run(type_login)
+    seen: dict = {}
+
+    def read_login(dialog) -> None:
+        seen["server"] = dialog.findChild(QLineEdit, "loginServerUsername").text()
+        seen["domain"] = dialog.findChild(QLineEdit, "loginDomainUsername").text()
+        dialog.reject()
+
+    try:
+        run(read_login)
+    finally:
+        kraken_settings._directory = saved_settings
+    assert seen["server"] == "kept-user"
+    assert seen["domain"] == os.environ.get("USERNAME", "")
+
+
+def test_server_tab_enter_signs_in(qapp, tmp_path, monkeypatch, service_with_account):
+    """Enter в поле пароля серверной вкладки выполняет «Войти», а не «Создать и войти»."""
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "disabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
+    calls: dict = {}
+    monkeypatch.setattr(login_parts, "upsert_program_account", lambda username, password, **kw: None)
+    monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: None)
+    monkeypatch.setattr(login_parts, "_remember_credentials", lambda *args, **kwargs: None)
+
+    def fake_configure(base_url, username, password):
+        calls["count"] = calls.get("count", 0) + 1
+        calls["configure"] = (base_url, username, password)
+        return object()
+
+    def fail_register(*args, **kwargs):
+        calls["register"] = True
+        raise AssertionError("Enter must not create an account")
+
+    monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
+    monkeypatch.setattr(login_parts.RemoteServerProjectService, "register_local", fail_register)
+    actors: list = []
+    timer = QTimer()
+    timer.setInterval(25)
+    stage = {"name": "type"}
+
+    def poll() -> None:
+        dialog = QApplication.activeModalWidget()
+        if not _is_login_dialog(dialog) or stage["name"] != "type":
+            return
+        stage["name"] = "enter"
+
+        def press_enter() -> None:
+            dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+            password = dialog.findChild(QLineEdit, "loginServerPassword")
+            password.setText("server-pw")
+            password.setFocus()
+            QTest.keyClick(password, Qt.Key.Key_Return)
+
+        _post_action(actors, press_enter)
+
+    timer.timeout.connect(poll)
+    timer.start()
+    deadline = _start_deadline_reject()
+    try:
+        session = login_parts._login(None, service_with_account)
+    finally:
+        timer.stop()
+        deadline.stop()
+        for actor in actors:
+            actor.stop()
+    assert session is not None
+    assert session.principal.subject == "server-user"
+    assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
+    assert calls["count"] == 1
+    assert "register" not in calls

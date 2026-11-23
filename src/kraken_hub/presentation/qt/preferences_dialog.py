@@ -33,6 +33,8 @@ from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStor
 SETTINGS_ORGANIZATION = "Kraken"
 SETTINGS_APPLICATION = "KrakenHub"
 SERVER_URL_KEY = "server/url"
+LAST_SERVER_USERNAME_KEY = "login/server_username"
+LAST_DOMAIN_USERNAME_KEY = "login/domain_username"
 ACCOUNTS_KEY = "accounts/catalog"
 _SECRET_SERVICE = "Kraken.Hub.ProgramAccounts"
 
@@ -75,6 +77,27 @@ def program_server_url(settings: QSettings | None = None) -> str:
 def save_program_server_url(url: str, settings: QSettings | None = None) -> None:
     source = settings or program_settings()
     source.setValue(SERVER_URL_KEY, url.strip().rstrip("/"))
+
+
+_LAST_LOGIN_KEYS = {
+    "server": LAST_SERVER_USERNAME_KEY,
+    "domain": LAST_DOMAIN_USERNAME_KEY,
+}
+
+
+def last_login_username(kind: str, settings: QSettings | None = None) -> str:
+    """Последний введённый логин вкладки ``server`` или ``domain``."""
+    source = settings or program_settings()
+    return str(source.value(_LAST_LOGIN_KEYS[kind], "") or "").strip()
+
+
+def save_last_login_username(kind: str, username: str, settings: QSettings | None = None) -> None:
+    """Запоминает непустой логин вкладки ``server`` или ``domain``."""
+    cleaned = username.strip()
+    if not cleaned:
+        return
+    source = settings or program_settings()
+    source.setValue(_LAST_LOGIN_KEYS[kind], cleaned)
 
 
 def load_program_accounts(

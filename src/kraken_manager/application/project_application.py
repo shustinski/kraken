@@ -776,6 +776,29 @@ class ProjectApplication:
             include_missing=include_missing,
         )
 
+    def matrix_mosaic(
+        self,
+        project_id: ProjectId | str,
+        *,
+        layer_id: LayerId | str,
+        representation_ids: Iterable[RepresentationId | str] = (),
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        orientation: str = "y_down",
+    ) -> bytes:
+        return self._project_operations(project_id).matrix_mosaic(
+            project_id,
+            layer_id=layer_id,
+            representation_ids=representation_ids,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            orientation=orientation,
+        )
+
     def migrate_legacy_work_orders(
         self, *, principal: object, project_id: object, expected_plan_digest: object, idempotency_key: object
     ) -> object:

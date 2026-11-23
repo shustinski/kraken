@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import Request
+from fastapi.responses import Response
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -50,6 +51,30 @@ def register(ctx: HttpContext) -> None:
             lod=lod,
             include_missing=include_missing,
         )
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/viewport-mosaic")
+    def viewport_mosaic(
+        project_id: str,
+        layer_id: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        orientation: str = "y_down",
+        representation_id: list[str] = Query(default=[]),
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> Response:
+        payload = backend.matrix_mosaic(
+            project_id,
+            layer_id=layer_id,
+            representation_ids=representation_id,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            orientation=orientation,
+        )
+        return Response(content=payload, media_type="image/png")
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/frames")
     def frame_states(

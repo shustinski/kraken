@@ -55,6 +55,7 @@ class WorkPlanBoardWidget(QWidget):
         language="Русский",
         background_workers=None,
         settings=None,
+        refresh_on_init: bool = True,
     ):
         super().__init__(parent)
         self.service, self.principal = service, principal
@@ -275,7 +276,8 @@ class WorkPlanBoardWidget(QWidget):
                 self._capacities = self._capacity_preferences()
             except (ValueError, TypeError):
                 self._capacities = {}
-        self.refresh()
+        if refresh_on_init:
+            self.refresh()
 
     def _t(self, ru, en):
         return en if self.language == "English" else ru

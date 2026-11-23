@@ -86,6 +86,9 @@ def test_s02_update_source_dialog_stores_manifest_url(qapp, tmp_path: Path, monk
 
     previous_directory = settings_module._directory
     configure_settings_directory(tmp_path / "settings")
+    profile_ini = tmp_path / "kraken.ini"
+    profile_ini.write_text("[profiling]\nenabled = false\nmain_window = true\n", encoding="utf-8")
+    monkeypatch.setenv("KRAKEN_CONFIG", str(profile_ini))
     service = build_workspace_service(data_dir=tmp_path / "hub")
     service.create_initial_account("operator", "Operator", "secret")
     session = service.login("operator", "secret")
@@ -96,7 +99,9 @@ def test_s02_update_source_dialog_stores_manifest_url(qapp, tmp_path: Path, monk
 
     def drive():
         try:
-            window = next(window for window in qapp.topLevelWidgets() if window.windowTitle() == "Kraken" and window.isVisible())
+            window = next(
+                window for window in qapp.topLevelWidgets() if window.windowTitle() == "Kraken" and window.isVisible()
+            )
 
             def fill(dialog):
                 assert dialog.windowTitle() == "Источник обновлений"
@@ -111,9 +116,15 @@ def test_s02_update_source_dialog_stores_manifest_url(qapp, tmp_path: Path, monk
 
     QTimer.singleShot(0, drive)
     try:
-        assert manager_gui.run_manager_gui([], service=service, application_version="0", plugin_launcher=lambda *_: None) == 0
+        assert (
+            manager_gui.run_manager_gui([], service=service, application_version="0", plugin_launcher=lambda *_: None)
+            == 0
+        )
         assert not errors, errors
         assert _settings().value("updates/url") == "file:///manifest.json"
+        report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+        assert "[main_window]" in report
+        assert "ready=yes" in report
     finally:
         # A top-level quit leaves Qt's nested login loops stopped until a new
         # application loop starts; reset it before the next GUI test.

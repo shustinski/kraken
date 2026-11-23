@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
@@ -39,9 +40,10 @@ class IssueWorkMixin:
             expected_plan_digest=expected_plan_digest, idempotency_key=idempotency_key,
             commit=lambda unit: unit.commit_events_and_rebuild())
 
-    def work_orders(self) -> tuple[WorkOrder, ...]:
+    def work_orders(self, *, projects: Iterable[object] | None = None) -> tuple[WorkOrder, ...]:
         orders: dict[str, WorkOrder] = {}
-        for project in self.list_projects(include_archived=True):
+        selected = self.list_projects(include_archived=True) if projects is None else projects
+        for project in selected:
             for order in self._projection(project.id).list_work_orders(project.id):
                 orders[str(order.id)] = order
         return tuple(sorted(orders.values(), key=lambda item: (item.updated_at, item.id), reverse=True))

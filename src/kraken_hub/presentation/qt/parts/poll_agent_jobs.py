@@ -9,6 +9,7 @@ from kraken_manager.domain.identity import Permission
 from kraken_manager.presentation.qt.models import ProjectListItem
 from kraken_hub.application.workspace import ProjectEventWake
 from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
+from kraken_hub.presentation.qt.parts.my_work_panel import _call_with_projects, _catalog_projects
 from kraken_hub.presentation.qt.parts.layer_create_thread import _BackgroundCallThread
 
 
@@ -140,14 +141,18 @@ class PollAgentJobsMixin:
 
     def _resume_agent_jobs(self) -> None:
         try:
+            projects = _catalog_projects(self.service)
             local_jobs = tuple(
-                job for job in self.service.plugin_jobs()
+                job for job in _call_with_projects(self.service.plugin_jobs, projects)
                 if job.state.value not in {"succeeded", "failed", "cancelled"}
                 and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
             )
             if not local_jobs:
                 return
-            file_jobs = _file_work_job_ids(getattr(self.service, "work_orders", lambda: ())())
+            work_orders = getattr(self.service, "work_orders", None)
+            file_jobs = _file_work_job_ids(
+                () if work_orders is None else _call_with_projects(work_orders, projects)
+            )
             active = next(
                 (
                     job
@@ -159,18 +164,20 @@ class PollAgentJobsMixin:
             if active is None:
                 return
             self._gateway_for_job(active)
-            self._poll_agent_jobs()
+            self._poll_agent_jobs(projects)
         except Exception as exc:
             self.shell.statusBar().showMessage(
                 f"Kraken Agent: {exc}",
                 10000,
             )
 
-    def _poll_agent_jobs(self) -> None:
+    def _poll_agent_jobs(self, projects=None) -> None:
         schedule_pipeline = getattr(self, "_schedule_pipeline_cycle", None)
         if callable(schedule_pipeline):
             schedule_pipeline()
         gateway = self._agent_gateway
+        if projects is None:
+            projects = _catalog_projects(self.service)
         if gateway is None:
             if self.my_work_refresh is not None:
                 self.my_work_refresh()
@@ -178,11 +185,17 @@ class PollAgentJobsMixin:
         if getattr(self, "_agent_import_worker", None) is not None:
             return
         try:
-            jobs = self.service.synchronize_plugin_jobs(
-                principal=self.session.principal,
-                gateway=gateway,
+            def synchronize(projects=None):
+                arguments = {"principal": self.session.principal, "gateway": gateway}
+                if projects is not None:
+                    arguments["projects"] = projects
+                return self.service.synchronize_plugin_jobs(**arguments)
+
+            jobs = _call_with_projects(synchronize, projects)
+            work_orders = getattr(self.service, "work_orders", None)
+            file_jobs = _file_work_job_ids(
+                () if work_orders is None else _call_with_projects(work_orders, projects)
             )
-            file_jobs = _file_work_job_ids(getattr(self.service, "work_orders", lambda: ())())
             started_import = False
             for job in jobs:
                 if job.state.value != "importing" or str(job.id) in file_jobs:

@@ -176,6 +176,44 @@ class RemoveLayerPipelineActionMixin:
             f"/api/v1/projects/{project_id}/viewport?{query}",
         )
 
+    def matrix_mosaic(
+        self,
+        project_id: object,
+        *,
+        layer_id: object,
+        representation_ids: object = (),
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        orientation: str = "y_down",
+    ) -> bytes:
+        query = urllib.parse.urlencode(
+            [
+                ("layer_id", str(layer_id)),
+                ("x1", str(x1)),
+                ("y1", str(y1)),
+                ("x2", str(x2)),
+                ("y2", str(y2)),
+                ("orientation", str(orientation)),
+                *[("representation_id", str(value)) for value in representation_ids],
+            ]
+        )
+        from kraken_core.frame_matrix.prepared_tiles import MatrixTileNotReady
+        from kraken_hub.application.remote_error import RemoteServerError
+
+        try:
+            return b"".join(
+                self._http.iter_bytes(
+                    f"/api/v1/projects/{project_id}/viewport-mosaic?{query}",
+                    token=self.auth.access_token,
+                )
+            )
+        except RemoteServerError as exc:
+            if exc.status == 404 and "not prepared" in str(exc).lower():
+                raise MatrixTileNotReady("matrix tile is not prepared") from exc
+            raise
+
     def materialize_representation_inputs(
         self, *, principal: Principal, project: Project, layer: Layer, representation: Representation
     ) -> tuple[object, ...]:

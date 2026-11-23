@@ -1,7 +1,18 @@
 """composition: matrix viewport."""
 from __future__ import annotations
-from collections.abc import Iterable
+import logging
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
+from kraken_core.frame_matrix.prepared_tiles import (
+    building_tiles,
+    content_stamp,
+    grid_size,
+    pyramid_for,
+    schedule_key,
+    tile_build_scope,
+)
+from kraken_core.safe_files import open_regular_read
 from kraken_manager.domain.common import (
     LayerId,
     ProjectId,
@@ -10,6 +21,9 @@ from kraken_manager.domain.common import (
 from kraken_manager.domain.project import (
     RepresentationKind,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MatrixViewportMixin:
@@ -179,7 +193,7 @@ class MatrixViewportMixin:
 
         revision = str(self._projection(project.id).checkpoint)
         if int(lod) == 0:
-            return {
+            payload = {
                 "project_id": str(project.id),
                 "layer_id": str(layer_id),
                 "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
@@ -188,6 +202,8 @@ class MatrixViewportMixin:
                 "cells": tuple(sorted(merged.values(), key=lambda value: (value["y"], value["x"]))),
                 "aggregates": (),
             }
+            self._schedule_matrix_tiles(project_id, layer_id, representation_ids, revision)
+            return payload
 
         span = 1 << int(lod)
         buckets: dict[tuple[int, int], dict[str, Any]] = {}
@@ -210,7 +226,7 @@ class MatrixViewportMixin:
             bucket["materialized_count"] += 1
             status = str(cell["status"])
             bucket["status_counts"][status] = int(bucket["status_counts"].get(status, 0)) + 1
-        return {
+        payload = {
             "project_id": str(project.id),
             "layer_id": str(layer_id),
             "bounds": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
@@ -219,3 +235,82 @@ class MatrixViewportMixin:
             "cells": (),
             "aggregates": tuple(buckets[key] for key in sorted(buckets, key=lambda value: (value[1], value[0]))),
         }
+        self._schedule_matrix_tiles(project_id, layer_id, representation_ids, revision)
+        return payload
+
+    def _schedule_matrix_tiles(self, project_id, layer_id, representation_ids, stamp: str) -> None:
+        if building_tiles():
+            return
+        try:
+            self._prepared_pyramid(project_id, layer_id, representation_ids).note_content_stamp(stamp)
+        except Exception:
+            _LOGGER.exception("Could not schedule matrix tiles for %s", layer_id)
+
+    def _prepared_pyramid(self, project_id, layer_id, representation_ids):
+        def load_index():
+            with tile_build_scope():
+                width, height = grid_size(self.get_project(project_id))
+                viewport = self.matrix_viewport(
+                    project_id,
+                    layer_id=layer_id,
+                    representation_ids=representation_ids,
+                    x1=1,
+                    y1=1,
+                    x2=width,
+                    y2=height,
+                    lod=0,
+                    include_missing=False,
+                )
+                stamp = str(viewport.get("revision") or content_stamp(self.get_project(project_id), ""))
+            return stamp, width, height, tuple(viewport.get("cells") or ())
+
+        def read_image(cell: Mapping[str, object]) -> bytes | None:
+            return _read_local_cell_image(self, project_id, cell)
+
+        return pyramid_for(
+            self,
+            schedule_key(project_id, layer_id, representation_ids),
+            load_index,
+            read_image,
+        )
+
+    def prepare_matrix_tiles(self, project_id, *, layer_id, representation_ids=()) -> None:
+        self._prepared_pyramid(project_id, layer_id, representation_ids).build_now()
+
+    def matrix_mosaic(
+        self,
+        project_id: object,
+        *,
+        layer_id: object,
+        representation_ids: Iterable[object] = (),
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        orientation: str = "y_down",
+    ) -> bytes:
+        """Return one PNG prepared earlier for this tile."""
+
+        return self._prepared_pyramid(project_id, layer_id, representation_ids).read(
+            x1=int(x1),
+            y1=int(y1),
+            x2=int(x2),
+            y2=int(y2),
+            orientation=str(orientation),
+        )
+
+
+def _read_local_cell_image(service: object, project_id: object, cell: Mapping[str, object]) -> bytes | None:
+    path = str(cell.get("asset_path") or "")
+    try:
+        if path:
+            file_path = Path(path)
+            with open_regular_read(file_path, root=file_path.parent) as stream:
+                return stream.read()
+        digest = str(cell.get("asset_sha256") or cell.get("asset_source_key") or "")
+        if not digest:
+            return None
+        return service.read_project_blob(project_id, digest)
+    except (OSError, ValueError, RuntimeError):
+        _LOGGER.warning("Skipping mosaic source at (%s, %s)", cell.get("x"), cell.get("y"), exc_info=True)
+        return None

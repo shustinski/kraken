@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 @dataclass(frozen=True, slots=True)
+class _RemoteActor:
+    display_name: str
+    principal_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _RemoteHistoryEvent:
     _payload: Mapping[str, object]
     project_id: str = ""
@@ -48,12 +54,7 @@ class _RemoteHistoryEvent:
         if not isinstance(raw, Mapping):
             return None
 
-        @dataclass(frozen=True, slots=True)
-        class _Actor:
-            display_name: str
-            principal_id: str
-
-        return _Actor(
+        return _RemoteActor(
             display_name=str(raw.get("display_name", "")),
             principal_id=str(raw.get("principal_id", "")),
         )

@@ -169,6 +169,7 @@ def test_file_work_is_listed_once_with_work_order_controls(qtbot):
     )
     panel = _my_work_panel(service, SimpleNamespace(principal=None), SimpleNamespace())
     qtbot.addWidget(panel)
+    panel.show()
     table = panel.findChild(QTableWidget)
     assert table.rowCount() == 1
     assert table.item(0, 0).text() == "Vectorization"

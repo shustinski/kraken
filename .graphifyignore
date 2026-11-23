@@ -1,0 +1,18 @@
+# Local and generated files are not part of the source or documentation corpus.
+.codex_tmp_scratch/
+.test_runtime/
+.tmp-tests/
+.pytest_tmp*/
+tmp/
+build/
+dist/
+.audit/
+.vscode/
+dataset/
+
+# Images are assets or test data, not code or text documentation.
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.svg

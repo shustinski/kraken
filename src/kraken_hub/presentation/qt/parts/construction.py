@@ -121,8 +121,8 @@ class ConstructionMixin:
         self._agent_timer = QTimer(self.shell)
         self._agent_timer.setInterval(2000)
         self._agent_timer.timeout.connect(self._poll_agent_jobs)
-        self._agent_timer.start()
-        QTimer.singleShot(0, self._resume_agent_jobs)
+        self._agent_followup_started = False
+        self.shell.pageChanged.connect(self._start_agent_followup)
         self.shell.close_guard = self._allow_close
         self._workspace = None
         self._project_id = None
@@ -168,3 +168,10 @@ class ConstructionMixin:
         self.shell.framePropertiesRequested.connect(self.show_selected_frame)
         self._wire_live_sync()
         self.refresh_projects()
+
+    def _start_agent_followup(self, page_key: str = "") -> None:
+        if page_key != "my_work" or self._agent_followup_started:
+            return
+        self._agent_followup_started = True
+        self._agent_timer.start()
+        self._resume_agent_jobs()

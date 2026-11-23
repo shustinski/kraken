@@ -4,7 +4,14 @@ from __future__ import annotations
 from kraken_hub.application.workspace import ProjectWorkspaceService
 
 
-def _statistics_panel(service: ProjectWorkspaceService, principal=None, *, background_workers=None, async_reads=False):
+def _statistics_panel(
+    service: ProjectWorkspaceService,
+    principal=None,
+    *,
+    background_workers=None,
+    async_reads=False,
+    defer_until_shown=False,
+):
     from datetime import UTC, datetime
 
     from PyQt6.QtCore import QDateTime, Qt
@@ -113,10 +120,17 @@ def _statistics_panel(service: ProjectWorkspaceService, principal=None, *, backg
         tabs.addTab(scroll, title)
         charts[granularity] = granularity_charts
     layout.addWidget(tabs)
+    work_board = None
     if principal is not None and hasattr(service, "work_plan_analytics"):
         from kraken_hub.presentation.qt.work_plan_board import WorkPlanBoardWidget
 
-        work_board = WorkPlanBoardWidget(service, principal, parent=host, background_workers=background_workers)
+        work_board = WorkPlanBoardWidget(
+            service,
+            principal,
+            parent=host,
+            background_workers=background_workers,
+            refresh_on_init=not defer_until_shown,
+        )
         tabs.addTab(work_board, "Работы и аналитика")
     reports = ReportService()
     local_timezone = datetime.now().astimezone().tzinfo or UTC
@@ -270,5 +284,15 @@ def _statistics_panel(service: ProjectWorkspaceService, principal=None, *, backg
     refresh_button.clicked.connect(refresh)
     csv_button.clicked.connect(lambda: export("csv"))
     xlsx_button.clicked.connect(lambda: export("xlsx"))
-    refresh()
+    def load_visible_statistics() -> None:
+        refresh()
+        if work_board is not None:
+            work_board.refresh()
+
+    if defer_until_shown:
+        from kraken_hub.presentation.qt.parts.my_work_panel import _load_on_first_show
+
+        _load_on_first_show(host, load_visible_statistics)
+    else:
+        refresh()
     return host

@@ -16,6 +16,7 @@ from kraken_core.frame_matrix import (
     MatrixViewportResult,
 )
 from kraken_core.frame_matrix.ports import CancellationToken
+from kraken_core.frame_matrix import profiling
 from kraken_core.safe_files import open_regular_read
 
 
@@ -50,6 +51,12 @@ class KrakenMatrixDataSource:
                 self._matrix_width = max(1, int(matrix_width))
 
     def load_viewport(self, request, cancellation: CancellationToken | None = None) -> MatrixViewportResult:
+        if profiling.enabled("matrix_viewport"):
+            with profiling.region("matrix_viewport"):
+                return self._load_viewport(request, cancellation)
+        return self._load_viewport(request, cancellation)
+
+    def _load_viewport(self, request, cancellation: CancellationToken | None) -> MatrixViewportResult:
         if cancellation is not None and cancellation.cancelled:
             return MatrixViewportResult(request)
         with self._lock:
@@ -114,8 +121,7 @@ class KrakenMatrixDataSource:
                         "frame_id": str(cell.get("frame_id") or ""),
                         "missing": bool(cell.get("missing")),
                         "missing_representation_ids": tuple(
-                            str(value)
-                            for value in cell.get("missing_representation_ids", ())
+                            str(value) for value in cell.get("missing_representation_ids", ())
                         ),
                         "modified_at": str(cell.get("modified_at") or ""),
                         "performer_color": str(cell.get("performer_color") or ""),
@@ -130,8 +136,7 @@ class KrakenMatrixDataSource:
                 bounds=MatrixBounds(**dict(value["bounds"])),
                 materialized_count=int(value.get("materialized_count", 0)),
                 status_counts={
-                    str(status): int(count)
-                    for status, count in dict(value.get("status_counts", {})).items()
+                    str(status): int(count) for status, count in dict(value.get("status_counts", {})).items()
                 },
             )
             for value in payload.get("aggregates", ())
@@ -141,6 +146,21 @@ class KrakenMatrixDataSource:
             items=tuple(items),
             aggregates=aggregates,
             source_revision=str(payload.get("revision") or ""),
+        )
+
+    def load_mosaic(self, *, x1: int, y1: int, x2: int, y2: int, orientation: str) -> bytes:
+        with self._lock:
+            layer_id = self._layer_id
+            representation_ids = self._representation_ids
+        return self.service.matrix_mosaic(
+            self.project_id,
+            layer_id=layer_id,
+            representation_ids=representation_ids,
+            x1=int(x1),
+            y1=int(y1),
+            x2=int(x2),
+            y2=int(y2),
+            orientation=str(orientation),
         )
 
 
@@ -156,6 +176,19 @@ class KrakenMatrixAssetSource:
         width: int,
         height: int,
         cancellation: CancellationToken | None = None,
+    ) -> bytes:
+        if profiling.enabled("matrix_thumbnail"):
+            with profiling.region("matrix_thumbnail"):
+                return self._load_asset(reference, width=width, height=height, cancellation=cancellation)
+        return self._load_asset(reference, width=width, height=height, cancellation=cancellation)
+
+    def _load_asset(
+        self,
+        reference: MatrixAssetRef,
+        *,
+        width: int,
+        height: int,
+        cancellation: CancellationToken | None,
     ) -> bytes:
         if cancellation is not None and cancellation.cancelled:
             return b""

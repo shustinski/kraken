@@ -87,6 +87,7 @@ def test_my_work_exposes_review_and_agent_recovery_actions(qapp) -> None:
         SimpleNamespace(principal=SimpleNamespace(id="owner")),
         controller,
     )
+    panel.show()
     table = panel.findChild(QTableWidget)
     assert table is not None
     assert table.rowCount() == 3

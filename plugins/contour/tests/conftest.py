@@ -23,6 +23,7 @@ FAST_TEST_FILES = frozenset(
     {
         "test_app_startup.py",
         "test_application_window_sizing.py",
+        "test_batch_memory.py",
         "test_batch_processor.py",
         "test_contact_feedback.py",
         "test_frame_asset_sync.py",

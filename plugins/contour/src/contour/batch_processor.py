@@ -7,7 +7,7 @@ import os
 from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from queue import Empty
 from time import perf_counter
 from typing import Any
@@ -17,6 +17,7 @@ import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 
 from .application.processing import (
+    BatchFrameTiming,
     BatchImageMetadata,
     BatchImageResult,
     ContourExtractionSettings,
@@ -29,6 +30,71 @@ from .i18n import active_language, tr
 from .pipeline import PreprocessingPipeline
 
 _LOGGER = logging.getLogger(__name__)
+
+_MB = 1024 * 1024
+# A spawned contour worker settles around 1.1 GB private memory on real frames.
+_DEFAULT_WORKER_MEMORY_MB = 1536
+# Headroom left for the UI process, the multiprocessing manager and the OS.
+_DEFAULT_MEMORY_RESERVE_MB = 2048
+
+
+def _env_megabytes(name: str, default: int) -> int:
+    with contextlib.suppress(ValueError, TypeError):
+        return max(1, int(os.environ.get(name, str(default))))
+    return default
+
+
+def _available_memory_bytes() -> int | None:
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        return None
+
+
+def memory_limited_worker_count(
+    requested: int,
+    *,
+    available_bytes: int | None,
+    per_worker_bytes: int | None = None,
+    reserve_bytes: int | None = None,
+) -> int:
+    """Cap the worker count so every worker fits in currently available RAM.
+
+    ``cpu_count()`` alone over-subscribes memory on many-core machines: each
+    spawned worker holds its own copy of the vision stack, so 32 workers can
+    need more RAM than the machine has and push the system into swap.
+    """
+    requested = max(1, int(requested))
+    if available_bytes is None:
+        return requested
+    if per_worker_bytes is None:
+        per_worker_bytes = _env_megabytes("CONTOUR_BATCH_WORKER_MEMORY_MB", _DEFAULT_WORKER_MEMORY_MB) * _MB
+    if reserve_bytes is None:
+        reserve_bytes = _env_megabytes("CONTOUR_BATCH_MEMORY_RESERVE_MB", _DEFAULT_MEMORY_RESERVE_MB) * _MB
+    budget = max(0, int(available_bytes) - int(reserve_bytes))
+    fitting = budget // max(1, int(per_worker_bytes))
+    return max(1, min(requested, int(fitting)))
+
+
+@dataclass(slots=True)
+class BatchRunSummary:
+    """Per-run statistics kept for the final log line.
+
+    Holds only timings and utilization, never per-frame polygons: those are
+    already delivered through ``signals.result`` and keeping another copy for
+    the whole run grows the UI process with every processed frame.
+    """
+
+    timings: list[BatchFrameTiming] = field(default_factory=list)
+    utilizations: list[float] = field(default_factory=list)
+
+    def add(self, chunk: BatchChunkResult) -> None:
+        self.timings.extend(item.timing for item in chunk.metadata if item.error is None)
+        diagnostics = chunk.diagnostics
+        if diagnostics is not None and diagnostics.frame_count > 0:
+            self.utilizations.append(diagnostics.utilization)
 
 
 def configure_batch_runtime() -> None:
@@ -152,7 +218,7 @@ class BatchQueueRunnable(QRunnable):
         started_at = perf_counter()
         last_progress_emit = 0.0
         last_emitted_completed = -1
-        chunk_results: list[BatchChunkResult] = []
+        summary = BatchRunSummary()
         futures: dict[Any, int] = {}
         chunks = self._build_chunk_requests()
 
@@ -165,11 +231,15 @@ class BatchQueueRunnable(QRunnable):
             progress_lock = manager.Lock()
             if self._stop_requested:
                 self._cancel_event.set()
-            worker_count = min(self.max_workers, max(1, len(chunks)))
+            requested_workers = min(self.max_workers, max(1, len(chunks)))
+            available_bytes = _available_memory_bytes()
+            worker_count = memory_limited_worker_count(requested_workers, available_bytes=available_bytes)
             self.signals.log.emit(
                 _diagnostic_line(
                     "batch_start",
                     process_count=worker_count,
+                    requested_processes=requested_workers,
+                    available_mb="n/a" if available_bytes is None else available_bytes // _MB,
                     chunk_size=self.chunk_size,
                     chunks=len(chunks),
                     total=total,
@@ -230,7 +300,7 @@ class BatchQueueRunnable(QRunnable):
                             _LOGGER.exception("Batch chunk %s failed", chunk_id)
                             self.signals.error.emit("", f"Chunk {chunk_id} failed: {exc}")
                             chunk_result = BatchChunkResult(chunk_id=chunk_id)
-                        chunk_results.append(chunk_result)
+                        summary.add(chunk_result)
                         for item in chunk_result.metadata:
                             completed += 1
                             if item.error:
@@ -258,7 +328,7 @@ class BatchQueueRunnable(QRunnable):
                             futures[next_future] = request.chunk_id
 
                 executor.shutdown(wait=True, cancel_futures=True)
-            self._emit_summary(chunk_results, completed, total, started_at)
+            self._emit_summary(summary, completed, total, started_at)
         except Exception as exc:
             _LOGGER.exception("Batch processing failed")
             self.signals.error.emit("", str(exc))
@@ -297,22 +367,18 @@ class BatchQueueRunnable(QRunnable):
 
     def _emit_summary(
         self,
-        chunk_results: list[BatchChunkResult],
+        summary: BatchRunSummary,
         completed: int,
         total: int,
         started_at: float,
     ) -> None:
         elapsed = max(1e-6, perf_counter() - started_at)
-        timings = [item.timing for chunk in chunk_results for item in chunk.metadata if item.error is None]
+        timings = summary.timings
         avg_total = sum(t.total_frame_ms for t in timings) / max(1, len(timings))
         avg_load = sum(t.image_loading_ms for t in timings) / max(1, len(timings))
         avg_contour = sum(t.contour_extraction_ms for t in timings) / max(1, len(timings))
         avg_save = sum(t.saving_ms for t in timings) / max(1, len(timings))
-        utilization = [
-            chunk.diagnostics.utilization
-            for chunk in chunk_results
-            if chunk.diagnostics is not None and chunk.diagnostics.frame_count > 0
-        ]
+        utilization = summary.utilizations
         avg_utilization = sum(utilization) / max(1, len(utilization))
         self.signals.log.emit(
             _diagnostic_line(

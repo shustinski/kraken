@@ -37,6 +37,7 @@ build/
 .test_runtime/vscode-project-manager/accounts.sqlite3
 offline/*/
 config/local/
+graphify-out/
 
 # .* and the rules above hide the editor directory. Keep the shared debugger entry.
 !.vscode/

@@ -194,8 +194,8 @@ def test_pipeline_step_removal_is_an_audited_tombstone(tmp_path: Path) -> None:
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QPoint, QSettings  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QMenu  # noqa: E402
+from PyQt6.QtCore import QPoint, QSettings, Qt  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QMenu, QWidget  # noqa: E402
 
 from kraken_manager.presentation.qt import (  # noqa: E402
     FrameCellData,
@@ -218,6 +218,23 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
+def test_layer_manager_minimize_keeps_owner_visible(qapp) -> None:
+    owner = QWidget()
+    owner.resize(400, 300)
+    owner.show()
+    dialog = LayerManagerDialog(str(uuid4()), owner)
+    dialog.show()
+    qapp.processEvents()
+    dialog.showMinimized()
+    qapp.processEvents()
+
+    assert dialog.isMinimized()
+    assert not owner.isMinimized()
+
+    dialog.close()
+    owner.close()
+
+
 def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
     settings = QSettings("Kraken", "KrakenHub")
     settings.remove("matrix/border-mode")
@@ -229,6 +246,7 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
     assert shell.layers_action.isEnabled()
     assert shell.view_menu.isEnabled()
     assert shell.visual_modes() == ("status", "thumbnail")
+    assert shell._visual_actions[("border", "none")].text() == "Нет"
     assert not workspace.image_representation_combo.isVisible()
     assert not workspace.vector_representation_combo.isVisible()
 
@@ -279,6 +297,7 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
     )
 
     assert not dialog.isModal()
+    assert dialog.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
     assert dialog.layer_list.layer_ids() == ("layer-a", "layer-b")
     assert dialog.graph.scene().items()
     blackbox_ids = {

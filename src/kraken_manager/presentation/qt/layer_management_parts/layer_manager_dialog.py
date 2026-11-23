@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import Callable
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QTimer, Qt, pyqtSignal
 from kraken_core.settings import QSettings
 from PyQt6.QtWidgets import (
     QDialog,
@@ -42,6 +42,8 @@ class LayerManagerDialog(QDialog):
         self.setWindowTitle("Управление слоями")
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+        self._restoring_owner = False
         self.resize(1180, 720)
         self.settings = QSettings("Kraken", "KrakenHub")
         splitter = QSplitter(self)
@@ -118,6 +120,31 @@ class LayerManagerDialog(QDialog):
     def hideEvent(self, event) -> None:  # type: ignore[override]
         self.graph.save_layout()
         super().hideEvent(event)
+
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        super().changeEvent(event)
+        if event.type() != QEvent.Type.WindowStateChange or self._restoring_owner:
+            return
+        if self.isMinimized():
+            QTimer.singleShot(0, self._restore_owner_after_minimize)
+
+    def _restore_owner_after_minimize(self) -> None:
+        """Keep the main window open when this owned dialog is minimized.
+
+        On Windows an owned window minimizes its owner. Restore the owner and
+        leave only this dialog minimized.
+        """
+        if self._restoring_owner or not self.isMinimized():
+            return
+        owner = self.parentWidget()
+        if owner is None or not owner.isMinimized():
+            return
+        self._restoring_owner = True
+        try:
+            owner.showNormal()
+            self.showMinimized()
+        finally:
+            self._restoring_owner = False
 
 if TYPE_CHECKING:
     from kraken_manager.presentation.qt.layer_management_parts.format_scalar import LayerPipelineSnapshot, PipelineNode

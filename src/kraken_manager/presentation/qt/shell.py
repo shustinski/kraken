@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 from typing import Callable
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QByteArray, QPointF, QSize, Qt, pyqtSignal
 from kraken_core.settings import QSettings
 from PyQt6.QtGui import (
     QAction,
@@ -14,10 +14,10 @@ from PyQt6.QtGui import (
     QColor,
     QIcon,
     QPainter,
-    QPainterPath,
     QPen,
     QPixmap,
 )
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -170,6 +170,7 @@ class ProjectManagerShell(QMainWindow):
         self._visual_menus: dict[str, QMenu] = {}
         self._visual_actions: dict[tuple[str, str], QAction] = {}
         labels = {
+            "none": "Нет",
             "time": "Время",
             "performer": "Исполнитель",
             "quality": "Качество",
@@ -178,7 +179,7 @@ class ProjectManagerShell(QMainWindow):
         }
         defaults = {"border": "status", "fill": "thumbnail"}
         for channel, title, modes in (
-            ("border", "Рамка ячейки", ("time", "performer", "quality", "status")),
+            ("border", "Рамка ячейки", ("none", "time", "performer", "quality", "status")),
             ("fill", "Заполнение ячейки", ("time", "performer", "quality", "status", "thumbnail")),
         ):
             submenu = self.view_menu.addMenu(title)
@@ -233,7 +234,7 @@ class ProjectManagerShell(QMainWindow):
             button.setCheckable(True)
             button.setAutoRaise(True)
             button.setToolTip(str(label))
-            button.setIcon(QIcon(self._rail_icon(key)))
+            button.setIcon(self._rail_icon(key))
             button.setIconSize(QSize(22, 22))
             button.clicked.connect(lambda _checked=False, section=key: self._on_rail_clicked(section))
             group.addButton(button)
@@ -247,50 +248,79 @@ class ProjectManagerShell(QMainWindow):
         self.show_page(key)
 
     @staticmethod
-    def _rail_icon(key: str) -> QPixmap:
-        pixmap = QPixmap(24, 24)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#647d9c"), 2.0)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        if key == "projects":
-            folder = QPainterPath()
-            folder.moveTo(3, 8)
-            folder.lineTo(9, 8)
-            folder.lineTo(11, 10)
-            folder.lineTo(21, 10)
-            folder.lineTo(21, 18)
-            folder.lineTo(3, 18)
-            folder.closeSubpath()
-            painter.drawPath(folder)
-        elif key == "my_work":
-            painter.drawEllipse(QPointF(12, 8), 3.5, 3.5)
-            painter.drawArc(QRectF(5, 12, 14, 14), 180 * 16, 180 * 16)
-        elif key == "statistics":
-            painter.drawLine(QPointF(6, 19), QPointF(6, 11))
-            painter.drawLine(QPointF(12, 19), QPointF(12, 5))
-            painter.drawLine(QPointF(18, 19), QPointF(18, 13))
-        elif key == "performers":
-            painter.drawEllipse(QPointF(9, 8), 3, 3)
-            painter.drawEllipse(QPointF(15, 8), 3, 3)
-            painter.drawArc(QRectF(2, 12, 13, 13), 180 * 16, 180 * 16)
-            painter.drawArc(QRectF(9, 12, 13, 13), 180 * 16, 180 * 16)
-        elif key == "plugins":
-            painter.drawRoundedRect(QRectF(7, 11, 10, 8), 2, 2)
-            painter.drawLine(QPointF(10, 11), QPointF(10, 4))
-            painter.drawLine(QPointF(14, 11), QPointF(14, 4))
-        elif key == "administration":
-            painter.drawEllipse(QPointF(12, 12), 4, 4)
-            for angle in range(0, 360, 45):
-                radians = math.radians(angle)
-                painter.drawLine(
-                    QPointF(12 + 6 * math.cos(radians), 12 + 6 * math.sin(radians)),
-                    QPointF(12 + 9 * math.cos(radians), 12 + 9 * math.sin(radians)),
-                )
-        painter.end()
-        return pixmap
+    def _gear_path() -> str:
+        """Outline of an 8-tooth gear centred in the 24x24 icon box."""
+        teeth, outer, inner = 8, 9.5, 7.0
+        step = 2 * math.pi / teeth
+        points: list[tuple[float, float]] = []
+        for index in range(teeth):
+            base = index * step - math.pi / 2
+            for angle, radius in (
+                (base - step * 0.30, inner),
+                (base - step * 0.17, outer),
+                (base + step * 0.17, outer),
+                (base + step * 0.30, inner),
+            ):
+                points.append((12 + radius * math.cos(angle), 12 + radius * math.sin(angle)))
+        head, *rest = points
+        return f"M{head[0]:.2f} {head[1]:.2f}" + "".join(f"L{x:.2f} {y:.2f}" for x, y in rest) + "Z"
+
+    @classmethod
+    def _rail_icon_svg(cls, key: str) -> str:
+        bodies = {
+            # Folder with a tab.
+            "projects": (
+                '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h8.5A1.5 1.5 0 0 1 21 10v8.5'
+                'a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>'
+            ),
+            # Clipboard with a check mark: "my tasks".
+            "my_work": (
+                '<rect x="5" y="4.5" width="14" height="17" rx="2"/>'
+                '<rect x="9" y="2.5" width="6" height="4" rx="1"/>'
+                '<path d="M9 13.5l2.2 2.2L15.5 11"/>'
+            ),
+            # Bar chart on axes.
+            "statistics": (
+                '<path d="M4 4v16h16"/>'
+                '<path d="M8.5 16v-4M12.5 16V8M16.5 16v-6"/>'
+            ),
+            # Two people (head + shoulders).
+            "performers": (
+                '<circle cx="9" cy="8" r="3.5"/>'
+                '<path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/>'
+                '<path d="M15.5 4.6a3.5 3.5 0 0 1 0 6.8M18 14.4c2 .7 3.5 2.7 3.5 5.6"/>'
+            ),
+            # Puzzle piece: an add-on.
+            "plugins": (
+                '<path transform="translate(1 -1)" d="M4 8h4a2.2 2.2 0 1 1 4 0h4v2'
+                'a2.2 2.2 0 1 1 0 4v6H4z"/>'
+            ),
+            # Gear.
+            "administration": f'<path d="{cls._gear_path()}"/><circle cx="12" cy="12" r="3"/>',
+        }
+        return bodies.get(key, "")
+
+    @classmethod
+    def _rail_icon(cls, key: str) -> QIcon:
+        icon = QIcon()
+        body = cls._rail_icon_svg(key)
+        for state, color in ((QIcon.State.Off, "#7f93ad"), (QIcon.State.On, "#4c9aff")):
+            svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+                f'stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+                f"{body}</svg>"
+            )
+            renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+            for scale in (1, 2):
+                pixmap = QPixmap(24 * scale, 24 * scale)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                renderer.render(painter)
+                painter.end()
+                pixmap.setDevicePixelRatio(scale)
+                icon.addPixmap(pixmap, QIcon.Mode.Normal, state)
+        return icon
 
     def _build_project_tab_row(self) -> QHBoxLayout:
         row = QHBoxLayout()

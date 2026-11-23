@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
@@ -82,6 +83,12 @@ def _tables() -> tuple[Any, Any, Any, Any, Any]:
     return metadata, streams, events, command_keys, outbox
 
 
+@functools.cache
+def _shared_tables() -> Any:
+    """Table objects are immutable; build them once per process, not per unit of work."""
+    return _tables()
+
+
 def _actor_dict(actor: ActorSnapshot) -> dict[str, Any]:
     return {
         "principal_id": str(actor.principal_id),
@@ -158,7 +165,7 @@ class PostgresEventStore:
     def __init__(self, engine: Any, *, connection: Any | None = None, create_schema_for_tests: bool = False) -> None:
         self.engine = engine
         self.connection = connection
-        self.metadata, self.streams, self.events, self.command_keys, self.outbox = _tables()
+        self.metadata, self.streams, self.events, self.command_keys, self.outbox = _shared_tables()
         if create_schema_for_tests:
             self.metadata.create_all(engine)
 

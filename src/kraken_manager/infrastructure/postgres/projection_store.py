@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Iterator
@@ -51,11 +52,17 @@ def _projection_tables() -> tuple[Any, Any, Any]:
     return metadata, current, temporal
 
 
+@functools.cache
+def _shared_projection_tables() -> Any:
+    """Table objects are immutable; build them once per process, not per unit of work."""
+    return _projection_tables()
+
+
 class PostgresProjectionStore:
     def __init__(self, engine: Any, *, connection: Any | None = None, create_schema_for_tests: bool = False) -> None:
         self.engine = engine
         self.connection = connection
-        self.metadata, self.current, self.temporal = _projection_tables()
+        self.metadata, self.current, self.temporal = _shared_projection_tables()
         self.catalog = CatalogProjection()
         if create_schema_for_tests:
             self.metadata.create_all(engine)

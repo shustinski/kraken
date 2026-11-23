@@ -38,3 +38,16 @@ def test_storage_lock_wait_gives_up_after_the_timeout() -> None:
     assert wait_for_lock(connection, "kraken:storage", timeout=1, interval=0.25,
                          sleep=sleep, clock=lambda: now[0]) is False
     assert connection.calls == pytest.approx(5, abs=1)
+
+
+def test_storage_barriers_reuse_pooled_connections() -> None:
+    import sqlalchemy as sa
+
+    from kraken_server.project_deletion import ProjectOperationMiddleware, _gate_engine
+
+    url = sa.engine.make_url("postgresql+psycopg://u:p@127.0.0.1:5432/kraken")
+    assert _gate_engine(url) is _gate_engine(url)
+    assert not isinstance(_gate_engine(url).pool, sa.pool.NullPool)
+    middleware = ProjectOperationMiddleware(None, sa.create_engine(url))
+    assert not isinstance(middleware.engine.pool, sa.pool.NullPool)
+    assert middleware.engine is _gate_engine(url)

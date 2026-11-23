@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -61,11 +62,17 @@ def _identity_tables() -> tuple[Any, Any, Any]:
     return metadata, principals, acl
 
 
+@functools.cache
+def _shared_identity_tables() -> Any:
+    """Table objects are immutable; build them once per process, not per unit of work."""
+    return _identity_tables()
+
+
 class PostgresIdentityAclStore:
     def __init__(self, engine: Any, *, connection: Any | None = None, create_schema_for_tests: bool = False) -> None:
         self.engine = engine
         self.connection = connection
-        self.metadata, self.principals, self.acl = _identity_tables()
+        self.metadata, self.principals, self.acl = _shared_identity_tables()
         if create_schema_for_tests:
             self.metadata.create_all(engine)
 

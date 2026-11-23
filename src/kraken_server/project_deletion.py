@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,6 +23,26 @@ def _storage_key(engine):
     return (url.host, url.port, url.database)
 
 
+_GATE_ENGINES: dict = {}
+_GATE_ENGINES_LOCK = threading.Lock()
+
+
+def _gate_engine(url):
+    """Pool kept apart from the application pool for storage/project barriers.
+
+    Barriers live for whole (streamed) requests, so they must not starve the
+    pool used by the operation they protect. A fresh connection per request,
+    however, costs 30-130 ms on Windows; reuse them instead. Overflow is
+    unbounded so barriers never wait for each other.
+    """
+    with _GATE_ENGINES_LOCK:
+        engine = _GATE_ENGINES.get(url)
+        if engine is None:
+            engine = sa.create_engine(url, pool_size=5, max_overflow=-1, pool_pre_ping=True)
+            _GATE_ENGINES[url] = engine
+        return engine
+
+
 def guarded_storage(function):
     """Fence direct filesystem commands as well as HTTP-mediated commands."""
     @wraps(function)
@@ -32,18 +53,14 @@ def guarded_storage(function):
         key = _storage_key(engine)
         if key in _STORAGE_GUARDS.get():
             return function(service, *args, **kwargs)
-        gate = sa.create_engine(engine.url, poolclass=sa.pool.NullPool)
-        try:
-            with gate.begin() as connection:
-                if not lock(connection, "kraken:storage", shared=True, attempt=True):
-                    raise ConflictError("Хранилище занято резервным копированием или очисткой. Повторите операцию.")
-                token = _STORAGE_GUARDS.set(_STORAGE_GUARDS.get() | {key})
-                try:
-                    return function(service, *args, **kwargs)
-                finally:
-                    _STORAGE_GUARDS.reset(token)
-        finally:
-            gate.dispose()
+        with _gate_engine(engine.url).begin() as connection:
+            if not lock(connection, "kraken:storage", shared=True, attempt=True):
+                raise ConflictError("Хранилище занято резервным копированием или очисткой. Повторите операцию.")
+            token = _STORAGE_GUARDS.set(_STORAGE_GUARDS.get() | {key})
+            try:
+                return function(service, *args, **kwargs)
+            finally:
+                _STORAGE_GUARDS.reset(token)
     return guarded
 
 
@@ -202,9 +219,7 @@ class ProjectOperationMiddleware:
 
     def __init__(self, app, engine) -> None:
         self.app = app
-        # Barriers live for the duration of streamed responses. They must not
-        # consume the application pool needed by the operation they protect.
-        self.engine = sa.create_engine(engine.url, poolclass=sa.pool.NullPool)
+        self.engine = _gate_engine(engine.url)
 
     async def __call__(self, scope, receive, send) -> None:
         import anyio

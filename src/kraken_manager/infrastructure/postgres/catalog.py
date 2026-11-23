@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,12 @@ def catalog_tables(metadata: Any | None = None) -> dict[str, Any]:
     }
 
 
+@functools.cache
+def _shared_catalog_tables() -> Any:
+    """Table objects are immutable; build them once per process, not per unit of work."""
+    return catalog_tables()
+
+
 def _file_table(metadata: Any, name: str) -> Any:
     sa, _ = _sqlalchemy()
     return sa.Table(
@@ -118,7 +125,7 @@ class CatalogProjection:
     """Upserts the columns a person reads in a database client."""
 
     def __init__(self, tables: dict[str, Any] | None = None) -> None:
-        self.tables = tables or catalog_tables()
+        self.tables = tables or dict(_shared_catalog_tables())
 
     def sync(self, connection: Any, kind: str, model: Any, values: dict[str, Any]) -> None:
         if kind == "project":

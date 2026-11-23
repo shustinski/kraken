@@ -434,6 +434,29 @@ class PostgresAgentGateway:
             ).scalar_one_or_none()
         return str(value) if value and str(value).startswith("admission:") else None
 
+    def job_summary(self, job_id: str) -> dict[str, Any] | None:
+        """Project and kind of a queued job, for the human-readable request journal."""
+        import sqlalchemy as sa
+
+        try:
+            with self.engine.connect() as connection:
+                row = connection.execute(
+                    sa.select(self.jobs.c.project_id, self.jobs.c.payload).where(self.jobs.c.job_id == job_id)
+                ).mappings().one_or_none()
+        except (sa.exc.DataError, sa.exc.StatementError):
+            return None
+        if row is None:
+            return None
+        payload = row["payload"] or {}
+        native = payload.get("native_manifest") or {}
+        return {
+            "project_id": str(row["project_id"]),
+            "kind": payload.get("kind"),
+            "capability": payload.get("capability"),
+            "partition_index": native.get("partition_index"),
+            "partition_count": native.get("partition_count"),
+        }
+
     def manifest(self, job_id: str, agent: AgentIdentity):
         with self.engine.connect() as connection:
             payload = self._require_lease(connection, job_id, agent, lock=False)

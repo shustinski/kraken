@@ -177,14 +177,35 @@ def build_http_context(
         finally:
             reset_acting_role(token)
 
-    from kraken_server.operation_log import configure_operation_log, record_http_request
+    from kraken_server.operation_log import (
+        backend_name_book,
+        begin_request,
+        configure_operation_log,
+        end_request,
+        note_agent,
+        note_user,
+        record_http_request,
+        should_record,
+    )
 
     configure_operation_log(os.environ.get("KRAKEN_LOG_LEVEL", "none"))
+    journal_names = backend_name_book(backend, agent_gateway)
 
     @app.middleware("http")
     async def _journal_request(request: Request, call_next):  # type: ignore[no-untyped-def]
-        response = await call_next(request)
-        record_http_request(request.method, request.url.path, response.status_code)
+        requester, token = begin_request()
+        try:
+            response = await call_next(request)
+        finally:
+            end_request(token)
+        method, path, status = request.method, request.url.path, response.status_code
+        if should_record(method, path, status):
+            route = getattr(request.scope.get("route"), "path", None)
+            params = dict(request.scope.get("path_params") or {})
+            await run_in_threadpool(
+                record_http_request, method, path, status,
+                route=route, params=params, names=journal_names, requester=requester,
+            )
         return response
 
     app.state.connection_hub = hub
@@ -273,6 +294,11 @@ def build_http_context(
         return problem(422, "request.invalid", "Invalid request", str(exc), str(request.url.path))
 
     def principal(authorization: str | None = Header(default=None)) -> SessionPrincipal:
+        resolved = _resolve_principal(authorization)
+        note_user(resolved.principal_id)
+        return resolved
+
+    def _resolve_principal(authorization: str | None) -> SessionPrincipal:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Authentication required")
         token = authorization.removeprefix("Bearer ").strip()
@@ -412,6 +438,7 @@ def build_http_context(
         if identity is None:
             raise HTTPException(status_code=401, detail="Agent token is invalid or revoked")
         from dataclasses import replace
+        note_agent(identity.name)
         return replace(identity, lease_claim=request.headers.get("X-Kraken-Lease-Claim"))
 
     def command_context(

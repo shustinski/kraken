@@ -110,3 +110,72 @@ class BatchRunSummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _ClosedManagerEvent:
+    """A manager Event proxy whose manager process has already shut down."""
+
+    def set(self) -> None:
+        raise BrokenPipeError(232, "pipe is being closed")
+
+    def is_set(self) -> bool:
+        raise BrokenPipeError(232, "pipe is being closed")
+
+
+def _runner(image_paths, **kwargs):
+    from contour.application.processing import ContourExtractionSettings, DisplaySettings, SaveOptions
+    from contour.batch_processor import BatchQueueRunnable
+
+    return BatchQueueRunnable(
+        image_paths=list(image_paths),
+        pipeline_config={"steps": []},
+        contour_settings=ContourExtractionSettings(min_area=1.0),
+        output_directory=None,
+        save_options=SaveOptions(),
+        display_settings=DisplaySettings(),
+        max_workers=2,
+        ui_language="en",
+        chunk_size=1,
+        **kwargs,
+    )
+
+
+class BatchStopTests(unittest.TestCase):
+    def test_stop_from_the_ui_never_calls_the_manager(self) -> None:
+        # Closing the window right after a stop raced the runner shutting the
+        # manager down; stop() then raised BrokenPipeError out of closeEvent.
+        runner = _runner(["a.png"])
+        runner._cancel_event = _ClosedManagerEvent()
+
+        runner.stop()
+
+        self.assertTrue(runner._stop_requested)
+
+    def test_stop_before_start_reaches_workers_and_finishes(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import cv2
+        import numpy as np
+        from PyQt6.QtCore import QCoreApplication, Qt
+
+        QCoreApplication.instance() or QCoreApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for index in range(6):
+                image = np.zeros((32, 32), dtype=np.uint8)
+                image[8:24, 8:24] = 255
+                path = str(Path(directory) / f"frame-{index}.png")
+                cv2.imwrite(path, image)
+                paths.append(path)
+            runner = _runner(paths)
+            results, finished = [], []
+            direct = Qt.ConnectionType.DirectConnection
+            runner.signals.result.connect(results.append, direct)
+            runner.signals.finished.connect(lambda: finished.append(True), direct)
+
+            runner.stop()
+            runner.run()
+
+        self.assertEqual(results, [])
+        self.assertEqual(finished, [True])

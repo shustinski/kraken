@@ -514,7 +514,14 @@ class PolygonExtractionWidget(
             cancel = getattr(self, cancel_name, None)
             if cancel is not None:
                 cancel.set()
-        self._batch_processor.stop()
+        try:
+            self._batch_processor.stop()
+        except Exception:
+            # A failed stop request must not abort closing halfway: the window
+            # would hide while the process stays alive behind an error dialog.
+            import logging
+
+            logging.getLogger(__name__).exception("Batch stop failed while closing Contour")
         frame_switch_profile = getattr(self, "_frame_switch_profile", None)
         if frame_switch_profile is not None:
             frame_switch_profile.disable_main_profiler()

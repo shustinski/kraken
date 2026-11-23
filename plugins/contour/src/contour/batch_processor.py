@@ -228,11 +228,26 @@ class BatchQueueRunnable(QRunnable):
         self.signals = BatchQueueSignals()
         self._cancel_event: Any | None = None
         self._stop_requested = False
+        self._stop_forwarded = False
 
     def stop(self) -> None:
+        """Request cancellation; safe to call from the UI thread at any moment.
+
+        Only a local flag is set here. The runner thread forwards it to the
+        workers' manager Event: a manager call from the UI thread blocks it on
+        IPC and raises once the runner has already shut the manager down.
+        """
         self._stop_requested = True
-        if self._cancel_event is not None:
-            self._cancel_event.set()
+
+    def _forward_stop(self) -> bool:
+        """Runner thread: pass a requested stop to the workers once. Returns the stop state."""
+        if self._stop_requested and not self._stop_forwarded and self._cancel_event is not None:
+            self._stop_forwarded = True
+            try:
+                self._cancel_event.set()
+            except (OSError, EOFError):
+                _LOGGER.warning("Batch workers could not be told to stop; waiting for their chunks", exc_info=True)
+        return self._stop_requested
 
     def run(self) -> None:
         configure_batch_runtime()
@@ -252,8 +267,7 @@ class BatchQueueRunnable(QRunnable):
             self._cancel_event = manager.Event()
             progress_counter = manager.Value("i", 0)
             progress_lock = manager.Lock()
-            if self._stop_requested:
-                self._cancel_event.set()
+            self._forward_stop()
             requested_workers = min(self.max_workers, max(1, len(chunks)))
             available_bytes = _available_memory_bytes()
             worker_count = memory_limited_worker_count(requested_workers, available_bytes=available_bytes)
@@ -289,6 +303,7 @@ class BatchQueueRunnable(QRunnable):
 
                 while futures:
                     done, _pending = wait(tuple(futures), timeout=0.05, return_when=FIRST_COMPLETED)
+                    stopping = self._forward_stop()
                     live_completed = max(completed, int(progress_counter.value))
                     if live_completed != last_emitted_completed:
                         self.signals.progress.emit(live_completed, total)
@@ -309,7 +324,7 @@ class BatchQueueRunnable(QRunnable):
                                 }
                             )
                             last_progress_emit = now
-                        if self._cancel_event.is_set():
+                        if stopping:
                             for future in futures:
                                 future.cancel()
                             pending_chunks.clear()
@@ -339,7 +354,7 @@ class BatchQueueRunnable(QRunnable):
                         if chunk_result.diagnostics is not None:
                             self.signals.diagnostics.emit(chunk_result.diagnostics)
                             self.signals.log.emit(_format_chunk_diagnostics(chunk_result.diagnostics))
-                        if not self._cancel_event.is_set() and pending_chunks:
+                        if not stopping and pending_chunks:
                             request = pending_chunks.popleft()
                             next_future = executor.submit(
                                 process_batch_chunk,

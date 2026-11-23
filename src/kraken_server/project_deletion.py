@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -80,6 +81,23 @@ def lock(connection, key: str, *, shared: bool = False, attempt: bool = False) -
     function = "pg_" + ("try_" if attempt else "") + "advisory_xact_lock" + ("_shared" if shared else "")
     result = connection.execute(sa.text(f"SELECT {function}(hashtextextended(:key, 0))"), {"key": key}).scalar()
     return bool(result) if attempt else True
+
+
+def wait_for_lock(connection, key: str, *, shared: bool = False, timeout: float = 30.0,
+                  interval: float = 0.2, sleep=time.sleep, clock=time.monotonic) -> bool:
+    """Retry a non-blocking advisory lock so short API requests do not fail cleanup.
+
+    Every project API request holds ``kraken:storage`` shared for its duration, so a
+    single exclusive attempt fails whenever a Hub happens to be talking to the server.
+    Polling (instead of a blocking wait) keeps new requests from queueing behind us.
+    """
+    deadline = clock() + timeout
+    while True:
+        if lock(connection, key, shared=shared, attempt=True):
+            return True
+        if clock() >= deadline:
+            return False
+        sleep(interval)
 
 
 def ensure_available(connection, project_id: str) -> None:

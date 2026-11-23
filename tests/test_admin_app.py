@@ -341,3 +341,57 @@ def test_last_opened_toml_is_reused(qapp, tmp_path: Path, monkeypatch) -> None:
 
 def test_admin_without_a_command_opens_the_window() -> None:
     assert _parser().parse_args([]).command is None
+
+
+def _pending(request_id: str, name: str) -> dict:
+    return {
+        "request_id": request_id, "state": "pending", "project_name": name, "requested_by": "x",
+        "reason": "", "requested_at": "", "error": "",
+    }
+
+
+def test_deletion_requests_refresh_automatically_and_keep_the_selection(qapp, monkeypatch) -> None:
+    del qapp
+    window = AdminWindow()
+    window._services = type("Services", (), {"engine": object()})()
+    panel = window.deletion_panel
+    rows = [[_pending("a", "A")], [_pending("b", "B"), _pending("a", "A")]]
+    monkeypatch.setattr("kraken_admin.presentation.qt.deletion_panel.ensure_deletion_schema", lambda _e: None)
+    monkeypatch.setattr(
+        "kraken_admin.presentation.qt.deletion_panel.DeletionRequests",
+        lambda _e: type("R", (), {"list": staticmethod(lambda: rows.pop(0))})(),
+    )
+    monkeypatch.setattr(
+        "kraken_admin.presentation.qt.deletion_panel.DeletionPolicy",
+        lambda _e: type("P", (), {"enabled": staticmethod(lambda: False)})(),
+    )
+    panel.reload()
+    assert panel.poll.isActive()
+    panel.table.setCurrentCell(0, 0)
+
+    panel.poll.timeout.emit()
+
+    assert panel.table.rowCount() == 2
+    assert panel.rows[panel.table.currentRow()]["request_id"] == "a"
+
+
+def test_deletion_poll_is_silent_and_skipped_while_deleting(qapp, monkeypatch) -> None:
+    del qapp
+    window = AdminWindow()
+    window._services = type("Services", (), {"engine": object()})()
+    reported: list[str] = []
+    monkeypatch.setattr(window, "_report", lambda title, _exc: reported.append(title))
+    calls: list[int] = []
+
+    def broken(_engine):
+        calls.append(1)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("kraken_admin.presentation.qt.deletion_panel.ensure_deletion_schema", broken)
+    window._deletion_busy = True
+    window.deletion_panel.poll.timeout.emit()
+    assert calls == []
+    window._deletion_busy = False
+    window.deletion_panel.poll.timeout.emit()
+    assert calls == [1]
+    assert reported == []

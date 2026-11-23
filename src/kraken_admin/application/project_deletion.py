@@ -9,7 +9,7 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-from kraken_server.project_deletion import DeletionRequests, lock
+from kraken_server.project_deletion import DeletionRequests, lock, wait_for_lock
 from kraken_server.services import ConflictError
 
 from kraken_admin.application.deletion_policy import DeletionPolicy
@@ -445,7 +445,7 @@ class ProjectDeletion:
                     staged = f"staged:{step}"
                     if staged not in completed:
                         with engine.begin() as connection:
-                            if not lock(connection, "kraken:storage", attempt=True):
+                            if not wait_for_lock(connection, "kraken:storage"):
                                 raise ConflictError("Хранилище занято. Повторите перенос папок для удаления.")
                             if not trash.exists():
                                 assert_unshared(self.services.workspace_files.registry, project_id, [path])
@@ -455,7 +455,7 @@ class ProjectDeletion:
                             connection.execute(self.table.update().where(self.table.c.request_id == request_id)
                                                .values(completed=completed, updated_at=datetime.now(UTC)))
                     with engine.begin() as connection:
-                        if not lock(connection, "kraken:storage", attempt=True):
+                        if not wait_for_lock(connection, "kraken:storage"):
                             raise ConflictError("Хранилище занято. Повторите очистку после резервного копирования.")
                         remove_stored_path(trash, authorization)
                         completed.append(step)
@@ -463,7 +463,7 @@ class ProjectDeletion:
                                            .values(completed=completed, updated_at=datetime.now(UTC)))
             with engine.begin() as connection:
                 # Brief global barrier protects deduplication/reference registration.
-                if not lock(connection, "kraken:storage", attempt=True):
+                if not wait_for_lock(connection, "kraken:storage"):
                     raise ConflictError("Хранилище занято передачей данных. Повторите очистку blobs.")
                 schema = self._schema(connection)
                 shared = set()

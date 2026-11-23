@@ -1,6 +1,6 @@
 """Review deletion requests and run disk cleanup outside the Qt thread."""
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -20,6 +20,8 @@ from kraken_admin.application.accounts import display_name_for
 from kraken_admin.application.deletion_policy import DeletionPolicy
 from kraken_admin.application.project_deletion import ProjectDeletion
 from kraken_admin.infrastructure.deletion_settings import ensure_deletion_schema, short_database_error
+
+POLL_INTERVAL_MS = 5000
 
 
 class _DeletionWorker(QThread):
@@ -120,14 +122,31 @@ class DeletionPanel(QWidget):
         actions.addWidget(self.approve)
         actions.addWidget(self.reject)
         layout.addLayout(actions)
+        # Hub users file requests while the console is open; pick them up without "Обновить".
+        self.poll = QTimer(self)
+        self.poll.setInterval(POLL_INTERVAL_MS)
+        self.poll.timeout.connect(self._poll)
 
-    def reload(self) -> None:
-        if self.admin._services is None or not hasattr(self.admin._services, "engine"):
+    def _poll(self) -> None:
+        if self.admin._deletion_busy or self.admin._services is None:
             return
+        try:
+            self.reload(quiet=True)
+        except Exception:  # noqa: BLE001 - background refresh must never crash the console
+            pass
+
+    def reload(self, *, quiet: bool = False) -> None:
+        if self.admin._services is None or not hasattr(self.admin._services, "engine"):
+            self.poll.stop()
+            return
+        self.poll.start()
+        selected = self._selected_request_id()
         try:
             ensure_deletion_schema(self.admin._services.engine)
             self.rows = DeletionRequests(self.admin._services.engine).list()
         except Exception as exc:  # noqa: BLE001 - UI boundary
+            if quiet:
+                return
             self.rows = []
             self.table.setRowCount(0)
             self._set_checked(False)
@@ -137,8 +156,23 @@ class DeletionPanel(QWidget):
             )
             return
         self._show_rows()
+        self._restore_selection(selected)
         self._set_checked(DeletionPolicy(self.admin._services.engine).enabled())
         self._start_auto()
+
+    def _selected_request_id(self) -> str | None:
+        index = self.table.currentRow()
+        if 0 <= index < len(self.rows):
+            return str(self.rows[index]["request_id"])
+        return None
+
+    def _restore_selection(self, request_id: str | None) -> None:
+        if request_id is None:
+            return
+        for index, row in enumerate(self.rows):
+            if str(row["request_id"]) == request_id:
+                self.table.setCurrentCell(index, 0)
+                return
 
     def _show_rows(self) -> None:
         labels = {"pending": "Ожидает подтверждения", "deleting": "Удаляется", "failed": "Ошибка — можно продолжить",

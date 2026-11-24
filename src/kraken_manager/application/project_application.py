@@ -618,9 +618,16 @@ class ProjectApplication:
         return self._project_operations(project_id).get_work_template(project_id, template_id, version=version)
 
     def history(
-        self, project_id: ProjectId | str, *, as_of: datetime | None = None, event_types: Iterable[str] | None = None
+        self,
+        project_id: ProjectId | str,
+        *,
+        as_of: datetime | None = None,
+        event_types: Iterable[str] | None = None,
+        scope_id: str | None = None,
     ) -> tuple[object, ...]:
-        return self._project_operations(project_id).history(project_id, as_of=as_of, event_types=event_types)
+        return self._project_operations(project_id).history(
+            project_id, as_of=as_of, event_types=event_types, scope_id=scope_id
+        )
 
     def import_stitch_observations(
         self, *, project_id: object, layer_id: object, principal: object, source_path: object, idempotency_key: object

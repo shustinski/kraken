@@ -31,7 +31,7 @@ class ShowLayerPropertiesMixin:
         binding = self.service.layer_file_binding(self._project_id, layer_id)
         events = tuple(
             event
-            for event in self.service.history(self._project_id)
+            for event in self.service.history(self._project_id, scope_id=str(layer_id))
             if _event_belongs_to_layer(event, layer_id)
         )
         created_events = tuple(

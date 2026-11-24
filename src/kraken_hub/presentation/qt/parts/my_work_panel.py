@@ -346,6 +346,21 @@ def _my_work_panel(
         load_error.hide()
         launch_button.setEnabled(True)
 
+    def assigned_ids() -> tuple[str, ...] | None:
+        principal_id = str(getattr(getattr(session, "principal", None), "id", "") or "")
+        if not principal_id:
+            return None
+        return tuple(
+            str(performer.id)
+            for performer in performer_cache
+            if str(getattr(performer, "principal_id", "") or "") == principal_id
+        )
+
+    def load_orders(projects=None):
+        if not hasattr(service, "work_orders"):
+            return ()
+        return service.work_orders(projects=projects, assignee_ids=assigned_ids())
+
     def populate(project_ids: tuple[str, ...] | None = None) -> None:
         nonlocal performer_cache
         full_refresh = project_ids is None or not project_cache or any(pid not in project_cache for pid in project_ids)
@@ -373,14 +388,12 @@ def _my_work_panel(
                 selected = (project,)
                 batches_cache[project_id] = tuple(_call_with_projects(service.review_batches, selected))
                 jobs_cache[project_id] = tuple(_call_with_projects(service.plugin_jobs, selected))
-                orders_cache[project_id] = (
-                    tuple(_call_with_projects(service.work_orders, selected)) if hasattr(service, "work_orders") else ()
-                )
+                orders_cache[project_id] = tuple(_call_with_projects(load_orders, selected))
         if full_refresh and project_rows:
             for cache, method in (
                 (batches_cache, service.review_batches),
                 (jobs_cache, service.plugin_jobs),
-                (orders_cache, getattr(service, "work_orders", None)),
+                (orders_cache, load_orders),
             ):
                 grouped = {project_id: [] for project_id in project_cache}
                 if method is not None:
@@ -402,7 +415,7 @@ def _my_work_panel(
         if not project_rows:
             batches = tuple(_call_with_projects(service.review_batches, project_rows))
             jobs = tuple(_call_with_projects(service.plugin_jobs, project_rows))
-            orders = tuple(_call_with_projects(service.work_orders, project_rows)) if hasattr(service, "work_orders") else ()
+            orders = tuple(_call_with_projects(load_orders, project_rows))
         else:
             batches = tuple(item for rows in batches_cache.values() for item in rows)
             jobs = tuple(item for rows in jobs_cache.values() for item in rows)

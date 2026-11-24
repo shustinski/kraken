@@ -373,6 +373,7 @@ class PostgresEventStore:
         end: datetime | None = None,
         event_types: Sequence[str] | None = None,
         stream_id: str | None = None,
+        scope_id: str | None = None,
     ) -> tuple[tuple[int, EventEnvelope], ...]:
         """Cursor-friendly history across every stream of one project."""
         if after_position < 0:
@@ -391,6 +392,11 @@ class PostgresEventStore:
             statement = statement.where(self.events.c.event_type.in_(selected))
         if stream_id is not None:
             statement = statement.where(self.events.c.stream_id == stream_id)
+        if scope_id:
+            statement = statement.where(sa.or_(
+                self.events.c.stream_id.contains(scope_id),
+                sa.cast(self.events.c.payload, sa.Text).contains(scope_id),
+            ))
         if as_of is not None:
             statement = statement.where(self.events.c.recorded_at <= as_of)
         if start is not None:

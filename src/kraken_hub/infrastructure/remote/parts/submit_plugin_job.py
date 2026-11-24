@@ -160,18 +160,21 @@ class SubmitPluginJobMixin:
         return True
 
     def history(
-        self, project_id: object, *, as_of: datetime | None = None, event_types=None
+        self, project_id: object, *, as_of: datetime | None = None, event_types=None, scope_id: str | None = None
     ) -> tuple[object, ...]:
+        from kraken_manager.domain.history_scope import event_mentions
+
         selected = None if event_types is None else tuple(event_types)
         allowed = None if selected is None else frozenset(selected)
-        events = self._history_pages(project_id, cursor=None, event_types=selected)
+        events = self._history_pages(project_id, cursor=None, event_types=selected, scope_id=scope_id)
         return tuple(
             event for event in events
             if (as_of is None or event.recorded_at <= as_of)
             and (allowed is None or event.event_type in allowed)
+            and (scope_id is None or event_mentions(event, scope_id))
         )
 
-    def history_since(self, project_id: object, position: int) -> tuple[object, ...]:
+    def history_since(self, project_id: object, position: int, *, scope_id: str | None = None) -> tuple[object, ...]:
         """Fetch events after a position already displayed by a remote monitor."""
         if position < 0:
             raise ValueError("History position must not be negative")
@@ -179,10 +182,10 @@ class SubmitPluginJobMixin:
         if position:
             raw = json.dumps({"position": position}, separators=(",", ":")).encode()
             cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
-        return self._history_pages(project_id, cursor=cursor)
+        return self._history_pages(project_id, cursor=cursor, scope_id=scope_id)
 
     def _history_pages(
-        self, project_id: object, *, cursor: str | None, event_types=None
+        self, project_id: object, *, cursor: str | None, event_types=None, scope_id: str | None = None
     ) -> tuple[_RemoteHistoryEvent, ...]:
         events = []
         while True:
@@ -191,6 +194,8 @@ class SubmitPluginJobMixin:
                 pairs.append(("cursor", cursor))
             if event_types:
                 pairs.extend(("event_type", str(item)) for item in event_types)
+            if scope_id:
+                pairs.append(("scope_id", str(scope_id)))
             query = urllib.parse.urlencode(pairs)
             payload = self._call(
                 "GET", f"/api/v1/projects/{project_id}/history?{query}"

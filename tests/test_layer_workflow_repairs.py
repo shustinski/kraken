@@ -408,7 +408,7 @@ def test_pipeline_uses_applied_parameters_and_human_titles():
     controller = object.__new__(DesktopController)
     controller.service = SimpleNamespace(
         list_representations=lambda *_: (source,),
-        history=lambda *_: events,
+        history=lambda *_args, **_kwargs: events,
         latest_karakal_analysis=lambda *_: None,
         list_derived_runs=lambda *_: (),
     )
@@ -462,7 +462,7 @@ def test_training_job_edge_uses_published_dataset_version():
     )
     controller = object.__new__(DesktopController)
     controller.service = SimpleNamespace(
-        list_representations=lambda *_: (source,), history=lambda *_: events,
+        list_representations=lambda *_: (source,), history=lambda *_args, **_kwargs: events,
         latest_karakal_analysis=lambda *_: None, list_derived_runs=lambda *_: (),
     )
 
@@ -513,7 +513,7 @@ def test_binarization_depends_on_source_and_matching_trained_model():
     )
     controller = object.__new__(DesktopController)
     controller.service = SimpleNamespace(
-        list_representations=lambda *_: (source, binary), history=lambda *_: events,
+        list_representations=lambda *_: (source, binary), history=lambda *_args, **_kwargs: events,
         latest_karakal_analysis=lambda *_: None, list_derived_runs=lambda *_: (),
     )
 

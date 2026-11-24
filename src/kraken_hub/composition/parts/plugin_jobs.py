@@ -52,13 +52,18 @@ class PluginJobsMixin:
     def history(
         self, project_id: ProjectId | str, *, as_of: datetime | None = None,
         event_types: Iterable[str] | None = None,
+        scope_id: str | None = None,
     ) -> tuple[object, ...]:
+        from kraken_manager.domain.history_scope import event_mentions
+
         store = FilesystemEventStore(self.catalog_root, str(project_id))
         events = []
         for stored in store.iter_project(event_types=event_types):
             event = store._decode(stored)
             if isinstance(event, StoredEvent):
                 event = GenericHistoryEvent.from_stored(event)
+            if scope_id is not None and not event_mentions(event, scope_id):
+                continue
             if as_of is None or event.recorded_at <= as_of:
                 events.append(event)
         return tuple(events)

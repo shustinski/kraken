@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,11 +28,17 @@ class IssueWorkMixin:
             payload={"expected_plan_digest": expected_plan_digest}, idempotency_key=idempotency_key,
             timeout=max(180, self._http.timeout))
 
-    def work_orders(self, *, projects: Iterable[object] | None = None) -> tuple[WorkOrder, ...]:
+    def work_orders(
+        self, *, projects: Iterable[object] | None = None, assignee_ids: Iterable[object] | None = None
+    ) -> tuple[WorkOrder, ...]:
         orders: list[WorkOrder] = []
         selected = self.list_projects(include_archived=True) if projects is None else projects
+        assignees = None if assignee_ids is None else tuple(str(item) for item in assignee_ids)
+        if assignees is not None and not assignees:
+            return ()
         for project in selected:
-            payload = self._call("GET", f"/api/v1/projects/{project.id}/work-orders")
+            query = "" if not assignees else "?" + urllib.parse.urlencode([("assignee_id", item) for item in assignees])
+            payload = self._call("GET", f"/api/v1/projects/{project.id}/work-orders{query}")
             items = payload.get("items", ()) if isinstance(payload, Mapping) else ()
             orders.extend(decode_model(WorkOrder, item) for item in items if isinstance(item, Mapping))
         return tuple(sorted(orders, key=lambda item: (item.updated_at, item.id), reverse=True))
@@ -198,7 +205,11 @@ class IssueWorkMixin:
         if not vector_representation_id or not hasattr(self, "history"):
             return ()
         ordered = review_image_ids(
-            self.history(project_id, event_types=("LayerPipelineActionRequested",)),
+            self.history(
+                project_id,
+                event_types=("LayerPipelineActionRequested",),
+                scope_id=str(vector_representation_id),
+            ),
             (str(vector_representation_id),),
         )
         names = {}

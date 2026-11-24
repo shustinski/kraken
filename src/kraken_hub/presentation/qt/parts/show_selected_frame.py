@@ -46,7 +46,7 @@ class ShowSelectedFrameMixin:
         vector = next((item for item in representations if str(item.id) == vector_id), None)
         events = tuple(
             event
-            for event in self.service.history(project_id)
+            for event in (self.service.history(project_id, scope_id=frame_id) if frame_id else ())
             if frame_id and frame_id in str(_event_payload(event))
         )
         principals = {

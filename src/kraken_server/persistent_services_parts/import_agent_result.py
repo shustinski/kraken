@@ -259,16 +259,25 @@ class ImportAgentResultMixin:
         cursor: str | None,
         limit: int,
         event_types: Sequence[str] | None = None,
+        scope_id: str | None = None,
     ) -> dict[str, Any]:
+        from kraken_manager.domain.history_scope import require_scope_id
+
         self.get_project(project_id)
         if limit < 1 or limit > 500:
             raise ValidationError("History limit must be between 1 and 500")
+        if scope_id is not None:
+            try:
+                scope_id = require_scope_id(scope_id)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         after = self._decode_cursor(cursor)
         rows = self.events.list_project_events(
             _project_id(project_id),
             after_position=after,
             limit=limit + 1,
             event_types=event_types,
+            scope_id=scope_id,
         )
         has_more = len(rows) > limit
         page = rows[:limit]

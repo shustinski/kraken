@@ -199,6 +199,7 @@ class MutateReviewBatchMixin:
         *,
         event_types: tuple[str, ...] | None = None,
         as_of: datetime | None = None,
+        scope_id: str | None = None,
     ) -> Iterator[EventEnvelope]:
         after = 0
         while True:
@@ -208,6 +209,7 @@ class MutateReviewBatchMixin:
                 limit=500,
                 event_types=event_types,
                 as_of=as_of,
+                scope_id=scope_id,
             )
             if not page:
                 return

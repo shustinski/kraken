@@ -39,13 +39,16 @@ class MatrixViewportMixin:
         _layer_id(layer_id)
         validate_uuid(str(representation_id), field="representation_id")
 
-        def history(identifier, *, as_of=None, event_types=None):
+        def history(identifier, *, as_of=None, event_types=None, scope_id=None):
             selected = None if event_types is None else tuple(event_types)
             return tuple(
                 event
-                for event in self._pipeline_events(str(identifier), event_types=selected, as_of=as_of)
+                for event in self._pipeline_events(
+                    str(identifier), event_types=selected, as_of=as_of, scope_id=scope_id
+                )
                 if (as_of is None or event.recorded_at <= as_of)
                 and (selected is None or event.event_type in selected)
+                and (scope_id is None or scope_id in str(getattr(event, "stream_id", "")) or scope_id in str(event.payload))
             )
 
         store = getattr(self, "performer_store", None)

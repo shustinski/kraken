@@ -105,7 +105,9 @@ class GatewayJobMixin:
             self.cancel_agent_job(job)
         creation = next(
             event
-            for event in self.service.history(job.project_id)
+            for event in self.service.history(
+                job.project_id, scope_id=str(job.id), event_types=("PluginJobCreated",)
+            )
             if event.event_type == "PluginJobCreated" and str(event.payload.get("plugin_job_id", "")) == str(job.id)
         )
         self.service.remove_layer_pipeline_action(

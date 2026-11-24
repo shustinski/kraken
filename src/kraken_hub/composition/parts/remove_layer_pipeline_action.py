@@ -40,6 +40,7 @@ class RemoveLayerPipelineActionMixin:
         relevant = self.history(
             project.id,
             event_types=("LayerPipelineActionRequested", "PluginJobCreated", "LayerPipelineActionRemoved"),
+            scope_id=str(layer_id),
         )
         target = next(
             (

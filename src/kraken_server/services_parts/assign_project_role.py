@@ -96,7 +96,13 @@ class AssignProjectRoleMixin(Protocol):
     ) -> dict[str, Any]: ...
 
     def history(
-        self, project_id: str, *, cursor: str | None, limit: int, event_types: Iterable[str] | None = None
+        self,
+        project_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+        event_types: Iterable[str] | None = None,
+        scope_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     def stream_revision(self, project_id: str, stream_id: str) -> int: ...

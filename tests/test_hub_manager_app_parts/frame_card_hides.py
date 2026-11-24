@@ -47,7 +47,7 @@ def test_frame_card_hides_mutating_actions_without_permissions() -> None:
             return ()
 
         @staticmethod
-        def history(_project_id):
+        def history(_project_id, **_kwargs):
             return ()
 
         @staticmethod

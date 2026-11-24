@@ -40,11 +40,18 @@ class IssueWorkMixin:
             expected_plan_digest=expected_plan_digest, idempotency_key=idempotency_key,
             commit=lambda unit: unit.commit_events_and_rebuild())
 
-    def work_orders(self, *, projects: Iterable[object] | None = None) -> tuple[WorkOrder, ...]:
+    def work_orders(
+        self, *, projects: Iterable[object] | None = None, assignee_ids: Iterable[object] | None = None
+    ) -> tuple[WorkOrder, ...]:
         orders: dict[str, WorkOrder] = {}
         selected = self.list_projects(include_archived=True) if projects is None else projects
+        allowed = None if assignee_ids is None else {str(item) for item in assignee_ids}
+        if allowed is not None and not allowed:
+            return ()
         for project in selected:
             for order in self._projection(project.id).list_work_orders(project.id):
+                if allowed is not None and str(order.assignee_id) not in allowed:
+                    continue
                 orders[str(order.id)] = order
         return tuple(sorted(orders.values(), key=lambda item: (item.updated_at, item.id), reverse=True))
 
@@ -389,7 +396,11 @@ class IssueWorkMixin:
         if not vector_representation_id:
             return ()
         ordered = review_image_ids(
-            self.history(project_id, event_types=("LayerPipelineActionRequested",)),
+            self.history(
+                project_id,
+                event_types=("LayerPipelineActionRequested",),
+                scope_id=str(vector_representation_id),
+            ),
             (str(vector_representation_id),),
         )
         names = {}

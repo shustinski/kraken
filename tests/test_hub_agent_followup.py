@@ -31,7 +31,7 @@ class _Service:
         self.sync_calls += 1
         return self.jobs
 
-    def work_orders(self, *, projects=None):
+    def work_orders(self, *, projects=None, assignee_ids=None):
         return ()
 
 
@@ -291,7 +291,7 @@ def test_my_work_signal_reads_only_changed_project(qtbot):
             calls.append(("jobs", projects[0].id))
             return ()
 
-        def work_orders(self, *, projects=None):
+        def work_orders(self, *, projects=None, assignee_ids=None):
             calls.append(("orders", projects[0].id))
             return ()
 

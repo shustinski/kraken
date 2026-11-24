@@ -344,9 +344,9 @@ class LayerPipelineDialog(QDialog):
         positions = [getattr(event, "position", None) for event in self._history]
         load_since = getattr(self.service, "history_since", None)
         if self._change_bus is not None and positions and all(position is not None for position in positions) and callable(load_since):
-            history = (*self._history, *load_since(self.project_id, max(positions)))
+            history = (*self._history, *load_since(self.project_id, max(positions), scope_id=str(self.layer_id)))
         else:
-            history = self.service.history(self.project_id)
+            history = self.service.history(self.project_id, scope_id=str(self.layer_id))
         try:
             state = self.service.get_layer_pipeline(self.project_id, self.layer_id)
         except Exception as exc:

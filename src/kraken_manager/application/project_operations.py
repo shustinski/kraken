@@ -777,7 +777,12 @@ class HistoryOperations(Protocol):
     def activity_records(self) -> tuple[ActivityRecord, ...]: ...
 
     def history(
-        self, project_id: ProjectId | str, *, as_of: datetime | None = ..., event_types: Iterable[str] | None = ...
+        self,
+        project_id: ProjectId | str,
+        *,
+        as_of: datetime | None = ...,
+        event_types: Iterable[str] | None = ...,
+        scope_id: str | None = ...,
     ) -> tuple[object, ...]: ...
 
     def latest_karakal_analysis(

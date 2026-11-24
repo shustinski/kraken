@@ -27,7 +27,7 @@ class ShowFrameFilePropertiesMixin:
         versions = self.service.artifact_versions(project_id, series.id)
         history = tuple(
             event
-            for event in self.service.history(project_id)
+            for event in self.service.history(project_id, scope_id=str(series.id))
             if str(series.id) in str(_event_payload(event))
         )
 

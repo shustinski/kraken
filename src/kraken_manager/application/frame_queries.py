@@ -172,7 +172,12 @@ def latest_karakal_analysis(history, project_id, layer_id, *, as_of=None) -> Kar
     event = next(
         (
             item
-            for item in reversed(history(project_id, as_of=as_of, event_types=("KarakalAnalysisPublished",)))
+            for item in reversed(history(
+                project_id,
+                as_of=as_of,
+                event_types=("KarakalAnalysisPublished",),
+                scope_id=str(layer_id),
+            ))
             if item.event_type == "KarakalAnalysisPublished" and str(item.payload.get("layer_id", "")) == str(layer_id)
         ),
         None,

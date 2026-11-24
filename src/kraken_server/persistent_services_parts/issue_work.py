@@ -67,11 +67,15 @@ class IssueWorkMixin:
             self._translate_lifecycle_error(error)
             raise
 
-    def list_work_orders(self, project_id: str) -> list[dict[str, Any]]:
+    def list_work_orders(self, project_id: str, assignee_ids: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         project = self.projections.get_project(_project_id(project_id))
         if project is None:
             raise NotFoundError("Project was not found")
-        return [encode_model(order) for order in self.projections.list_work_orders(project.id)]
+        allowed = None if assignee_ids is None else {str(item) for item in assignee_ids}
+        orders = self.projections.list_work_orders(project.id)
+        if allowed is not None:
+            orders = tuple(order for order in orders if str(order.assignee_id) in allowed)
+        return [encode_model(order) for order in orders]
 
     @guarded_storage
     def issue_work_order(self, project_id: str, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:

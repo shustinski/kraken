@@ -55,7 +55,7 @@ def _job_snapshot(*, state: str, applied: dict | None = None):
     )
     controller = object.__new__(DesktopController)
     controller.service = SimpleNamespace(
-        history=lambda *_: tuple(events),
+        history=lambda *_args, **_kwargs: tuple(events),
         list_representations=lambda *_: (),
         list_derived_runs=lambda *_: (),
     )
@@ -241,7 +241,7 @@ def test_file_properties_keep_versions_and_export_action():
     controller.service = SimpleNamespace(
         list_principals=lambda **_: (SimpleNamespace(id="author-1", display_name="Mark"),),
         artifact_versions=lambda *_: (version,),
-        history=lambda *_: (),
+        history=lambda *_args, **_kwargs: (),
     )
     snapshots = []
     controller._open_properties = snapshots.append

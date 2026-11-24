@@ -38,7 +38,7 @@ _STATE_TITLES = {
 class PipelineSnapshotMixin:
     def _pipeline_snapshot(self, project_id, layer_id) -> LayerPipelineSnapshot:
         representations = self.service.list_representations(project_id, layer_id)
-        project_history = self.service.history(project_id)
+        project_history = self.service.history(project_id, scope_id=str(layer_id))
         histories = [
             event
             for event in project_history
@@ -132,13 +132,14 @@ class PipelineSnapshotMixin:
         vectors = [value for value in representations if value.kind is RepresentationKind.VECTOR]
         from kraken_manager.application.frame_queries import latest_karakal_analysis
 
-        def recorded_history(_project_id, *, as_of=None, event_types=None):
+        def recorded_history(_project_id, *, as_of=None, event_types=None, scope_id=None):
             allowed = None if event_types is None else frozenset(event_types)
             return tuple(
                 event
                 for event in project_history
                 if (as_of is None or event.recorded_at <= as_of)
                 and (allowed is None or event.event_type in allowed)
+                and (scope_id is None or scope_id in str(getattr(event, "stream_id", "")) or scope_id in str(getattr(event, "payload", "")))
             )
 
         karakal_run = latest_karakal_analysis(recorded_history, project_id, layer_id)

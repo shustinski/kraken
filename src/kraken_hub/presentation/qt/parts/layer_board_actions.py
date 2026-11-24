@@ -33,7 +33,12 @@ class LayerBoardActionsMixin:
 
         vector_id = str(node.representation_id or node.node_id)
         images = self._board_image_choices()
-        saved = review_image_ids(self.service.history(self._project_id), (vector_id,))
+        saved = review_image_ids(
+            self.service.history(
+                self._project_id, scope_id=str(layer_id), event_types=("LayerPipelineActionRequested",)
+            ),
+            (vector_id,),
+        )
         layer = next(
             (item for item in self.service.list_layers(self._project_id) if str(item.id) == str(layer_id)),
             None,
@@ -196,7 +201,12 @@ class LayerBoardActionsMixin:
             for representation_id in selected_ids:
                 exported += self._export_representation_files(representation_id, destination)
             vector_ids = [str(node.representation_id) for node in nodes if node.kind == "vector" and node.representation_id]
-            ordered = review_image_ids(self.service.history(self._project_id), vector_ids)
+            ordered = review_image_ids(
+                self.service.history(
+                    self._project_id, scope_id=str(layer_id), event_types=("LayerPipelineActionRequested",)
+                ),
+                vector_ids,
+            )
             names = {
                 identifier: tuple(label.split(" — ", 1)) if " — " in label else ("слой", label)
                 for identifier, label in self._board_image_choices()

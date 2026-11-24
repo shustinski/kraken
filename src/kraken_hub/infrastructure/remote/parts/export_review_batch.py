@@ -81,7 +81,9 @@ class ExportReviewBatchMixin:
 
     def review_candidate_version_ids(self, batch: ReviewBatch) -> tuple[object, ...]:
         latest_by_series: dict[str, object] = {}
-        for event in self.history(batch.project_id, event_types=("ReviewReturnCommitted",)):
+        for event in self.history(
+            batch.project_id, event_types=("ReviewReturnCommitted",), scope_id=str(batch.id)
+        ):
             if event.event_type != "ReviewReturnCommitted" or str(
                 event.payload.get("review_batch_id", "")
             ) != str(batch.id):

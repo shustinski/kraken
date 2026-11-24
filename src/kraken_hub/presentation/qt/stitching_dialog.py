@@ -76,7 +76,9 @@ class StitchingDialog(QDialog):
         service = self._controller.service
         available = {str(s.id): s for s in service.list_artifact_series(self._project_id, layer_id=self._layer_id)}
         statuses = {}
-        for event in service.history(self._project_id):
+        for event in service.history(
+            self._project_id, scope_id=self._layer_id, event_types=("LayerStitchingStatusChangedV1",)
+        ):
             if (
                 event.event_type == "LayerStitchingStatusChangedV1"
                 and str(event.payload.get("layer_id")) == self._layer_id

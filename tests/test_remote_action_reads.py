@@ -91,6 +91,53 @@ def test_plugin_job_reads_one_job():
     assert client.calls == [("GET", f"/api/v1/projects/{_PROJECT_ID}/jobs/{_JOB_ID}")]
 
 
+def test_history_requests_only_the_named_scope():
+    class Client(SubmitPluginJobMixin):
+        def __init__(self) -> None:
+            self.paths: list[str] = []
+
+        def _call(self, method, path):
+            self.paths.append(path)
+            return {"items": [], "next_cursor": None}
+
+    client = Client()
+    assert client.history("project", scope_id="layer-1") == ()
+    assert parse_qs(urlsplit(client.paths[0]).query)["scope_id"] == ["layer-1"]
+
+
+def test_pipeline_snapshot_requests_the_layer_history():
+    from types import SimpleNamespace
+
+    from kraken_hub.presentation.qt.parts.pipeline_snapshot import PipelineSnapshotMixin
+
+    calls = []
+
+    def history(project_id, **kwargs):
+        calls.append((project_id, kwargs))
+        return ()
+
+    snapshot = PipelineSnapshotMixin()
+    snapshot.service = SimpleNamespace(
+        list_representations=lambda *_args: (),
+        history=history,
+        list_derived_runs=lambda *_args: (),
+        list_artifact_series=lambda *_args, **_kwargs: (),
+    )
+    snapshot._pipeline_snapshot("project", "layer-1")
+    assert calls == [("project", {"scope_id": "layer-1"})]
+
+
+def test_memory_history_returns_only_the_requested_scope():
+    service = InMemoryServerServices()
+    service._projects["project"] = {"name": "Project", "state": "active"}
+    service._events["project"] = [
+        {"event_id": "1", "event_type": "LayerPipelineActionRequested", "stream_id": "layer-pipeline:layer-1", "payload": {"layer_id": "layer-1"}},
+        {"event_id": "2", "event_type": "PluginJobCreated", "stream_id": "job:other", "payload": {"manifest": {"layer_id": "layer-2"}}},
+    ]
+    page = service.history("project", cursor=None, limit=10, scope_id="layer-1")
+    assert [item["event_id"] for item in page["items"]] == ["1"]
+
+
 def test_memory_history_returns_only_requested_event_types():
     service = InMemoryServerServices()
     service._projects["project"] = {"name": "Project", "state": "active"}

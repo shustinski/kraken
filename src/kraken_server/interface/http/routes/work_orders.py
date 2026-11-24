@@ -16,14 +16,23 @@ def register(ctx: HttpContext) -> None:
     heavy_operations = ctx.heavy_operations
     Depends = ctx.Depends
     Header = ctx.Header
+    Query = ctx.Query
     run_in_threadpool = ctx.run_in_threadpool
     shared_mutation_actor = ctx.shared_mutation_actor
     project_reader = ctx.project_reader
     command_context = ctx.command_context
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/work-orders")
-    def list_work_orders(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
-        return {"items": backend.list_work_orders(project_id)}
+    def list_work_orders(
+        project_id: str,
+        assignee_id: list[str] | None = Query(default=None),
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        return {
+            "items": backend.list_work_orders(
+                project_id, assignee_ids=None if not assignee_id else tuple(assignee_id)
+            )
+        }
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders", status_code=201)
     def issue_work_order(

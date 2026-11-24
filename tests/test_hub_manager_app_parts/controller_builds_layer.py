@@ -82,7 +82,7 @@ def test_controller_builds_layer_and_representation_properties(tmp_path: Path) -
             return binding
 
         @staticmethod
-        def history(_project_id):
+        def history(_project_id, **_kwargs):
             return events
 
         @staticmethod

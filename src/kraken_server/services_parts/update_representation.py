@@ -112,17 +112,26 @@ class UpdateRepresentationMixin:
         cursor: str | None,
         limit: int,
         event_types: Iterable[str] | None = None,
+        scope_id: str | None = None,
     ) -> dict[str, Any]:
+        from kraken_manager.domain.history_scope import event_mentions, require_scope_id
+
         self.get_project(project_id)
         if limit < 1 or limit > 500:
             raise ValidationError("History limit must be between 1 and 500")
+        if scope_id is not None:
+            try:
+                scope_id = require_scope_id(scope_id)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
         offset = self._decode_cursor(cursor)
         allowed = None if event_types is None else frozenset(event_types)
         with self._lock:
             events = [
                 item
                 for item in self._events[project_id]
-                if allowed is None or item.get("event_type") in allowed
+                if (allowed is None or item.get("event_type") in allowed)
+                and (scope_id is None or event_mentions(item, scope_id))
             ]
             page = [dict(item) for item in events[offset : offset + limit]]
         next_offset = offset + len(page)

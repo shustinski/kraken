@@ -469,10 +469,14 @@ class DualCatalogService(ProjectApplication):
         remote_projects = tuple(project for project in selected if self.is_remote_project(project.id))
         return local_projects, remote_projects
 
-    def work_orders(self, *, projects: Iterable[Project] | None = None):
+    def work_orders(self, *, projects: Iterable[Project] | None = None, assignee_ids: Iterable[object] | None = None):
         local_projects, remote_projects = self._scoped_projects(projects)
-        local_orders = list(self.local.work_orders(projects=local_projects))
-        remote_orders = [] if self.remote is None else list(self.remote.work_orders(projects=remote_projects))
+        local_orders = list(self.local.work_orders(projects=local_projects, assignee_ids=assignee_ids))
+        remote_orders = (
+            []
+            if self.remote is None
+            else list(self.remote.work_orders(projects=remote_projects, assignee_ids=assignee_ids))
+        )
         return tuple(sorted((*local_orders, *remote_orders), key=lambda item: (item.updated_at, item.id), reverse=True))
 
     def dispatch_stitch(self, **kwargs):

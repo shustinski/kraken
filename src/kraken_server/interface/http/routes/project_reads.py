@@ -116,6 +116,7 @@ def register(ctx: HttpContext) -> None:
         cursor: str | None = None,
         limit: int = Query(default=100, ge=1, le=500),
         event_type: list[str] | None = Query(default=None),
+        scope_id: str | None = None,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
         return backend.history(
@@ -123,6 +124,7 @@ def register(ctx: HttpContext) -> None:
             cursor=cursor,
             limit=limit,
             event_types=None if not event_type else tuple(event_type),
+            scope_id=scope_id,
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/stream-revision")

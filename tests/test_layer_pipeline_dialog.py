@@ -75,7 +75,7 @@ def test_remote_workflow_uses_signal_and_incremental_history(qtbot, tmp_path, mo
     incremental_reads = []
     original_history = local.history
 
-    def history(project_id):
+    def history(project_id, **_kwargs):
         full_reads.append(project_id)
         class Positioned:
             def __init__(self, event, position):

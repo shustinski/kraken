@@ -97,7 +97,7 @@ def test_controller_builds_derived_job_karakal_and_virtual_properties(tmp_path: 
 
     class Service:
         @staticmethod
-        def history(_project_id):
+        def history(_project_id, **_kwargs):
             return events
 
         @staticmethod

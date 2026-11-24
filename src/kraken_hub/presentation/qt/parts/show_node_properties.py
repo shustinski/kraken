@@ -53,7 +53,7 @@ class ShowNodePropertiesMixin:
             raise
 
     def _node_properties_snapshot(self, layer_id: str, node: PipelineNode) -> ObjectPropertiesSnapshot:
-        project_history = tuple(self.service.history(self._project_id))
+        project_history = tuple(self.service.history(self._project_id, scope_id=str(layer_id)))
         snapshot = self._pipeline_snapshot(self._project_id, layer_id)
         if node.kind == "blackbox":
             lane_id = str(node.node_id).removesuffix(":blackbox")

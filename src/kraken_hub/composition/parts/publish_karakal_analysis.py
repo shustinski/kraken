@@ -46,7 +46,9 @@ class PublishKarakalAnalysisMixin:
         prior = next(
             (
                 event
-                for event in reversed(self.history(project.id, event_types=("KarakalAnalysisPublished",)))
+                for event in reversed(self.history(
+                    project.id, event_types=("KarakalAnalysisPublished",), scope_id=str(layer.id)
+                ))
                 if event.event_type == "KarakalAnalysisPublished"
                 and event.idempotency_key == idempotency_key
             ),

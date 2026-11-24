@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 
 from .profiling import (
+    SharedProfile,
     contact_copy_top_lines,
     contact_deletion_top_lines,
     contact_drag_top_lines,
@@ -30,7 +31,7 @@ class SceneZoomProfile:
     initial_zoom: float
     target_zoom: float
     started_at: float = field(default_factory=perf_counter)
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     profiler_active: bool = False
     main_stats_skipped: bool = False
     frame_durations_ms: list[float] = field(default_factory=list)
@@ -122,7 +123,7 @@ class MoveVertexToolActivationProfile:
     polygon_count: int
     vertex_count: int
     started_at: float = field(default_factory=perf_counter)
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     profiler_active: bool = False
     main_stats_skipped: bool = False
     timings_ms: dict[str, float] = field(default_factory=dict)
@@ -186,7 +187,7 @@ class ContactDragProfile:
     polygon_id: int
     contact_count: int
     started_at: float = field(default_factory=perf_counter)
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     profiler_active: bool = False
     main_stats_skipped: bool = False
     frame_durations_ms: list[float] = field(default_factory=list)
@@ -280,11 +281,12 @@ class ContactPlacementProfile:
     """Collect UI- and worker-thread stats for one contact placement."""
 
     started_at: float = field(default_factory=perf_counter)
-    main_profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    main_profiler: cProfile.Profile = field(default_factory=SharedProfile)
     worker_profilers: list[cProfile.Profile] = field(default_factory=list)
     timings_ms: dict[str, float] = field(default_factory=dict)
     main_active: bool = False
     main_stats_skipped: bool = False
+    worker_stats_skipped: bool = False
     preview_request_id: int | None = None
     waiting_for_preview: bool = False
     action: str = "placement"
@@ -306,8 +308,10 @@ class ContactPlacementProfile:
         self.timings_ms[name] = self.elapsed_ms()
 
     def attach_worker(self, profiler: cProfile.Profile, wall_ms: float) -> None:
-        if profiler.getstats():
+        if profiler is not None and profiler.getstats():
             self.worker_profilers.append(profiler)
+        else:
+            self.worker_stats_skipped = True
         self.timings_ms["preview_worker_wall"] = float(wall_ms)
 
     def stop(self) -> None:
@@ -338,6 +342,8 @@ class ContactPlacementProfile:
             for name, value in sorted(self.timings_ms.items())
         )
         skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        if self.worker_stats_skipped:
+            skipped += " worker_cprofile_skipped=yes"
         count = f" contacts={self.contact_count}" if self.contact_count > 0 else ""
         return (
             f"[contour contact {self.action.replace('_', ' ')} profiling] status={status} "
@@ -387,8 +393,10 @@ class ImageRecognitionProfile(ContactPlacementProfile):
     polygon_count: int = 0
 
     def attach_worker(self, profiler: cProfile.Profile, wall_ms: float) -> None:
-        if profiler.getstats():
+        if profiler is not None and profiler.getstats():
             self.worker_profilers.append(profiler)
+        else:
+            self.worker_stats_skipped = True
         self.timings_ms["worker_wall"] = float(wall_ms)
 
     @classmethod
@@ -416,6 +424,8 @@ class ImageRecognitionProfile(ContactPlacementProfile):
             for name, value in sorted(self.timings_ms.items())
         )
         skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        if self.worker_stats_skipped:
+            skipped += " worker_cprofile_skipped=yes"
         return (
             f"[contour image recognition profiling] status={status} "
             f"total={self.elapsed_ms():.3f}ms mode={self.recognition_mode} "

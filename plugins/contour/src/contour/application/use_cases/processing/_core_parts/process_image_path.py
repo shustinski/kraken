@@ -1,6 +1,5 @@
 """_core: process image path."""
 from __future__ import annotations
-import cProfile
 import io
 import pstats
 from collections.abc import Callable
@@ -8,6 +7,7 @@ from typing import Any
 import numpy as np
 from contour.domain import PolygonData
 from .....infrastructure.profiling import (
+    SharedProfile,
     processing_profiling_enabled,
     processing_top_lines,
     try_disable_profiler,
@@ -44,7 +44,7 @@ def process_image_path(
     passthrough_polygons: list[PolygonData] | None = None,
 ) -> BatchImageResult:
     if processing_profiling_enabled():
-        profiler = cProfile.Profile()
+        profiler = SharedProfile()
         profiler_enabled = try_enable_profiler(profiler)
         try:
             return _process_image_path_impl(

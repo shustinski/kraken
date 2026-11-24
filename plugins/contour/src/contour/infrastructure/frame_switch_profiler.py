@@ -10,6 +10,7 @@ from pathlib import Path
 from time import perf_counter
 
 from .profiling import (
+    SharedProfile,
     frame_switch_idle_polls,
     frame_switch_top_lines,
     try_disable_profiler,
@@ -27,7 +28,7 @@ class FrameSwitchProfile:
     image_path: str
     started_at: float
     generation: int
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     worker_profilers: list[tuple[str, cProfile.Profile]] = field(default_factory=list)
     timings_ms: dict[str, float] = field(default_factory=dict)
     pending_since: dict[str, float] = field(default_factory=dict)
@@ -128,7 +129,7 @@ def profile_callable(label: str, profile: FrameSwitchProfile | None, fn, /):
     """Profile background work on the current thread; falls back to wall time if cProfile is busy here."""
     if profile is None:
         return fn()
-    worker = cProfile.Profile()
+    worker = SharedProfile()
     try:
         if try_enable_profiler(worker):
             try:

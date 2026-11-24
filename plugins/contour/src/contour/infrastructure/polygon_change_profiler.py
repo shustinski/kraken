@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 
 from .profiling import (
+    SharedProfile,
     polygon_change_top_lines,
     try_disable_profiler,
     try_enable_profiler,
@@ -22,7 +23,7 @@ class PolygonChangeProfile:
     started_at: float = field(default_factory=perf_counter)
     timings_ms: dict[str, float] = field(default_factory=dict)
     metadata: dict[str, object] = field(default_factory=dict)
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     profiler_active: bool = False
     main_stats_skipped: bool = False
 

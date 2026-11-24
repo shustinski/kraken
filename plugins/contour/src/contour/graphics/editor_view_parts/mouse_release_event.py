@@ -1,6 +1,5 @@
 """editor_view: mouse release event."""
 from __future__ import annotations
-import cProfile
 from time import perf_counter
 from PyQt6.QtCore import (
     QPointF,
@@ -22,6 +21,7 @@ from ...application.vector_geometry_postprocess import (
 from contour.commands import MovePolygonCommand
 from ...domain.polygon_ring import is_valid_closed_polygon_edge_move, is_valid_closed_polygon_vertex_move
 from ...infrastructure.profiling import (
+    SharedProfile,
     try_disable_profiler,
     try_enable_profiler,
     vertex_move_profiling_enabled,
@@ -122,7 +122,7 @@ class MouseReleaseEventMixin:
             ):
                 profile_timings: dict[str, float] = {}
                 profile_total_start = perf_counter()
-                profiler = cProfile.Profile() if vertex_move_profiling_enabled() else None
+                profiler = SharedProfile() if vertex_move_profiling_enabled() else None
                 profiler_enabled = False
                 if profiler is not None:
                     profiler_enabled = try_enable_profiler(profiler)

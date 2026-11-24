@@ -50,7 +50,7 @@ class FrameSwitchProfilerTests(unittest.TestCase):
         self.assertTrue(session.claim_finalization())
         self.assertFalse(session.claim_finalization())
 
-    def test_profile_callable_uses_wall_time_when_main_profiler_active(self) -> None:
+    def test_profile_callable_collects_cprofile_while_main_profiler_active(self) -> None:
         session = FrameSwitchProfile.begin("frame.png", generation=1)
         session.enable_main_profiler()
         try:
@@ -59,8 +59,8 @@ class FrameSwitchProfilerTests(unittest.TestCase):
                 return sum(range(100))
 
             self.assertEqual(profile_callable("worker_nested", session, work), 4950)
-            self.assertEqual(len(session.worker_profilers), 0)
-            self.assertIn("worker_worker_nested_wall", session.timings_ms)
+            self.assertEqual(len(session.worker_profilers), 1)
+            self.assertNotIn("worker_worker_nested_wall", session.timings_ms)
         finally:
             session.disable_main_profiler()
 

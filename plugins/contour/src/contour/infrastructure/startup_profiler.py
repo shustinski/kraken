@@ -11,6 +11,7 @@ from time import perf_counter
 from typing import Literal, TypeVar
 
 from .profiling import (
+    SharedProfile,
     startup_profiling_enabled,
     startup_top_lines,
     try_disable_profiler,
@@ -24,7 +25,7 @@ _ResultT = TypeVar("_ResultT")
 @dataclass
 class StartupProfile:
     started_at: float
-    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler: cProfile.Profile = field(default_factory=SharedProfile)
     timings_ms: dict[str, float] = field(default_factory=dict)
     profiling_active: bool = False
     stats_skipped: bool = False

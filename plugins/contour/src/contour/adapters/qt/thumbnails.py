@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from ...infrastructure.profiling import (
+    SharedProfile,
     thumbnail_full_function_usage_enabled,
     thumbnail_profiling_enabled,
     thumbnail_top_lines,
@@ -196,7 +197,7 @@ class ThumbnailLoadRunnable(QRunnable):
         profiler: cProfile.Profile | None = None
         try:
             if profiling_enabled:
-                candidate = cProfile.Profile()
+                candidate = SharedProfile()
                 if try_enable_profiler(candidate):
                     profiler = candidate
                     try:

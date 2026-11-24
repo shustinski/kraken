@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import cProfile
 import logging
 import threading
 from time import perf_counter
@@ -18,6 +17,7 @@ from ...application.use_cases.processing import (
     process_image_path,
 )
 from ...infrastructure.filter_application_profiler import FilterApplicationProfile
+from ...infrastructure.profiling import SharedProfile
 from .image_conversion import cv_to_qimage
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,7 +100,7 @@ class PreviewProcessingRunnable(QRunnable):
         self.signals = PreviewProcessingSignals()
 
     def run(self) -> None:
-        profiler = cProfile.Profile() if self._profile else None
+        profiler = SharedProfile() if self._profile else None
         profiler_active = False
         profile_emitted = False
         started_at = perf_counter()
@@ -116,12 +116,12 @@ class PreviewProcessingRunnable(QRunnable):
                     pass
                 profiler_active = False
             profile_emitted = True
-            if profiler.getstats():
-                self.signals.profile.emit(
-                    self.request_id,
-                    profiler,
-                    (perf_counter() - started_at) * 1000.0,
-                )
+            # Emit even without stats: the session still needs the worker wall time.
+            self.signals.profile.emit(
+                self.request_id,
+                profiler,
+                (perf_counter() - started_at) * 1000.0,
+            )
 
         try:
             if profiler is not None:
@@ -129,7 +129,7 @@ class PreviewProcessingRunnable(QRunnable):
                     profiler.enable()
                     profiler_active = True
                 except ValueError:
-                    profiler = None
+                    pass
             with use_preview_cancellation_event(self._cancel):
                 result = process_image_path(
                     image_path=self.request.image_path,

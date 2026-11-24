@@ -9,6 +9,7 @@ from PyQt6.QtCore import (
     QRectF,
 )
 from ...infrastructure.profiling import (
+    SharedProfile,
     delete_area_profiling_enabled,
     delete_area_top_lines,
     try_disable_profiler,
@@ -48,7 +49,7 @@ class CommitDeleteVerticesInMixin:
         profiling_enabled = delete_area_profiling_enabled()
         profile_timings: dict[str, float] = {}
         profile_total_start = perf_counter()
-        profiler = cProfile.Profile() if profiling_enabled else None
+        profiler = SharedProfile() if profiling_enabled else None
         profiler_enabled = False
         if profiler is not None:
             profiler_enabled = try_enable_profiler(profiler)

@@ -113,6 +113,151 @@ def profiler_enable_conflict(exc: BaseException) -> bool:
     )
 
 
+# Since CPython 3.12 cProfile runs on sys.monitoring: only one profiler can be enabled per
+# process, and it records every thread. Separate per-session/per-thread profilers therefore
+# evict each other (the loser silently gets no data). SharedProfile instead keeps one host
+# profiler enabled while any session needs it and gives each session the stats delta between
+# its own enable() and disable(). Work in any thread during that window is included; a call
+# is counted when it returns, so a call still running at disable() is not in the window yet.
+_HOST_LOCK = Lock()
+_HOST_PROFILER: cProfile.Profile | None = None
+_HOST_LEASES = 0
+
+# code -> [callcount, reccallcount, inlinetime, totaltime, {subcode: [cc, rcc, inline, total]}]
+_StatsSnapshot = dict
+
+
+def _host_snapshot_locked() -> _StatsSnapshot:
+    assert _HOST_PROFILER is not None
+    snapshot: _StatsSnapshot = {}
+    for entry in _HOST_PROFILER.getstats():
+        calls = {
+            sub.code: [sub.callcount, sub.reccallcount, sub.inlinetime, sub.totaltime]
+            for sub in (entry.calls or ())
+        }
+        snapshot[entry.code] = [entry.callcount, entry.reccallcount, entry.inlinetime, entry.totaltime, calls]
+    return snapshot
+
+
+def _host_acquire() -> _StatsSnapshot:
+    global _HOST_PROFILER, _HOST_LEASES
+    with _HOST_LOCK:
+        if _HOST_LEASES == 0:
+            host = cProfile.Profile()
+            host.enable()  # ValueError when a profiler outside SharedProfile holds the slot
+            _HOST_PROFILER = host
+        _HOST_LEASES += 1
+        return _host_snapshot_locked()
+
+
+def _host_release() -> _StatsSnapshot:
+    global _HOST_PROFILER, _HOST_LEASES
+    with _HOST_LOCK:
+        snapshot = _host_snapshot_locked()
+        _HOST_LEASES -= 1
+        if _HOST_LEASES == 0 and _HOST_PROFILER is not None:
+            try:
+                _HOST_PROFILER.disable()
+            except ValueError:
+                pass
+            _HOST_PROFILER = None
+        return snapshot
+
+
+def _host_peek() -> _StatsSnapshot:
+    with _HOST_LOCK:
+        return _host_snapshot_locked() if _HOST_PROFILER is not None else {}
+
+
+def _accumulate_delta(target: _StatsSnapshot, start: _StatsSnapshot, end: _StatsSnapshot) -> None:
+    for code, (nc, rc, inline, total, calls) in end.items():
+        base = start.get(code)
+        if base is not None:
+            nc, rc, inline, total = nc - base[0], rc - base[1], inline - base[2], total - base[3]
+        if nc <= 0:
+            continue
+        acc = target.setdefault(code, [0, 0, 0.0, 0.0, {}])
+        acc[0] += nc
+        acc[1] += rc
+        acc[2] += inline
+        acc[3] += total
+        base_calls = base[4] if base is not None else {}
+        for sub_code, (snc, src, sinline, stotal) in calls.items():
+            sub_base = base_calls.get(sub_code)
+            if sub_base is not None:
+                snc, src, sinline, stotal = (
+                    snc - sub_base[0],
+                    src - sub_base[1],
+                    sinline - sub_base[2],
+                    stotal - sub_base[3],
+                )
+            if snc <= 0:
+                continue
+            sub_acc = acc[4].setdefault(sub_code, [0, 0, 0.0, 0.0])
+            sub_acc[0] += snc
+            sub_acc[1] += src
+            sub_acc[2] += sinline
+            sub_acc[3] += stotal
+
+
+class _Entry:
+    __slots__ = ("callcount", "calls", "code", "inlinetime", "reccallcount", "totaltime")
+
+    def __init__(self, code, callcount, reccallcount, inlinetime, totaltime, calls) -> None:
+        self.code = code
+        self.callcount = callcount
+        self.reccallcount = reccallcount
+        self.inlinetime = inlinetime
+        self.totaltime = totaltime
+        self.calls = calls
+
+
+class SharedProfile(cProfile.Profile):
+    """A session's window onto the process-wide host profiler; a drop-in for cProfile.Profile."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._window_start: _StatsSnapshot | None = None
+        self._collected: _StatsSnapshot = {}
+
+    @property
+    def window_active(self) -> bool:
+        return self._window_start is not None
+
+    def enable(self, *args, **kwargs) -> None:
+        if self._window_start is None:
+            self._window_start = _host_acquire()
+
+    def disable(self) -> None:
+        start = self._window_start
+        if start is None:
+            return
+        self._window_start = None
+        _accumulate_delta(self._collected, start, _host_release())
+
+    def clear(self) -> None:
+        self._collected = {}
+        if self._window_start is not None:
+            self._window_start = _host_peek()
+
+    def getstats(self) -> list:
+        collected: _StatsSnapshot = {}
+        _accumulate_delta(collected, {}, self._collected)
+        if self._window_start is not None:
+            _accumulate_delta(collected, self._window_start, _host_peek())
+        return [
+            _Entry(
+                code,
+                nc,
+                rc,
+                inline,
+                total,
+                [_Entry(sub, *values, None) for sub, values in calls.items()] or None,
+            )
+            for code, (nc, rc, inline, total, calls) in collected.items()
+        ]
+
+
 def try_enable_profiler(profiler: cProfile.Profile) -> bool:
     try:
         profiler.enable()

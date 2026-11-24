@@ -358,6 +358,31 @@ class ContourExtractorFilterTests(unittest.TestCase):
             )
         )
 
+    def test_trace_width_filter_does_not_drop_holes(self) -> None:
+        # A narrow gap enclosed by metal is still a gap: dropping it would fill the
+        # outer conductor solid over it.
+        mask = np.zeros((240, 240), dtype=np.uint8)
+        mask[20:220, 20:220] = 255
+        mask[45:195, 100:103] = 0
+
+        polygons = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                retrieval_mode="RETR_TREE",
+                epsilon=0.0,
+                min_area=60.0,
+                min_perimeter=0.0,
+                min_inner_hole_area=100.0,
+                min_polygon_width_px=8.0,
+            ),
+        )
+
+        holes = [polygon for polygon in polygons if polygon.is_hole]
+        self.assertEqual(len(holes), 1)
+        outer = [polygon for polygon in polygons if not polygon.is_hole]
+        self.assertEqual(len(outer), 1)
+        self.assertEqual(holes[0].parent_id, outer[0].id)
+
 
 class AxisAlignedVertexCompressionTests(unittest.TestCase):
     def test_collapses_more_than_two_vertices_on_same_axis(self) -> None:

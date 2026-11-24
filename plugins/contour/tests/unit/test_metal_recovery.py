@@ -163,6 +163,39 @@ def test_hole_source_contrast_settings_change_accepted_holes() -> None:
     assert permissive.debug_images["metal_filtered_mask"][70, 70] == 0
 
 
+def test_hole_containing_a_conductor_survives_strict_source_contrast() -> None:
+    # The gap holds a separate conductor, so it cannot be a dark spot inside metal;
+    # dropping it would fill the frame solid over the inner conductor.
+    segmentation = np.zeros((160, 160), dtype=np.uint8)
+    source = np.full_like(segmentation, 20)
+    segmentation[20:140, 20:140] = 240
+    segmentation[45:115, 45:115] = 0
+    segmentation[60:100, 75:85] = 240
+    source[20:140, 20:140] = 60
+    source[45:115, 45:115] = 45
+    source[60:100, 75:85] = 220
+    config = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_inner_hole_area=20.0,
+        min_object_source_contrast=0.0,
+        min_object_rim_contrast=0.0,
+        min_hole_source_contrast=250.0,
+    )
+
+    result = detect_metalization(segmentation, config, source_image=source)
+
+    holes = [polygon for polygon in result.accepted if polygon.is_hole]
+    assert len(holes) == 1
+    filtered = result.debug_images["metal_filtered_mask"]
+    assert filtered[50, 50] == 0
+    assert filtered[80, 80] == 255
+
+
 def test_hole_filter_uses_local_contrast_when_wide_parent_is_below_otsu() -> None:
     segmentation = np.zeros((180, 300), dtype=np.uint8)
     segmentation[20:150, 20:190] = 240

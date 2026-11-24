@@ -47,6 +47,14 @@ def _filter_holes_by_source_contrast(
         if polygon.is_hole and polygon.parent_id is not None:
             holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
 
+    # A hole that holds a separate conductor is a real gap, not a dark spot in metal:
+    # dropping it would fill its parent solid over that conductor.
+    holes_with_islands = {
+        int(polygon.parent_id)
+        for polygon in polygons
+        if not polygon.is_hole and polygon.parent_id is not None
+    }
+
     parent_medians: dict[int, float | None] = {}
     kept: list[PolygonData] = []
     for polygon in polygons:
@@ -58,6 +66,9 @@ def _filter_holes_by_source_contrast(
         parent_id = int(polygon.parent_id)
         parent = polygons_by_id.get(parent_id)
         if parent is None or parent.is_hole:
+            continue
+        if int(polygon.id) in holes_with_islands:
+            kept.append(polygon)
             continue
         if parent_id not in parent_medians:
             parent_medians[parent_id] = _polygon_interior_median(

@@ -472,7 +472,11 @@ def _debug_candidates_for_mask(
                         parent_area = contour_areas.get(parent_index, 0.0)
                         if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
                             reason = "max_hole_area_ratio"
-                    elif config.min_polygon_width_px > 0.0 and w_est < float(config.min_polygon_width_px):
+                    elif (
+                        config.min_polygon_width_px > 0.0
+                        and not is_hole
+                        and w_est < float(config.min_polygon_width_px)
+                    ):
                         reason = "min_polygon_width"
 
         if reason:
@@ -871,7 +875,9 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
             if parent_area > 0.0 and (area / parent_area) > config.max_hole_area_ratio:
                 continue
 
-        if config.min_polygon_width_px > 0.0:
+        # Trace width describes conductors; a narrow gap enclosed by metal is still a gap,
+        # and dropping it would fill its parent solid over the gap.
+        if config.min_polygon_width_px > 0.0 and not is_hole:
             w_est, _w_m = estimate_effective_polygon_width_px(binary_mask, contour)
             if w_est < float(config.min_polygon_width_px):
                 continue

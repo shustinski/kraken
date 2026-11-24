@@ -53,6 +53,22 @@ class SubmitPluginJobMixin:
         jobs.sort(key=lambda item: (str(item.get("updated_at", "")), str(item.get("id", ""))), reverse=True)
         return jobs
 
+    def get_plugin_job(self, project_id: str, job_id: str) -> dict[str, Any]:
+        self.get_project(project_id)
+        with self._lock:
+            job = self._plugin_jobs.get(job_id)
+            if job is None or str(job.get("project_id")) != project_id:
+                raise NotFoundError("Job was not found")
+            removed = any(
+                event.get("event_type") == "LayerPipelineActionRemoved"
+                and event.get("payload", {}).get("remove_task")
+                and str(event.get("payload", {}).get("plugin_job_id", "")) == job_id
+                for event in self._events.get(project_id, ())
+            )
+            if removed:
+                raise NotFoundError("Job was not found")
+            return dict(job)
+
     def authorize_desktop_job(self, project_id: str, principal_id: str) -> None:
         if not self.project_roles(project_id, principal_id).get("roles"):
             raise ForbiddenError("Project membership is required")

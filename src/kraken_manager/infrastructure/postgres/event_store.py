@@ -330,6 +330,38 @@ class PostgresEventStore:
             rows = connection.execute(statement).mappings().all()
         return tuple(_event_from_row(row) for row in rows)
 
+    def project_stream_revision(self, project_id: ProjectId, stream_id: str) -> int:
+        """Head revision of one stream, or zero when this project has no such stream."""
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            value = connection.execute(
+                sa.select(self.streams.c.revision).where(
+                    self.streams.c.stream_id == stream_id,
+                    self.streams.c.project_id == str(project_id),
+                )
+            ).scalar_one_or_none()
+        return 0 if value is None else int(value)
+
+    def get_project_event(
+        self, project_id: ProjectId, event_id: str
+    ) -> tuple[int, EventEnvelope] | None:
+        from uuid import UUID
+
+        try:
+            UUID(str(event_id))
+        except (TypeError, ValueError):
+            return None
+        sa, _ = _sqlalchemy()
+        statement = sa.select(self.events).where(
+            self.events.c.project_id == str(project_id),
+            self.events.c.event_id == str(event_id),
+        )
+        with self._scope() as connection:
+            row = connection.execute(statement).mappings().first()
+        if row is None:
+            return None
+        return int(row["position"]), _event_from_row(row)
+
     def list_project_events(
         self,
         project_id: ProjectId,
@@ -339,17 +371,26 @@ class PostgresEventStore:
         as_of: datetime | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
+        event_types: Sequence[str] | None = None,
+        stream_id: str | None = None,
     ) -> tuple[tuple[int, EventEnvelope], ...]:
         """Cursor-friendly history across every stream of one project."""
         if after_position < 0:
             raise ValueError("after_position cannot be negative")
         if limit < 1 or limit > 1000:
             raise ValueError("limit must be between 1 and 1000")
+        selected = None if event_types is None else tuple(event_types)
+        if selected is not None and not selected:
+            return ()
         sa, _ = _sqlalchemy()
         statement = sa.select(self.events).where(
             self.events.c.project_id == str(project_id),
             self.events.c.position > after_position,
         )
+        if selected is not None:
+            statement = statement.where(self.events.c.event_type.in_(selected))
+        if stream_id is not None:
+            statement = statement.where(self.events.c.stream_id == stream_id)
         if as_of is not None:
             statement = statement.where(self.events.c.recorded_at <= as_of)
         if start is not None:

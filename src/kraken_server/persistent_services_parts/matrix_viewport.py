@@ -40,10 +40,12 @@ class MatrixViewportMixin:
         validate_uuid(str(representation_id), field="representation_id")
 
         def history(identifier, *, as_of=None, event_types=None):
+            selected = None if event_types is None else tuple(event_types)
             return tuple(
-                event for event in self._pipeline_events(str(identifier))
+                event
+                for event in self._pipeline_events(str(identifier), event_types=selected, as_of=as_of)
                 if (as_of is None or event.recorded_at <= as_of)
-                and (event_types is None or event.event_type in event_types)
+                and (selected is None or event.event_type in selected)
             )
 
         store = getattr(self, "performer_store", None)

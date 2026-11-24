@@ -85,6 +85,23 @@ def register(ctx: HttpContext) -> None:
                                        progress_fraction(snapshot.get("progress")))
         return {"items": items}
 
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}")
+    def get_project_job(
+        project_id: str,
+        job_id: str,
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        item = backend.get_plugin_job(project_id, job_id)
+        if agent_gateway is not None:
+            from kraken_core.job_recovery import progress_fraction
+
+            snapshot = agent_gateway.project_execution_states(project_id).get(str(item["id"]), {})
+            item["progress"] = max(
+                float(item.get("progress", 0)),
+                progress_fraction(snapshot.get("progress")),
+            )
+        return item
+
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/execution-state")
     def save_agent_execution_state(
         job_id: str, payload: dict[str, Any], agent: Any = Depends(agent_identity),

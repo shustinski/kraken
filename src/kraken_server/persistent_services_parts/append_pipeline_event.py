@@ -9,7 +9,7 @@ from kraken_manager.domain.events import ProgramSnapshot
 from kraken_manager.infrastructure.plugin.vector_workspace import remove_vector_result
 from kraken_server.services import CommandContext, ConflictError, NotFoundError, ValidationError
 
-from kraken_server.persistent_services_parts.layer_source_scan import _layer_id
+from kraken_server.persistent_services_parts.layer_source_scan import _layer_id, _project_id
 
 
 class AppendPipelineEventMixin:
@@ -74,14 +74,25 @@ class AppendPipelineEventMixin:
         if event_type == "LayerPipelineActionRemoved":
             if not isinstance(payload.get("remove_task", False), bool):
                 raise ValidationError("remove_task must be a boolean")
-            target = next(
-                (
-                    event
-                    for event in self._pipeline_events(project_id)
-                    if event.event_id == str(payload.get("action_event_id", ""))
-                ),
-                None,
-            )
+            action_event_id = str(payload.get("action_event_id", ""))
+            target = None
+            finder = getattr(self.events, "get_project_event", None)
+            if callable(finder) and action_event_id:
+                found = finder(_project_id(project_id), action_event_id)
+                if found is not None:
+                    target = found[1]
+            if target is None:
+                target = next(
+                    (
+                        event
+                        for event in self._pipeline_events(
+                            project_id,
+                            event_types=("LayerPipelineActionRequested", "PluginJobCreated"),
+                        )
+                        if event.event_id == action_event_id
+                    ),
+                    None,
+                )
             if target is None or target.event_type not in {"LayerPipelineActionRequested", "PluginJobCreated"}:
                 raise NotFoundError("Pipeline step was not found")
             target_layer = target.payload.get("layer_id", target.payload.get("manifest", {}).get("layer_id", ""))
@@ -91,7 +102,11 @@ class AppendPipelineEventMixin:
             job = self.projections.get_plugin_job(PluginJobId(removed_job_id)) if removed_job_id else None
             if removed_job_id and (job is None or str(job.project_id) != project_id or str(job.layer_id) != layer_id):
                 raise ValidationError("Pipeline job does not belong to this layer")
-            payload = {**payload, "plugin_job_id": removed_job_id}
+            payload = {
+                **payload,
+                "plugin_job_id": removed_job_id,
+                "action": str(target.payload.get("action", "") or payload.get("action", "")),
+            }
             if payload.get("remove_task"):
                 job_id = removed_job_id
                 if job is None or job.state.value not in {"succeeded", "failed", "cancelled"}:

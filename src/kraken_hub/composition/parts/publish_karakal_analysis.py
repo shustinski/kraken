@@ -46,7 +46,7 @@ class PublishKarakalAnalysisMixin:
         prior = next(
             (
                 event
-                for event in reversed(self.history(project.id))
+                for event in reversed(self.history(project.id, event_types=("KarakalAnalysisPublished",)))
                 if event.event_type == "KarakalAnalysisPublished"
                 and event.idempotency_key == idempotency_key
             ),

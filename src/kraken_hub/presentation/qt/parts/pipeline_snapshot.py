@@ -130,7 +130,18 @@ class PipelineSnapshotMixin:
             if value.kind is RepresentationKind.IMAGE and value.purpose is RepresentationPurpose.CONFIDENCE
         ]
         vectors = [value for value in representations if value.kind is RepresentationKind.VECTOR]
-        karakal_run = self.service.latest_karakal_analysis(project_id, layer_id)
+        from kraken_manager.application.frame_queries import latest_karakal_analysis
+
+        def recorded_history(_project_id, *, as_of=None, event_types=None):
+            allowed = None if event_types is None else frozenset(event_types)
+            return tuple(
+                event
+                for event in project_history
+                if (as_of is None or event.recorded_at <= as_of)
+                and (allowed is None or event.event_type in allowed)
+            )
+
+        karakal_run = latest_karakal_analysis(recorded_history, project_id, layer_id)
         workspace_runs = self.service.list_derived_runs(project_id, layer_id)
         stitching_nodes = []
         series_reader = getattr(self.service, "list_artifact_series", None)

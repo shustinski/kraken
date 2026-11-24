@@ -2,6 +2,7 @@
 from __future__ import annotations
 from kraken_server.project_deletion import guarded_storage
 from collections.abc import Iterator, Mapping
+from datetime import datetime
 from typing import Any
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
@@ -159,8 +160,10 @@ class MutateReviewBatchMixin:
         removed = {
             str(event.payload.get("plugin_job_id", ""))
             for project in projects
-            for event in self._pipeline_events(str(project.id))
-            if event.event_type == "LayerPipelineActionRemoved" and event.payload.get("remove_task")
+            for event in self._pipeline_events(
+                str(project.id), event_types=("LayerPipelineActionRemoved",)
+            )
+            if event.payload.get("remove_task")
         }
         jobs = [
             job
@@ -171,10 +174,41 @@ class MutateReviewBatchMixin:
         jobs.sort(key=lambda item: (item.updated_at, str(item.id)), reverse=True)
         return [encode_model(item) for item in jobs]
 
-    def _pipeline_events(self, project_id: str) -> Iterator[EventEnvelope]:
+    def get_plugin_job(self, project_id: str, job_id: str) -> dict[str, Any]:
+        from kraken_manager.domain.common import PluginJobId
+
+        self.get_project(project_id)
+        try:
+            identifier = PluginJobId(validate_uuid(job_id, field="job_id"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("job_id must be a valid UUID") from exc
+        job = self.projections.get_plugin_job(identifier)
+        if job is None or str(job.project_id) != project_id:
+            raise NotFoundError("Job was not found")
+        removed = any(
+            event.payload.get("remove_task") and str(event.payload.get("plugin_job_id", "")) == str(job.id)
+            for event in self._pipeline_events(project_id, event_types=("LayerPipelineActionRemoved",))
+        )
+        if removed:
+            raise NotFoundError("Job was not found")
+        return encode_model(job)
+
+    def _pipeline_events(
+        self,
+        project_id: str,
+        *,
+        event_types: tuple[str, ...] | None = None,
+        as_of: datetime | None = None,
+    ) -> Iterator[EventEnvelope]:
         after = 0
         while True:
-            page = self.events.list_project_events(_project_id(project_id), after_position=after, limit=500)
+            page = self.events.list_project_events(
+                _project_id(project_id),
+                after_position=after,
+                limit=500,
+                event_types=event_types,
+                as_of=as_of,
+            )
             if not page:
                 return
             for _position, event in page:

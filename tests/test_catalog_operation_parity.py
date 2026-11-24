@@ -18,7 +18,7 @@ def import_setup(tmp_path):
     server, local, session, project, layer, _binding, _representation, _context = _server_layer(tmp_path)
     server.profiles, server.identities = local.profiles, local.identities
     server.uow_factory = local._uow(str(project.id))
-    server._pipeline_events = lambda identifier: iter(local.history(identifier))
+    server._pipeline_events = lambda identifier, **_filters: iter(local.history(identifier))
     layer = next(item for item in local.list_layers(project.id) if item.id == layer.id)
     representation = local.create_representation(
         principal=session.principal,

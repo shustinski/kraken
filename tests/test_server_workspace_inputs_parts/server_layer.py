@@ -22,7 +22,7 @@ def test_persistent_history_serializes_nested_event_payloads(tmp_path):
     server.events = SimpleNamespace(list_project_events=lambda _project_id, **_kwargs: tuple(enumerate(events, 1)))
 
     class HistoryServices(InMemoryServerServices):
-        def history(self, project_id, *, cursor, limit):
+        def history(self, project_id, *, cursor, limit, event_types=None):
             return server.history(str(project.id), cursor=cursor, limit=limit)
 
     client = TestClient(create_app(services=HistoryServices(), development=True))

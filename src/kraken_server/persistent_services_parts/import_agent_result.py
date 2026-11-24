@@ -40,6 +40,27 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 )
 
 
+def _history_item(position: int, event: Any) -> dict[str, Any]:
+    return {
+        "position": position,
+        "event_id": event.event_id,
+        "stream_id": event.stream_id,
+        "revision": event.revision,
+        "event_type": event.event_type,
+        "schema_version": event.schema_version,
+        "recorded_at": event.recorded_at.isoformat(),
+        "effective_at": None if event.effective_at is None else event.effective_at.isoformat(),
+        "actor": {
+            "principal_id": str(event.actor.principal_id),
+            "provider": event.actor.provider.value,
+            "subject": event.actor.subject,
+            "display_name": event.actor.display_name,
+        },
+        "performer_id": None if event.performer_id is None else str(event.performer_id),
+        "payload": encode_model(event.payload),
+    }
+
+
 class ImportAgentResultMixin:
     def retry_plugin_job(self, project_id: str, job_id: str, context: CommandContext) -> dict[str, Any]:
         from kraken_manager.application.dto import RetryPluginJobCommand
@@ -231,34 +252,40 @@ class ImportAgentResultMixin:
         raw = json.dumps({"position": position}, separators=(",", ":")).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
-    def history(self, project_id: str, *, cursor: str | None, limit: int) -> dict[str, Any]:
+    def history(
+        self,
+        project_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+        event_types: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
         self.get_project(project_id)
         if limit < 1 or limit > 500:
             raise ValidationError("History limit must be between 1 and 500")
         after = self._decode_cursor(cursor)
-        rows = self.events.list_project_events(_project_id(project_id), after_position=after, limit=limit + 1)
+        rows = self.events.list_project_events(
+            _project_id(project_id),
+            after_position=after,
+            limit=limit + 1,
+            event_types=event_types,
+        )
         has_more = len(rows) > limit
         page = rows[:limit]
-        items = [
-            {
-                "position": position,
-                "event_id": event.event_id,
-                "stream_id": event.stream_id,
-                "revision": event.revision,
-                "event_type": event.event_type,
-                "schema_version": event.schema_version,
-                "recorded_at": event.recorded_at.isoformat(),
-                "effective_at": None if event.effective_at is None else event.effective_at.isoformat(),
-                "actor": {
-                    "principal_id": str(event.actor.principal_id),
-                    "provider": event.actor.provider.value,
-                    "subject": event.actor.subject,
-                    "display_name": event.actor.display_name,
-                },
-                "performer_id": None if event.performer_id is None else str(event.performer_id),
-                "payload": encode_model(event.payload),
-            }
-            for position, event in page
-        ]
+        items = [_history_item(position, event) for position, event in page]
         next_cursor = self._encode_cursor(page[-1][0]) if has_more and page else None
         return {"items": items, "next_cursor": next_cursor}
+
+    def stream_revision(self, project_id: str, stream_id: str) -> int:
+        self.get_project(project_id)
+        if not isinstance(stream_id, str) or not stream_id or len(stream_id) > 300 or "/" in stream_id:
+            raise ValidationError("Invalid stream id")
+        return self.events.project_stream_revision(_project_id(project_id), stream_id)
+
+    def project_event(self, project_id: str, event_id: str) -> dict[str, Any]:
+        self.get_project(project_id)
+        found = self.events.get_project_event(_project_id(project_id), event_id)
+        if found is None:
+            raise NotFoundError("Event was not found")
+        position, event = found
+        return _history_item(position, event)

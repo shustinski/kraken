@@ -105,19 +105,56 @@ class UpdateRepresentationMixin:
             raise ValidationError("Invalid history cursor")
         return offset
 
-    def history(self, project_id: str, *, cursor: str | None, limit: int) -> dict[str, Any]:
+    def history(
+        self,
+        project_id: str,
+        *,
+        cursor: str | None,
+        limit: int,
+        event_types: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
         self.get_project(project_id)
         if limit < 1 or limit > 500:
             raise ValidationError("History limit must be between 1 and 500")
         offset = self._decode_cursor(cursor)
+        allowed = None if event_types is None else frozenset(event_types)
         with self._lock:
-            events = self._events[project_id]
+            events = [
+                item
+                for item in self._events[project_id]
+                if allowed is None or item.get("event_type") in allowed
+            ]
             page = [dict(item) for item in events[offset : offset + limit]]
         next_offset = offset + len(page)
         return {
             "items": page,
             "next_cursor": self._encode_cursor(next_offset) if next_offset < len(events) else None,
         }
+
+    def stream_revision(self, project_id: str, stream_id: str) -> int:
+        self.get_project(project_id)
+        if not isinstance(stream_id, str) or not stream_id or len(stream_id) > 300 or "/" in stream_id:
+            raise ValidationError("Invalid stream id")
+        with self._lock:
+            return max(
+                (
+                    int(event.get("revision", 0))
+                    for event in self._events.get(project_id, ())
+                    if event.get("stream_id") == stream_id
+                ),
+                default=0,
+            )
+
+    def project_event(self, project_id: str, event_id: str) -> dict[str, Any]:
+        self.get_project(project_id)
+        with self._lock:
+            event = next(
+                (item for item in self._events.get(project_id, ()) if item.get("event_id") == event_id),
+                None,
+            )
+        if event is None:
+            raise NotFoundError("Event was not found")
+        return dict(event)
 
     def _append_auxiliary_event(
         self,

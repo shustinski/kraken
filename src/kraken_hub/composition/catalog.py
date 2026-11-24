@@ -564,6 +564,13 @@ class DualCatalogService(ProjectApplication):
             return self.remote.review_return_preflight(**kwargs)
         return self.local.review_return_preflight(**kwargs)
 
+    def plugin_job(self, project_id, job_id):
+        if self.is_remote_project(project_id):
+            if self.remote is None:
+                raise RuntimeError("Kraken Server is not configured")
+            return self.remote.plugin_job(project_id, job_id)
+        return self.local.plugin_job(project_id, job_id)
+
     def plugin_jobs(self, *, projects: Iterable[Project] | None = None):
         local_projects, remote_projects = self._scoped_projects(projects)
         local_jobs = list(self.local.plugin_jobs(projects=local_projects))

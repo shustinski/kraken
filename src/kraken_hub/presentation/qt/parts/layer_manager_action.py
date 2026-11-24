@@ -169,7 +169,7 @@ class LayerManagerActionMixin:
                     return
                 try:
                     job_id = str(_node.details.get("job_id", ""))
-                    job = next((item for item in self.service.plugin_jobs() if str(item.id) == job_id), None)
+                    job = self.service.plugin_job(self._project_id, job_id) if job_id else None
                     if job is not None and job.state.value not in {"succeeded", "failed", "cancelled"}:
                         self.cancel_agent_job(job)
                     self.service.remove_layer_pipeline_action(
@@ -370,10 +370,12 @@ class LayerManagerActionMixin:
                 self._schedule_pipeline_cycle()
                 return
             job_id = str(node.details.get("job_id") or "")
-            job = next((item for item in self.service.plugin_jobs()
-                        if str(item.id) == job_id
-                        and str(item.project_id) == str(self._project_id)
-                        and str(item.layer_id) == str(layer_id)), None)
+            job = self.service.plugin_job(self._project_id, job_id) if job_id else None
+            if (
+                job is not None
+                and (str(job.project_id) != str(self._project_id) or str(job.layer_id) != str(layer_id))
+            ):
+                job = None
             if job is None:
                 self._error("Задание больше не доступно")
                 return

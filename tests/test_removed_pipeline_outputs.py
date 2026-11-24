@@ -61,7 +61,7 @@ def test_removed_vectors_are_archived_and_rejected_as_dataset_inputs(tmp_path, b
             action_event_id=creation.event_id,
         )
     else:
-        server._pipeline_events = lambda _pid: local.history(project.id)
+        server._pipeline_events = lambda _pid, **_filters: local.history(project.id)
         stream = f"layer-pipeline:{layer.id}"
         server.append_pipeline_event(
             str(project.id),

@@ -116,17 +116,14 @@ class RemoveLayerPipelineActionMixin:
         remove_task: bool = False,
     ) -> object:
         del principal
-        target = next(
-            (
-                item
-                for item in self.history(project_id)
-                if item.event_id == str(action_event_id)
-                and item.event_type in {"LayerPipelineActionRequested", "PluginJobCreated"}
-                and str(item.payload.get("layer_id", item.payload.get("manifest", {}).get("layer_id", "")))
-                == str(layer_id)
-            ),
-            None,
+        target = self._project_event(project_id, str(action_event_id))
+        layer_matches = (
+            target is not None
+            and target.event_type in {"LayerPipelineActionRequested", "PluginJobCreated"}
+            and str(target.payload.get("layer_id", target.payload.get("manifest", {}).get("layer_id", "")))
+            == str(layer_id)
         )
+        target = target if layer_matches else None
         if target is None:
             raise ValueError("Pipeline step does not exist in this layer")
         stream_id = f"layer-pipeline:{layer_id}"

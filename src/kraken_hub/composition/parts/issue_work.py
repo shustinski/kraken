@@ -388,7 +388,10 @@ class IssueWorkMixin:
 
         if not vector_representation_id:
             return ()
-        ordered = review_image_ids(self.history(project_id), (str(vector_representation_id),))
+        ordered = review_image_ids(
+            self.history(project_id, event_types=("LayerPipelineActionRequested",)),
+            (str(vector_representation_id),),
+        )
         names = {}
         for layer in self.list_layers(project_id):
             for representation in self.list_representations(project_id, layer.id):

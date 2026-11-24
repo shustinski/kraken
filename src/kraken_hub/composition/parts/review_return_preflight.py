@@ -187,7 +187,7 @@ class ReviewReturnPreflightMixin:
     ) -> tuple[ArtifactVersionId, ...]:
         latest_by_series: dict[str, ArtifactVersionId] = {}
         projection = self._projection(batch.project_id)
-        for event in self.history(batch.project_id):
+        for event in self.history(batch.project_id, event_types=("ReviewReturnCommitted",)):
             if (
                 event.event_type != "ReviewReturnCommitted"
                 or str(event.payload.get("review_batch_id", "")) != str(batch.id)

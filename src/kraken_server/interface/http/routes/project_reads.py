@@ -115,9 +115,31 @@ def register(ctx: HttpContext) -> None:
         project_id: str,
         cursor: str | None = None,
         limit: int = Query(default=100, ge=1, le=500),
+        event_type: list[str] | None = Query(default=None),
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
-        return backend.history(project_id, cursor=cursor, limit=limit)
+        return backend.history(
+            project_id,
+            cursor=cursor,
+            limit=limit,
+            event_types=None if not event_type else tuple(event_type),
+        )
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/stream-revision")
+    def stream_revision(
+        project_id: str,
+        stream_id: str,
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        return {"revision": backend.stream_revision(project_id, stream_id)}
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/events/{{event_id}}")
+    def project_event(
+        project_id: str,
+        event_id: str,
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        return backend.project_event(project_id, event_id)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/statistics")
     def statistics(

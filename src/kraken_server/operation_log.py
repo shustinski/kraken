@@ -413,6 +413,8 @@ _ACTIONS: dict[tuple[str, str], str] = {
     ("POST", _P + "/restore"): "восстановление проекта",
     ("POST", _P + "/commands"): "команда проекта",
     ("GET", _P + "/history"): "история проекта",
+    ("GET", _P + "/stream-revision"): "ревизия потока",
+    ("GET", _P + "/events/{event_id}"): "событие проекта",
     ("GET", _P + "/statistics"): "статистика проекта",
     ("GET", _P + "/workspace"): "рабочая папка проекта",
     ("GET", _P + "/frames"): "список кадров",
@@ -456,6 +458,7 @@ _ACTIONS: dict[tuple[str, str], str] = {
     ("GET", _P + "/artifacts/versions/{version_id}/metadata"): "сведения о файле",
     # jobs
     ("GET", _P + "/jobs"): "список задач",
+    ("GET", _P + "/jobs/{job_id}"): "задача",
     ("POST", _P + "/jobs"): "запуск задачи",
     ("POST", _P + "/jobs/{job_id}/cancel"): "отмена задачи",
     ("POST", _P + "/jobs/{job_id}/retry"): "повтор задачи",

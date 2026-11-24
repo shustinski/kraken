@@ -58,6 +58,17 @@ class SubmitPluginJobMixin:
             sorted(jobs, key=lambda item: (item.updated_at, str(item.id)), reverse=True)
         )
 
+    def plugin_job(self, project_id: object, job_id: object) -> PluginJob | None:
+        try:
+            payload = self._call("GET", f"/api/v1/projects/{project_id}/jobs/{job_id}")
+        except RemoteServerError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(payload, Mapping):
+            return None
+        return decode_model(PluginJob, payload)
+
     def submit_plugin_job(
         self,
         *,
@@ -151,8 +162,9 @@ class SubmitPluginJobMixin:
     def history(
         self, project_id: object, *, as_of: datetime | None = None, event_types=None
     ) -> tuple[object, ...]:
-        events = self._history_pages(project_id, cursor=None)
-        allowed = None if event_types is None else frozenset(event_types)
+        selected = None if event_types is None else tuple(event_types)
+        allowed = None if selected is None else frozenset(selected)
+        events = self._history_pages(project_id, cursor=None, event_types=selected)
         return tuple(
             event for event in events
             if (as_of is None or event.recorded_at <= as_of)
@@ -169,12 +181,17 @@ class SubmitPluginJobMixin:
             cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
         return self._history_pages(project_id, cursor=cursor)
 
-    def _history_pages(self, project_id: object, *, cursor: str | None) -> tuple[_RemoteHistoryEvent, ...]:
+    def _history_pages(
+        self, project_id: object, *, cursor: str | None, event_types=None
+    ) -> tuple[_RemoteHistoryEvent, ...]:
         events = []
         while True:
-            query = urllib.parse.urlencode(
-                {"limit": 500, **({} if cursor is None else {"cursor": cursor})}
-            )
+            pairs = [("limit", "500")]
+            if cursor is not None:
+                pairs.append(("cursor", cursor))
+            if event_types:
+                pairs.extend(("event_type", str(item)) for item in event_types)
+            query = urllib.parse.urlencode(pairs)
             payload = self._call(
                 "GET", f"/api/v1/projects/{project_id}/history?{query}"
             )
@@ -230,11 +247,17 @@ class SubmitPluginJobMixin:
         return metrics, series
 
     def _stream_revision(self, project_id: object, stream_id: str) -> int:
-        return max(
-            (
-                event.revision
-                for event in self.history(project_id)
-                if event.stream_id == stream_id
-            ),
-            default=0,
-        )
+        query = urllib.parse.urlencode({"stream_id": stream_id})
+        payload = self._call("GET", f"/api/v1/projects/{project_id}/stream-revision?{query}")
+        return int(payload.get("revision", 0)) if isinstance(payload, Mapping) else 0
+
+    def _project_event(self, project_id: object, event_id: str) -> _RemoteHistoryEvent | None:
+        try:
+            payload = self._call("GET", f"/api/v1/projects/{project_id}/events/{event_id}")
+        except RemoteServerError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(payload, Mapping):
+            return None
+        return _RemoteHistoryEvent(payload, project_id=str(project_id))

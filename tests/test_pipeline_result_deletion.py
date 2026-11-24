@@ -38,7 +38,7 @@ def test_step_removal_cleans_recorded_result_and_can_retry(tmp_path, backend):
                 action_event_id=creation.event_id,
             )
     else:
-        server._pipeline_events = lambda _pid: (creation,)
+        server._pipeline_events = lambda _pid, **_filters: (creation,)
         server._append_auxiliary_event = lambda _pid, **kwargs: kwargs["payload"]
 
         def remove():
@@ -63,7 +63,7 @@ def test_step_removal_cleans_recorded_result_and_can_retry(tmp_path, backend):
 def test_failed_server_command_does_not_remove_files(tmp_path):
     server, local, _session, project, layer, _target, _gateway, job = _desktop_job(tmp_path, "frames.vectorize.v1")
     creation = next(event for event in local.history(project.id) if event.event_type == "PluginJobCreated")
-    server._pipeline_events = lambda _pid: (creation,)
+    server._pipeline_events = lambda _pid, **_filters: (creation,)
     calls = []
     server.workspace_files = SimpleNamespace(registry=SimpleNamespace(mutation_lock=lambda _pid: calls.append(True)))
 

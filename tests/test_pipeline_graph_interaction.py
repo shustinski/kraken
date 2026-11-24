@@ -189,7 +189,7 @@ def test_continue_opens_existing_waiting_job():
     controller = LayerManagerActionMixin()
     controller._project_id = "project"
     job = SimpleNamespace(id="job", project_id="project", layer_id="layer", state=SimpleNamespace(value="waiting_for_user"))
-    controller.service = SimpleNamespace(plugin_jobs=lambda: [job], is_remote_project=lambda _: False)
+    controller.service = SimpleNamespace(plugin_job=lambda *_args: job, is_remote_project=lambda _: False)
     controller._action_availability = lambda _: (True, "")
     controller._error = pytest.fail
     calls = []

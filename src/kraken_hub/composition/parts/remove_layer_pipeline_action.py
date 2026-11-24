@@ -37,10 +37,14 @@ class RemoveLayerPipelineActionMixin:
             permission=Permission.RUN_PLUGIN,
             roles=self.project_roles(project.id, principal.id),
         )
+        relevant = self.history(
+            project.id,
+            event_types=("LayerPipelineActionRequested", "PluginJobCreated", "LayerPipelineActionRemoved"),
+        )
         target = next(
             (
                 event
-                for event in self.history(project.id)
+                for event in relevant
                 if event.event_id == str(action_event_id)
                 and event.event_type in {"LayerPipelineActionRequested", "PluginJobCreated"}
                 and str(event.payload.get("layer_id", event.payload.get("manifest", {}).get("layer_id", "")))
@@ -60,7 +64,7 @@ class RemoveLayerPipelineActionMixin:
         prior = next(
             (
                 event
-                for event in self.history(project.id)
+                for event in relevant
                 if event.event_type == "LayerPipelineActionRemoved"
                 and str(event.payload.get("action_event_id", "")) == target.event_id
                 and (not remove_task or event.payload.get("remove_task"))

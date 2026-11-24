@@ -101,8 +101,8 @@ class PluginJobsMixin:
         for project in selected:
             removed = {
                 str(event.payload.get("plugin_job_id", ""))
-                for event in self.history(project.id)
-                if event.event_type == "LayerPipelineActionRemoved" and event.payload.get("remove_task")
+                for event in self.history(project.id, event_types=("LayerPipelineActionRemoved",))
+                if event.payload.get("remove_task")
             }
             for job in self._projection(project.id).list_plugin_jobs(project.id):
                 if str(job.id) not in removed:
@@ -114,3 +114,21 @@ class PluginJobsMixin:
                 reverse=True,
             )
         )
+
+    def plugin_job(self, project_id: object, job_id: object) -> object | None:
+        from kraken_manager.domain.common import PluginJobId, validate_uuid
+
+        try:
+            identifier = PluginJobId(validate_uuid(str(job_id), field="job_id"))
+        except (TypeError, ValueError):
+            return None
+        job = self._projection(project_id).get_plugin_job(identifier)
+        if job is None or str(job.project_id) != str(project_id):
+            return None
+        removed = any(
+            event.payload.get("remove_task") and str(event.payload.get("plugin_job_id", "")) == str(job.id)
+            for event in self.history(project_id, event_types=("LayerPipelineActionRemoved",))
+        )
+        if removed:
+            return None
+        return job

@@ -8,7 +8,14 @@ from kraken_hub.infrastructure.remote.parts.remove_layer_pipeline_action import 
     RemoveLayerPipelineActionMixin,
 )
 from kraken_hub.infrastructure.remote.parts.submit_plugin_job import SubmitPluginJobMixin
+from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId
+from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
+from kraken_manager.domain.workflows import PluginJob
+from kraken_manager.infrastructure.filesystem._codec import encode_model
 from kraken_server.services import InMemoryServerServices, NotFoundError
+
+_JOB_ID = "00000000-0000-0000-0000-0000000000aa"
+_PROJECT_ID = "00000000-0000-0000-0000-0000000000bb"
 
 
 class _Remote(RemoveLayerPipelineActionMixin, SubmitPluginJobMixin):
@@ -31,8 +38,18 @@ class _Remote(RemoveLayerPipelineActionMixin, SubmitPluginJobMixin):
             }
         if path.endswith("/stream-revision") or "stream-revision?" in path:
             return {"revision": 7}
-        if path.endswith("/jobs/job"):
-            return {"id": "job", "project_id": "project", "revision": 1}
+        if path.endswith(f"/jobs/{_JOB_ID}"):
+            return encode_model(
+                PluginJob.create(
+                    project_id=ProjectId(_PROJECT_ID),
+                    layer_id=LayerId("00000000-0000-0000-0000-0000000000cc"),
+                    selection=FrameSelectionV1(row_ranges=(FrameRowRange(y=1, x_start=1, x_end=1),)),
+                    actor_principal_id=PrincipalId("00000000-0000-0000-0000-0000000000dd"),
+                    target_representation_id=RepresentationId("00000000-0000-0000-0000-0000000000ee"),
+                    capability="frames.vectorize.v1",
+                    job_id=_JOB_ID,
+                )
+            )
         return {"event_id": "removed", "recorded_at": "2026-01-01T00:00:00+00:00"}
 
 
@@ -69,9 +86,9 @@ def test_removing_a_pipeline_step_does_not_download_project_history():
 
 def test_plugin_job_reads_one_job():
     client = _Remote()
-    job = client.plugin_job("project", "job")
-    assert str(job.id) == "job"
-    assert client.calls == [("GET", "/api/v1/projects/project/jobs/job")]
+    job = client.plugin_job(_PROJECT_ID, _JOB_ID)
+    assert str(job.id) == _JOB_ID
+    assert client.calls == [("GET", f"/api/v1/projects/{_PROJECT_ID}/jobs/{_JOB_ID}")]
 
 
 def test_memory_history_returns_only_requested_event_types():

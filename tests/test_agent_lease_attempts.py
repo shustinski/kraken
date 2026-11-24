@@ -69,3 +69,74 @@ def test_concurrent_legacy_schema_migration_preserves_existing_job(tmp_path):
     assert renewed.state is AgentJobState.QUEUED and renewed.revision == 4
     previous = stores[-1].attempt_history("job-1")
     assert previous[0]["error"] == "interrupted" and previous[0]["revision"] == 3
+
+
+def test_orphaned_execution_is_retired_only_for_another_attempt(tmp_path):
+    store = DurableJobStore(tmp_path / "jobs.sqlite3")
+    value = manifest()
+    store.enqueue(value, attempt_key="a" * 64)
+    job = store.claim_next()
+    job = store.transition(job.job_id, AgentJobState.RUNNING, expected_revision=job.revision)
+    job = store.transition(job.job_id, AgentJobState.WAITING_FOR_USER, expected_revision=job.revision)
+    assert store.retire_orphaned_execution(job.job_id, attempt_key="a" * 64) is False
+    assert store.get(job.job_id) == job
+    assert store.retire_orphaned_execution(job.job_id, attempt_key="b" * 64) is True
+    retired = store.get(job.job_id)
+    assert retired.state is AgentJobState.RECOVERY_REQUIRED and retired.revision == job.revision + 1
+    renewed = store.enqueue(value, attempt_key="b" * 64)
+    assert renewed.state is AgentJobState.QUEUED
+    assert store.attempt_history(job.job_id)[0]["state"] == "recovery_required"
+
+
+def _lease_worker(tmp_path, monkeypatch):
+    from kraken_agent.runner import PluginRegistry
+    from kraken_agent.server_worker import ServerAgentWorker
+
+    worker = ServerAgentWorker(
+        server_url="http://127.0.0.1", token="test", data_dir=tmp_path / "desktop-job", registry=PluginRegistry()
+    )
+    monkeypatch.setattr("kraken_agent.telemetry.sample_host", lambda: {})
+    monkeypatch.setattr(worker, "_heartbeat", lambda job_id, done, lost, deadline: done.wait(5))
+    return worker
+
+
+def test_new_lease_continues_after_kraken_closed_while_plugin_waited_for_user(tmp_path, monkeypatch):
+    import hashlib
+
+    worker = _lease_worker(tmp_path, monkeypatch)
+    value = manifest()
+    # A previous Kraken process died while Contour was open: its row stays active.
+    worker.store.enqueue(value, attempt_key=hashlib.sha256(b"old-claim").hexdigest())
+    job = worker.store.claim_next()
+    job = worker.store.transition(job.job_id, AgentJobState.RUNNING, expected_revision=job.revision)
+    worker.store.transition(job.job_id, AgentJobState.WAITING_FOR_USER, expected_revision=job.revision)
+    ran = []
+
+    def run_once(*, job_id, cancel_event):
+        current = worker.store.claim_next(job_id=job_id)
+        ran.append(current.state)
+        worker.store.transition(job_id, AgentJobState.CANCELLED, expected_revision=current.revision)
+        return True
+
+    monkeypatch.setattr(worker.runner, "run_once", run_once)
+    response = worker.run_leased_job({"job_id": value.job_id, "lease_claim": "new-claim", "manifest": value.to_dict()})
+    assert response["imported"]["job"]["state"] == "cancelled"
+    assert ran == [AgentJobState.STAGING]
+    assert worker.store.attempt_history(value.job_id)[0]["state"] == "recovery_required"
+
+
+def test_new_lease_refuses_while_another_process_still_runs_the_job(tmp_path, monkeypatch):
+    import hashlib
+
+    from kraken_manager.infrastructure.filesystem.locking import kernel_file_gate
+
+    worker = _lease_worker(tmp_path, monkeypatch)
+    value = manifest()
+    monkeypatch.setattr(worker, "_request", lambda *args, **kwargs: pytest.fail("must not report a live job failed"))
+    gate = worker.data_dir / "execution-gates" / f"{hashlib.sha256(value.job_id.encode()).hexdigest()}.gate"
+    gate.parent.mkdir(parents=True)
+    with kernel_file_gate(gate):
+        with pytest.raises(RuntimeError, match="already running"):
+            worker.run_leased_job({"job_id": value.job_id, "lease_claim": "new-claim", "manifest": value.to_dict()})
+    with pytest.raises(KeyError):
+        worker.store.get(value.job_id)

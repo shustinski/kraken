@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 from dataclasses import replace
 import json
 import logging
@@ -35,6 +36,7 @@ from kraken_core.plugin_protocol import (
 from kraken_manager.domain.project import FrameCoordinate
 from kraken_manager.domain.workflows import PluginJobManifestV1
 from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
+from kraken_manager.infrastructure.filesystem.locking import ProjectLockTimeout, kernel_file_gate
 
 from .jobs import DurableJobStore, StagingWorkspace
 from .runner import PluginRegistry, SubprocessPluginRunner
@@ -490,7 +492,17 @@ class ServerAgentWorker:
         with self._lease_lock:
             if self._stop.is_set():
                 raise RuntimeError("Agent worker has stopped")
-            return self._run_leased_job(lease)
+            job_id = str(lease["job_id"])
+            gates = make_contained_directories(self.data_dir, ("execution-gates",))
+            gate = gates / f"{hashlib.sha256(job_id.encode()).hexdigest()}.gate"
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(kernel_file_gate(gate))
+                except ProjectLockTimeout as exc:
+                    # Only a live process holds the gate; the OS drops it when
+                    # that process dies, so busy really means "still running".
+                    raise RuntimeError("This job is already running in another Kraken window") from exc
+                return self._run_leased_job(lease)
 
     def _run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         job_id = str(lease["job_id"])
@@ -560,6 +572,9 @@ class ServerAgentWorker:
                 transport = self._transport_manifest(manifest, workspace)
             transport = self._stage_model_input(transport, workspace)
             workspace.write_manifest(transport)
+            # Holding the execution gate proves no live process owns an
+            # earlier attempt, e.g. Kraken closed while Contour was open.
+            self.store.retire_orphaned_execution(job_id, attempt_key=attempt_key)
             self.store.enqueue(transport, attempt_key=attempt_key)
             self._restore_execution_state(job_id, workspace, lease.get("execution_state"))
             if lost.is_set():

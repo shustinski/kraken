@@ -507,6 +507,30 @@ class DurableJobStore:
             )
             return cursor.rowcount
 
+    def retire_orphaned_execution(self, job_id: str, *, attempt_key: str) -> bool:
+        """Mark another attempt's execution as interrupted after its owner process died.
+
+        The caller must hold the job's execution gate: only then is a
+        staging/running/waiting row known to have no live runner. The row of
+        ``attempt_key`` itself is left alone.
+        """
+
+        active = (AgentJobState.STAGING.value, AgentJobState.RUNNING.value, AgentJobState.WAITING_FOR_USER.value)
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE jobs SET state=?, error=?, updated_at=?, revision=revision+1 "
+                "WHERE job_id=? AND state IN (?, ?, ?) AND (attempt_key IS NULL OR attempt_key<>?)",
+                (
+                    AgentJobState.RECOVERY_REQUIRED.value,
+                    "Previous local execution ended without finishing",
+                    _utc_now(),
+                    job_id,
+                    *active,
+                    attempt_key,
+                ),
+            )
+            return cursor.rowcount > 0
+
     def recover_interrupted(self) -> int:
         """Mark jobs that cannot safely continue without operator inspection."""
 

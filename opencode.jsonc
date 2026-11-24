@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "kraken_inspector": {
+        "type": "local",
+        "command": ["D:\\code\\kraken\\.venv\\Scripts\\python.exe", "-m", "kraken_inspector", "--workspace", "D:\\code\\kraken"],
+        "cwd": "D:\\code\\kraken",
+        "protocol": "legacy",
+        "timeout": 60000
+      }
+    }
+  }
+}

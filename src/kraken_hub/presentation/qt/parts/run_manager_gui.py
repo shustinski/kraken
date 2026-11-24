@@ -55,6 +55,7 @@ def run_manager_gui(
     plugin_launcher,
     update_url: str = "",
     thumbnail_store_uri: str = "",
+    inspector_socket: str = "",
 ) -> int:
     from kraken_core.settings import QSettings
     from PyQt6.QtWidgets import QApplication, QInputDialog
@@ -77,6 +78,12 @@ def run_manager_gui(
     startup_profile = profiling.begin_region("main_window")
     try:
         _connect_saved_server(None, service, session.principal)
+        if inspector_socket and os.environ.get("KRAKEN_INSPECTOR_SERVER_USERNAME"):
+            service.configure_remote_local(
+                base_url=os.environ["KRAKEN_SERVER_URL"],
+                username=os.environ["KRAKEN_INSPECTOR_SERVER_USERNAME"],
+                password=os.environ["KRAKEN_INSPECTOR_SERVER_PASSWORD"],
+            )
         if service.server_connection is not None:
             # Shared mutations use the server principal carried by the remote client.
             session_summary = (
@@ -168,7 +175,16 @@ def run_manager_gui(
         if startup_profile is not None:
             shell._startup_profile_filter = _MainWindowReadyFilter(shell, startup_profile)
         shell.show()
-        return app.exec()
+        inspector = None
+        if inspector_socket:
+            from kraken_inspector.bridge import InspectorBridge
+
+            inspector = InspectorBridge(inspector_socket, os.environ["KRAKEN_INSPECTOR_TOKEN"])
+        try:
+            return app.exec()
+        finally:
+            if inspector is not None:
+                inspector.close()
     finally:
         if startup_profile is not None:
             startup_profile.finish(ready=False)

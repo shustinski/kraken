@@ -1,0 +1,13 @@
+# Kraken Inspector
+
+Development-only MCP server for exploring a real, isolated Kraken Hub. Start OpenCode in this checkout; `opencode.jsonc` launches `kraken_inspector` from the repository venv. For another MCP client, run `D:\code\kraken\.venv\Scripts\python.exe -m kraken_inspector --workspace D:\code\kraken` over JSON-lines stdio.
+
+For a server-backed run, call `start_server` with `postgres_bin` set to the directory containing `initdb.exe` and `pg_ctl.exe` (on this machine: `C:\Program Files\PostgreSQL\18\bin`). It creates a new PostgreSQL cluster, migrates it, starts the production Kraken Server composition, and registers a disposable account. Then call `launch_hub`. Without `start_server`, `launch_hub` starts a local Hub. Both modes use a new data and settings directory under `.tmp-tests/inspector` plus a random local socket and token.
+
+`start_agent` launches the local authenticated Agent control service in the same isolated run; `stop_agent` stops it. `inspect_ui` returns visible Qt widgets and menu actions with IDs. `perform_action` sends Qt mouse or keyboard events; `x` and `y` are optional relative coordinates for custom widgets. `wait_for_ui` checks observable UI conditions. `capture_screenshot`, `get_logs`, `start_monitoring`, `save_scenario`, `replay_scenario`, and `start_exploration` provide evidence and bounded exploration. Read campaign progress with `get_exploration` and stop it with `cancel_exploration`. `stop_hub` and `stop_server` stop owned processes. Closing the MCP connection stops owned Hub, Agent, and Server processes.
+
+The Hub can connect only to the server owned by the same Inspector session. Scenario files record action arguments in plain text: do not enter secrets through `perform_action`. Password fields are redacted and reject typing through the bridge. Only use the Inspector on disposable data.
+
+Current scope is Hub Qt widgets and menus, Hub resource samples, automatic basic Hub, Server, and local Agent health checks after dispatched actions, and a bounded random action walk. It does not yet cover Agent worker registration, plugin subprocess lifecycle, transport faults, independent semantic oracles, permanent regression generation, or the historical defect benchmark. An action returning `scheduled` means Qt queued the event; inspect the next state to verify its effect. Scenario replay reports dispatched actions and leaves behavioral verification explicit.
+
+The server-backed regression `tests/test_inspector_server.py` reproduced a Hub defect: an already authenticated server session could not create a project unless a separate default account was saved. The focused mandatory regression is `tests/test_hub_active_server_account.py`.

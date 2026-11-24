@@ -63,6 +63,10 @@ dev = [
     "pytest-xdist>=3.6",
     "ruff>=0.6",
 ]
+inspector = [
+    "PyQt6>=6.6",
+    "psutil>=7.2.2",
+]
 build = [
     "pyinstaller>=6.0",
 ]
@@ -72,6 +76,7 @@ kraken-hub = "kraken_hub.__main__:main"
 kraken-server = "kraken_server.__main__:main"
 kraken-agent = "kraken_agent.__main__:main"
 kraken-admin = "kraken_admin.cli:main"
+kraken-inspector = "kraken_inspector.__main__:main"
 
 [project.entry-points."kraken.storage_backends"]
 filesystem = "kraken_manager.infrastructure.filesystem.registration:backend_registration"
@@ -86,7 +91,7 @@ sqlite = "kraken_core.frame_matrix.adapters.sqlite:ShardedSQLiteThumbnailStore"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["kraken_core*", "kraken_hub*", "kraken_manager*", "kraken_server*", "kraken_admin*", "kraken_agent*"]
+include = ["kraken_core*", "kraken_hub*", "kraken_manager*", "kraken_server*", "kraken_admin*", "kraken_agent*", "kraken_inspector*"]
 
 [tool.setuptools.package-data]
 kraken_hub = ["resources/*.json"]

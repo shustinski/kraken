@@ -308,6 +308,7 @@ def run_gui(
     *,
     update_url: str = "",
     thumbnail_store_uri: str = "",
+    inspector_socket: str = "",
 ) -> int:
     """Launch the project manager while retaining the old launcher by flag."""
 
@@ -322,6 +323,7 @@ def run_gui(
         plugin_launcher=launch_plugin,
         update_url=update_url,
         thumbnail_store_uri=thumbnail_store_uri,
+        inspector_socket=inspector_socket,
     )
 
 
@@ -367,6 +369,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--plugins-dir", help="Folder where Kraken plugins are stored.")
     parser.add_argument("--list", action="store_true", help="Print plugin catalog and exit.")
     parser.add_argument("--settings-dir", help="Isolate normal GUI settings in this directory; default settings stay unchanged when omitted.")
+    parser.add_argument("--inspector-socket", help=argparse.SUPPRESS)
     parser.add_argument("--self-test-dir", help="Run an isolated deployment probe and save JSON/screenshots in a new child directory.")
     parser.add_argument("--self-test-reference-manifest", help="Read up to 16 real JPEG/CIF pairs for the isolated deployment probe; requires --self-test-dir.")
     parser.add_argument("--self-test-reopen-report", help=argparse.SUPPRESS)
@@ -380,6 +383,9 @@ def main(argv: list[str] | None = None) -> None:
         help="Thumbnail cache backend: sqlite:///path, files:///path or memory://.",
     )
     args = parser.parse_args(argv)
+    if args.inspector_socket:
+        if not args.settings_dir or not os.environ.get("KRAKEN_DATA_DIR") or not os.environ.get("KRAKEN_INSPECTOR_TOKEN"):
+            parser.error("Inspector requires isolated settings, KRAKEN_DATA_DIR, and KRAKEN_INSPECTOR_TOKEN")
     if args.settings_dir and args.self_test_dir:
         parser.error("--settings-dir applies to the normal GUI; self-tests already isolate their settings")
     if args.self_test_dir:
@@ -408,5 +414,6 @@ def main(argv: list[str] | None = None) -> None:
             inventory,
             update_url=args.update_url or "",
             thumbnail_store_uri=args.thumbnail_store_uri or "",
+            inspector_socket=args.inspector_socket or "",
         )
     )

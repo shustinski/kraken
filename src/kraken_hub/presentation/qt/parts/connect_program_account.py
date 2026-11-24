@@ -1,4 +1,5 @@
 """manager_app: connect program account."""
+
 from __future__ import annotations
 
 from kraken_hub.presentation.qt.parts.connect_saved_server import (
@@ -34,11 +35,15 @@ class ConnectProgramAccountMixin:
         settings = QSettings("Kraken", "KrakenHub")
         account = default_program_account(settings)
         url = program_server_url(settings)
-        if account is None or not url:
-            raise ValueError(
-                "Укажите адрес сервера и учётную запись по умолчанию в меню Вид → Настройки."
-            )
         current = self.service.server_connection
+        if (
+            current is not None
+            and account is None
+            and (not url or str(getattr(current, "base_url", "")).rstrip("/") == url)
+        ):
+            return
+        if account is None or not url:
+            raise ValueError("Укажите адрес сервера и учётную запись по умолчанию в меню Вид → Настройки.")
         same_account = (
             current is not None
             and str(getattr(current, "base_url", "")).rstrip("/") == url

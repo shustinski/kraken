@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 from kraken_core.external_model import ExternalModelLink
+from kraken_core.frame_matrix import profiling
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.presentation.qt import (
     PipelineNode,
@@ -161,28 +162,29 @@ class LayerManagerActionMixin:
             )
             return
         if action == "delete_pipeline_step":
-            action_event_id = str(_node.details.get("pipeline_event_id", ""))
-            if not action_event_id:
-                self._error("Этот шаг является частью неизменяемой истории задания")
-                return
-            try:
-                job_id = str(_node.details.get("job_id", ""))
-                job = next((item for item in self.service.plugin_jobs() if str(item.id) == job_id), None)
-                if job is not None and job.state.value not in {"succeeded", "failed", "cancelled"}:
-                    self.cancel_agent_job(job)
-                self.service.remove_layer_pipeline_action(
-                    principal=self.session.principal,
-                    project_id=self._project_id,
-                    layer_id=_layer_id,
-                    action_event_id=action_event_id,
-                )
-            except (OSError, ValueError, RuntimeError) as exc:
-                self._error(str(exc))
-                return
-            if self._layer_dialog is not None:
-                self._layer_dialog.set_pipeline(
-                    self._pipeline_snapshot(self._project_id, _layer_id)
-                )
+            with profiling.region("pipeline_step_removal"):
+                action_event_id = str(_node.details.get("pipeline_event_id", ""))
+                if not action_event_id:
+                    self._error("Этот шаг является частью неизменяемой истории задания")
+                    return
+                try:
+                    job_id = str(_node.details.get("job_id", ""))
+                    job = next((item for item in self.service.plugin_jobs() if str(item.id) == job_id), None)
+                    if job is not None and job.state.value not in {"succeeded", "failed", "cancelled"}:
+                        self.cancel_agent_job(job)
+                    self.service.remove_layer_pipeline_action(
+                        principal=self.session.principal,
+                        project_id=self._project_id,
+                        layer_id=_layer_id,
+                        action_event_id=action_event_id,
+                    )
+                except (OSError, ValueError, RuntimeError) as exc:
+                    self._error(str(exc))
+                    return
+                if self._layer_dialog is not None:
+                    self._layer_dialog.set_pipeline(
+                        self._pipeline_snapshot(self._project_id, _layer_id)
+                    )
             return
         available, reason = self._action_availability(action)
         if not available:

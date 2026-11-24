@@ -30,6 +30,7 @@ _KINDS = (
     "matrix_thumbnails_total",
     "layer_selection",
     "matrix_zoom",
+    "pipeline_step_removal",
 )
 _DEFAULT_INI = """; Kraken profiling. Restart Kraken after editing.
 [profiling]
@@ -47,6 +48,8 @@ matrix_thumbnails_total =
 layer_selection =
 ; Matrix zoom animation: frames per second and per-frame cost until the scale settles.
 matrix_zoom =
+; Removing one pipeline step: cancel a running job, record the removal, and refresh the graph.
+pipeline_step_removal =
 top_lines = 25
 log_file = profiling.log
 """

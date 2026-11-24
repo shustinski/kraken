@@ -32,11 +32,12 @@ class ArchiveLayerRepresentationMixin:
             None,
         )
         if workspace is None or project is None or layer is None or representation is None:
-            self._error("Слой изображений больше не доступен")
+            self._error("Блок больше не доступен")
             return
+        is_cif = node.kind == "vector"
         answer = QMessageBox.question(
             self._layer_dialog or workspace,
-            "Удалить слой изображений",
+            "Удалить блок CIF" if is_cif else "Удалить слой изображений",
             (
                 f"Удалить «{representation.name}» из проекта?\n\n"
                 "Связанная история обработки останется в журнале проекта."

@@ -203,7 +203,10 @@ class PipelineNodeItem(QGraphicsRectItem):
                     ("Переименовать…", "rename_representation"),
                     ("Изменить заметку…", "edit_representation_note"),
                     primary_action,
-                    ("Архивировать", "archive_representation"),
+                    (
+                        "Удалить блок CIF из проекта" if self.node.kind == "vector" else "Архивировать",
+                        "archive_representation",
+                    ),
                 )
                 actions = (*actions, *lifecycle)
             if self._collapse is not None:

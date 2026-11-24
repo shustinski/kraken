@@ -3,13 +3,14 @@ from types import SimpleNamespace
 import pytest
 from PyQt6.QtCore import QPoint, QPointF, QSettings, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QGraphicsTextItem, QInputDialog, QMenu
+from PyQt6.QtWidgets import QGraphicsTextItem, QInputDialog, QMenu, QMessageBox
 
 from kraken_manager.presentation.qt.layer_management_parts.format_scalar import (
     LayerPipelineSnapshot, PipelineLane, PipelineNode,
 )
 from kraken_manager.presentation.qt.layer_management_parts.pipeline_graph_view import PipelineGraphView
 from kraken_hub.presentation.qt.parts.layer_manager_action import LayerManagerActionMixin
+from kraken_hub.presentation.qt.parts.archive_layer_representation import ArchiveLayerRepresentationMixin
 
 
 def graph(qtbot, tmp_path, nodes):
@@ -96,6 +97,92 @@ def test_continue_menu_dispatch(qtbot, tmp_path, monkeypatch, state, present):
     monkeypatch.setattr(QMenu, "exec", choose)
     view._items["job"].contextMenuEvent(SimpleNamespace(screenPos=lambda: QPoint()))
     assert observed == (["continue_pipeline_step"] if present else [])
+
+
+def test_cif_menu_offers_removal(qtbot, tmp_path, monkeypatch):
+    view, _ = graph(qtbot, tmp_path, [
+        PipelineNode("cif-id", "CIF — Исходные изображения", "vector", representation_id="cif-id"),
+    ])
+    observed = []
+    view.nodeActionRequested.connect(lambda node, action: observed.append((node.node_id, action)))
+
+    def choose(menu, _pos):
+        return next(action for action in menu.actions() if action.text() == "Удалить блок CIF из проекта")
+
+    monkeypatch.setattr(QMenu, "exec", choose)
+    view._items["cif-id"].contextMenuEvent(SimpleNamespace(screenPos=lambda: QPoint()))
+    assert observed == [("cif-id", "archive_representation")]
+
+
+def test_cif_removal_archives_representation_and_refreshes_board(monkeypatch):
+    controller = ArchiveLayerRepresentationMixin()
+    controller._project_id = "project"
+    controller._workspace = object()
+    controller._layer_dialog = SimpleNamespace(set_pipeline=lambda snapshot: refreshed.append(snapshot))
+    controller.session = SimpleNamespace(principal="actor")
+    representation = SimpleNamespace(id="cif-id", name="CIF — Исходные изображения")
+    controller.service = SimpleNamespace(
+        get_project=lambda _id: "project",
+        list_layers=lambda _id: [SimpleNamespace(id="layer")],
+        list_representations=lambda _project, _layer: [representation],
+        archive_representation=lambda **kwargs: archived.append(kwargs),
+    )
+    controller._error = pytest.fail
+    refreshed = []
+    archived = []
+    controller._load_representations = lambda *_args: None
+    controller._pipeline_snapshot = lambda *_args: "updated board"
+    prompts = []
+
+    def confirm(_parent, title, message):
+        prompts.append((title, message))
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+    controller._archive_layer_representation(
+        "layer", PipelineNode("cif-id", representation.name, "vector", representation_id="cif-id"),
+    )
+    assert archived[0]["representation"] is representation
+    assert refreshed == ["updated board"]
+    assert prompts[0][0] == "Удалить блок CIF"
+
+
+def test_delete_pipeline_step_writes_a_profile(tmp_path, monkeypatch):
+    from kraken_core.frame_matrix import profiling
+
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text("[profiling]\npipeline_step_removal = true\n", encoding="utf-8")
+    profiling.configure(tmp_path)
+    controller = LayerManagerActionMixin()
+    controller._project_id = "project"
+    controller.session = SimpleNamespace(principal="actor")
+    controller._layer_dialog = SimpleNamespace(set_pipeline=lambda snapshot: refreshed.append(snapshot))
+    controller._pipeline_snapshot = lambda *_args: "updated board"
+    controller._error = pytest.fail
+    removed = []
+
+    def remove_layer_pipeline_action(**kwargs):
+        removed.append(kwargs)
+
+    controller.service = SimpleNamespace(
+        plugin_jobs=lambda: [],
+        remove_layer_pipeline_action=remove_layer_pipeline_action,
+    )
+    refreshed = []
+    node = PipelineNode(
+        "step",
+        "Step",
+        "operation",
+        details={"pipeline_event_id": "event-1", "deletable": True},
+    )
+
+    controller._layer_manager_action("layer", node, "delete_pipeline_step")
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert report.count("[pipeline_step_removal]") == 1
+    assert "remove_layer_pipeline_action" in report
+    assert removed[0]["action_event_id"] == "event-1"
+    assert refreshed == ["updated board"]
 
 
 def test_continue_opens_existing_waiting_job():

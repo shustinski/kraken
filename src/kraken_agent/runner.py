@@ -259,19 +259,20 @@ class SubprocessPluginRunner:
 
     def _capture_progress(self, workspace: StagingWorkspace, job_id: str) -> None:
         checkpoint_path = workspace.path / "checkpoint.json"
-        try:
-            with open_regular_read(checkpoint_path, root=workspace.path) as stream:
-                checkpoint = json.loads(stream.read(1024 * 1024 + 1).decode("utf-8"))
-            if (isinstance(checkpoint, dict) and checkpoint.get("job_id") == job_id
-                    and checkpoint != self.store.get(job_id).checkpoint):
-                from kraken_core.job_recovery import execution_state
-                execution_state({"checkpoint": checkpoint})
-                for item in checkpoint.get("files", []):
-                    if workspace.digest(item["relative_path"]) != item["sha256"]:
-                        raise ValueError("Incomplete checkpoint file")
-                self.store.record_checkpoint(job_id, checkpoint)
-        except (OSError, ValueError, TypeError):
-            pass  # An atomic snapshot is picked up on the next poll.
+        if checkpoint_path.is_file():
+            try:
+                with open_regular_read(checkpoint_path, root=workspace.path) as stream:
+                    checkpoint = json.loads(stream.read(1024 * 1024 + 1).decode("utf-8"))
+                if (isinstance(checkpoint, dict) and checkpoint.get("job_id") == job_id
+                        and checkpoint != self.store.get(job_id).checkpoint):
+                    from kraken_core.job_recovery import execution_state
+                    execution_state({"checkpoint": checkpoint})
+                    for item in checkpoint.get("files", []):
+                        if workspace.digest(item["relative_path"]) != item["sha256"]:
+                            raise ValueError("Incomplete checkpoint file")
+                    self.store.record_checkpoint(job_id, checkpoint)
+            except (OSError, ValueError, TypeError):
+                pass  # An atomic snapshot is picked up on the next poll.
         progress_path = workspace.path / "progress.json"
         if not progress_path.is_file():
             return

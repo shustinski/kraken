@@ -7,6 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -85,6 +86,12 @@ def staged_runner(tmp_path, script):
         "frames.vectorize.v1": PluginProcessSpec("frames.vectorize.v1", (sys.executable, "-c", script)),
     })
     return store, SubprocessPluginRunner(store, tmp_path / "staging", registry), workspace
+
+
+def test_absent_optional_checkpoint_is_not_opened_on_each_progress_poll(tmp_path):
+    _store, runner, workspace = staged_runner(tmp_path, "pass")
+    with patch("kraken_agent.runner.open_regular_read", side_effect=AssertionError("missing checkpoint opened")):
+        runner._capture_progress(workspace, "job-1")
 
 
 def test_stopping_active_subprocess_marks_recovery_required(tmp_path):

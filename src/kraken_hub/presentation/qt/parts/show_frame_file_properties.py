@@ -93,7 +93,6 @@ class ShowFrameFilePropertiesMixin:
                     ("Идентификатор серии", str(series.id)),
                     ("Область", series.scope.value),
                     ("Имя файла", active.filename),
-                    ("MIME-тип", active.media_type),
                     ("Размер", active.size_bytes),
                     ("SHA-256", active.sha256),
                     (
@@ -114,7 +113,7 @@ class ShowFrameFilePropertiesMixin:
                     ),
                     ("Инструмент", active.tool_name),
                     ("Версия инструмента", active.tool_version),
-                    ("Provenance", dict(active.parameters)),
+                    ("Параметры создания", dict(active.parameters)),
                 ),
                 history=_history_entries(history),
                 versions=version_rows,

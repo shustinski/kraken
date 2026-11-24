@@ -344,7 +344,7 @@ class ShowSelectedFrameMixin:
             ("Изменён", payload.get("modified_at")),
             (
                 "Отсутствующие данные",
-                "CIF или изображение отсутствует" if payload.get("missing") else "Нет",
+                "CIF или изображение отсутствует" if payload.get("missing") else None,
             ),
         )
 

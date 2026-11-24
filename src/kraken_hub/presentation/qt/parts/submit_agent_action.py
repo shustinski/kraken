@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from uuid import uuid4
+from kraken_core.frame_matrix import profiling
 from kraken_manager.domain.layer_board import next_cif_representation_name
 from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
 
@@ -15,6 +16,33 @@ class SubmitAgentActionMixin:
         capability: str,
         parameters: Mapping[str, object],
         coordinates: tuple[tuple[int, int], ...] | None = None,
+    ):
+        profile = profiling.begin_region("plugin_launch", label=capability)
+        submitted = False
+        try:
+            result = self._submit_agent_action_impl(
+                layer_id=layer_id,
+                source_representation_id=source_representation_id,
+                capability=capability,
+                parameters=parameters,
+                coordinates=coordinates,
+                profile=profile,
+            )
+            submitted = True
+            return result
+        finally:
+            if profile is not None:
+                profile.finish(ready=None if submitted else False)
+
+    def _submit_agent_action_impl(
+        self,
+        *,
+        layer_id: str,
+        source_representation_id: str,
+        capability: str,
+        parameters: Mapping[str, object],
+        coordinates: tuple[tuple[int, int], ...] | None,
+        profile: profiling.ProfileSession | None,
     ):
         from kraken_hub.presentation.qt.manager_app import AgentPluginGateway
         workspace = self._workspace
@@ -51,6 +79,8 @@ class SubmitAgentActionMixin:
                 )
         if not coordinates:
             raise ValueError("В выбранном слое нет изображений для запуска задания")
+        if profile is not None:
+            profile.checkpoint("inputs_ready")
         if capability == "frames.dataset.prepare.v1":
             vectors = [
                 item for item in self.service.list_representations(project.id, layer_id)
@@ -164,6 +194,8 @@ class SubmitAgentActionMixin:
                 ),
             )
             self._agent_gateway = gateway
+        if profile is not None:
+            profile.checkpoint("gateway_ready")
         job = self.service.submit_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
@@ -176,8 +208,12 @@ class SubmitAgentActionMixin:
             parameters=parameters,
             idempotency_key=str(uuid4()),
         )
+        if profile is not None:
+            profile.checkpoint("job_submitted")
         if interactive_registry is not None:
             self._run_remote_interactive_job(job, registry=interactive_registry)
+            if profile is not None:
+                profile.checkpoint("interactive_worker_scheduled")
         followup = getattr(self, "_request_agent_followup", None)
         if callable(followup):
             followup()

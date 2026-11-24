@@ -115,6 +115,25 @@ def test_layer_manager_dialog_closes_on_tab_switch(environment, tmp_path):
     assert controller._layer_dialog is None
 
 
+def test_layer_manager_open_profile_reports_visible_dialog(environment, tmp_path, monkeypatch):
+    from kraken_core.frame_matrix import profiling
+
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text("[profiling]\nlayer_manager = true\n", encoding="utf-8")
+    profiling.configure(tmp_path)
+    controller, shell, service, session = environment
+    project = _create_project(service, session, "Profile", tmp_path)
+    controller.open_project(_item(project))
+
+    controller.open_layer_manager()
+    QApplication.processEvents()
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[layer_manager]" in report
+    assert "pipeline_ready:" in report
+    assert "ready=yes" in report
+
+
 def test_wakes_for_open_inactive_project_are_retained_and_applied_on_activation(environment, tmp_path):
     controller, shell, service, session = environment
     p1 = _create_project(service, session, "Alpha", tmp_path)

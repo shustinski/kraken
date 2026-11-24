@@ -108,6 +108,54 @@ def _local_timestamp(value: str) -> str:
         parsed = parsed.astimezone()
     return parsed.strftime("%d.%m.%Y %H:%M:%S")
 
+
+_PROPERTY_STATES = {
+    "waiting_for_user": "Ожидает действий пользователя",
+    "queued": "В очереди", "running": "Выполняется", "succeeded": "Завершено",
+    "failed": "Ошибка", "cancelled": "Отменено", "active": "Активен",
+    "archived": "Архивирован", "draft": "Подготовка", "staging": "Подготовка файлов",
+    "launched": "Запущено", "partial": "Частичный результат",
+    "importing": "Сохранение результата", "recovery_required": "Требуется восстановление",
+    "awaiting_authorization": "Ожидает разрешения",
+    "empty": "Пусто", "image_ready": "Изображение", "processing": "Обработка",
+    "vectorized": "Векторизовано", "in_review": "На проверке",
+    "returned_unchanged": "Возврат без изменений",
+    "returned_changed": "Возврат с изменениями",
+    "approved": "Принято", "changes_requested": "Нужны исправления",
+    "conflict": "Конфликт", "error": "Ошибка",
+    "not_checked": "Не проверено", "checked": "Проверено",
+}
+_PROPERTY_TYPES = {
+    "metal": "Металл", "contact": "Контакты", "gate": "Затворы", "diffusion": "Диффузия",
+    "image": "Изображения", "vector": "Векторы", "binary": "Бинарные изображения",
+    "source": "Исходные изображения", "confidence": "Уверенность модели",
+    "y_down": "Y вниз", "y_up": "Y вверх", "result": "Результат",
+    "model": "Модель", "dataset": "Выборка",
+}
+_PROPERTY_DATES = {"Когда добавлен", "Создан", "Изменён", "Дата объекта", "Дата запуска"}
+
+
+def _property_display_value(name: str, value: object) -> str:
+    if name in _PROPERTY_DATES:
+        return _local_timestamp(str(value))
+    if name in {"Состояние", "Состояние объекта", "Состояние запуска", "Статус", "Проверка"}:
+        return _PROPERTY_STATES.get(str(value), _display_value(value))
+    if name in {"Тип слоя", "Тип результата", "Вид представления", "Назначение", "Ориентация"}:
+        return _PROPERTY_TYPES.get(str(value), _display_value(value))
+    if name == "Плагин":
+        return {"contour": "Contour", "neuralimage": "NeuralImage", "karakal": "Karakal"}.get(str(value).casefold(), _display_value(value))
+    if name == "Режим хранения":
+        return {"managed_copy": "Файлы в проекте", "external": "Внешние файлы"}.get(str(value), _display_value(value))
+    if name == "Размер":
+        return _format_bytes(value) or _display_value(value)
+    if name == "Прогресс":
+        try:
+            progress = float(value)
+        except (TypeError, ValueError):
+            return _display_value(value)
+        return f"{progress * 100:.0f}%" if 0 <= progress <= 1 else _display_value(value)
+    return _display_value(value)
+
 def _event_type_label(event_type: str) -> str:
     label = _EVENT_TYPE_LABELS.get(event_type)
     if label:

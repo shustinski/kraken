@@ -7,6 +7,7 @@ from kraken_manager.presentation.qt import (
 from kraken_manager.presentation.qt.models import ProjectListItem
 
 from kraken_hub.presentation.qt.parts.event_matches_node import _history_entries
+from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE
 
 
 class ShowProjectPropertiesMixin:
@@ -26,9 +27,11 @@ class ShowProjectPropertiesMixin:
                 ("Идентификатор", str(value.id)),
                 ("Размер матрицы", f"{value.width} × {value.height}"),
                 ("Ориентация", value.orientation.value),
-                ("Профиль хранения", value.storage_profile),
+                ("Хранение", {
+                    REMOTE_STORAGE_PROFILE.id: "Сервер",
+                    "local-filesystem": "Локально",
+                }.get(value.storage_profile, value.storage_profile)),
                 ("Состояние", value.state.value),
-                ("Ревизия", value.revision),
                 ("Создан", value.created_at.isoformat()),
             )
 

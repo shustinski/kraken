@@ -425,8 +425,8 @@ def test_object_properties_dialog_renders_nested_values_and_local_history(qapp) 
     dialog = ObjectPropertiesDialog(snapshot)
 
     assert dialog.windowTitle() == "Свойства: Metal 1"
-    assert dialog.properties_table.item(1, 1).text() == "—"
-    assert '"quality": 95' in dialog.properties_table.item(2, 1).text()
+    assert dialog.properties_table.rowCount() == 2
+    assert '"quality": 95' in dialog.properties_table.item(1, 1).text()
     assert dialog.history_table.item(0, 1).text() == "Оператор"
     assert dialog.history_table.item(0, 2).text() == "Создан слой"
     assert dialog.history_table.item(0, 2).toolTip() == "LayerCreated"

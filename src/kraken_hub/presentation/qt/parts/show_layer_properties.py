@@ -59,12 +59,10 @@ class ShowLayerPropertiesMixin:
             ("Тип слоя", layer.type.value),
             ("Порядок", layer.order),
             ("Состояние", layer.state.value),
-            ("Ревизия", layer.revision),
             (
                 "Путь",
                 None if binding is None else binding.image_directory,
             ),
-            ("Примечание", None),
             ("Количество файлов", _count_regular_files(paths)),
             ("Кто добавил", actor),
             ("Когда добавлен", created_at if created_at != "—" else layer.created_at.isoformat()),
@@ -73,13 +71,10 @@ class ShowLayerPropertiesMixin:
             properties.extend(
                 (
                     ("Режим хранения", binding.mode.value),
-                    ("Каталог изображений", binding.image_directory),
                     ("Каталог SSC", binding.ssc_directory),
                     ("Каталог PRV", binding.prv_directory),
                     ("Вспомогательный каталог", binding.aux_directory),
-                    ("Корень импорта", binding.import_root),
                     ("Известно кадров", len(binding.frame_positions)),
-                    ("Позиции кадров", binding.frame_positions),
                     ("Параметры преобразования", _plain_value(binding.conversion)),
                 )
             )

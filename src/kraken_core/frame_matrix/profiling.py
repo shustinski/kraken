@@ -13,6 +13,7 @@ import sys
 from contextlib import contextmanager
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from datetime import datetime
 from logging import INFO, LogRecord
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -24,6 +25,9 @@ from kraken_core.runtime import package_runtime_root
 
 _KINDS = (
     "main_window",
+    "plugin_launch",
+    "layer_manager",
+    "node_properties",
     "matrix_viewport",
     "matrix_thumbnail",
     "matrix_ui",
@@ -38,6 +42,12 @@ enabled = false
 ; Empty values inherit enabled. Set true or false to override individually.
 ; Main window: from completed sign-in through the first GUI paint and event-loop callback.
 main_window =
+; Plugin launch: direct process creation or Agent job submission in Kraken.
+plugin_launch =
+; Layer manager: dialog construction through the first GUI event-loop turn.
+layer_manager =
+; Pipeline node properties: data loading through the first dialog event-loop turn.
+node_properties =
 matrix_viewport =
 ; Choose one thumbnail mode: individual or total. Both cannot be true.
 matrix_thumbnail = false
@@ -153,7 +163,16 @@ class ProfileSession:
     profiler: cProfile.Profile
     started: float
     active: bool
+    label: str = ""
+    started_at_wall: str = ""
+    previous: float = 0.0
+    stages: list[tuple[str, float]] = field(default_factory=list)
     finished: bool = False
+
+    def checkpoint(self, stage: str) -> None:
+        now = perf_counter()
+        self.stages.append((stage, (now - self.previous) * 1000))
+        self.previous = now
 
     def finish(self, *, ready: bool | None = None) -> None:
         if self.finished:
@@ -163,7 +182,13 @@ class ProfileSession:
             self.profiler.disable()
         report = io.StringIO()
         state = "" if ready is None else f" ready={'yes' if ready else 'no'}"
-        report.write(f"[{self.kind}] elapsed_ms={(perf_counter() - self.started) * 1000:.3f}{state}\n")
+        label = f" {self.label}" if self.label else ""
+        timestamp = f" started_at={self.started_at_wall}" if self.started_at_wall else ""
+        report.write(
+            f"[{self.kind}]{label}{timestamp} elapsed_ms={(perf_counter() - self.started) * 1000:.3f}{state}\n"
+        )
+        for stage, milliseconds in self.stages:
+            report.write(f"  {stage}: {milliseconds:.3f} ms\n")
         if self.active:
             pstats.Stats(self.profiler, stream=report).strip_dirs().sort_stats("cumulative").print_stats(
                 self.config.top_lines
@@ -173,7 +198,7 @@ class ProfileSession:
         _write_report(self.config.log_path, report.getvalue())
 
 
-def begin_region(kind: str) -> ProfileSession | None:
+def begin_region(kind: str, *, label: str = "") -> ProfileSession | None:
     """Start profiling now; the caller ends it after synchronous or queued work."""
     config = _config
     if config is None or not config.flags.get(kind, False):
@@ -187,7 +212,16 @@ def begin_region(kind: str) -> ProfileSession | None:
         if not _is_profiler_conflict(exc):
             raise
         active = False
-    return ProfileSession(kind, config, profiler, started, active)
+    return ProfileSession(
+        kind,
+        config,
+        profiler,
+        started,
+        active,
+        label=label,
+        started_at_wall=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        previous=started,
+    )
 
 
 @contextmanager

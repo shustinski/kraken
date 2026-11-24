@@ -180,6 +180,23 @@ def test_profile_session_finishes_only_when_marked_ready(tmp_path, monkeypatch):
     assert report.count("[main_window]") == 1
 
 
+def test_profile_session_reports_named_startup_stages(tmp_path, monkeypatch):
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text("[profiling]\nplugin_launch = true\nlayer_manager = true\n", encoding="utf-8")
+    profiling.configure(tmp_path)
+    for kind in ("plugin_launch", "layer_manager"):
+        session = profiling.begin_region(kind)
+        assert session is not None
+        session.checkpoint("prepared")
+        session.finish(ready=True)
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[plugin_launch]" in report
+    assert "[layer_manager]" in report
+    assert report.count("started_at=") == 2
+    assert report.count("prepared:") == 2
+
+
 def test_main_window_profile_waits_for_paint_and_event_loop(tmp_path, monkeypatch):
     monkeypatch.setattr(profiling, "_config", None)
     (tmp_path / "kraken.ini").write_text("[profiling]\nmain_window = true\n", encoding="utf-8")

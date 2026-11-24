@@ -4,7 +4,6 @@ import argparse
 import multiprocessing as mp
 import json
 import os
-import shutil
 import subprocess
 import sys
 from importlib import metadata as importlib_metadata
@@ -21,6 +20,7 @@ from kraken_core.plugins import (
     scan_plugin_directory,
     scan_windows_plugin_registry,
 )
+from kraken_core.frame_matrix import profiling
 from kraken_core.qt import configure_application_identity
 from kraken_core.runtime import workspace_root
 from kraken_hub.infrastructure.agent.launch import build_launch_command
@@ -91,24 +91,33 @@ def launch_plugin(
     *,
     arguments: tuple[str, ...] = (),
 ) -> subprocess.Popen:
-    root = workspace_root()
-    plugin_root = root / "plugins" / plugin.id
-    executable_path = plugin.executable_for().path
-    cwd = (
-        Path(executable_path).expanduser().resolve(strict=False).parent
-        if executable_path
-        else plugin_root if plugin_root.exists() else root
-    )
-    env = None
-    if not plugin.executable_for().path:
-        env = dict(**os.environ)
-        python_paths = [str(root / "src"), str(root / "plugins" / plugin.id / "src")]
-        env["PYTHONPATH"] = os.pathsep.join(python_paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    return subprocess.Popen(
-        build_launch_command(plugin, root=root, arguments=arguments),
-        cwd=str(cwd),
-        env=env,
-    )
+    profile = profiling.begin_region("plugin_launch", label=plugin.id)
+    started = False
+    try:
+        root = workspace_root()
+        plugin_root = root / "plugins" / plugin.id
+        executable_path = plugin.executable_for().path
+        cwd = (
+            Path(executable_path).expanduser().resolve(strict=False).parent
+            if executable_path
+            else plugin_root if plugin_root.exists() else root
+        )
+        env = None
+        if not executable_path:
+            env = dict(**os.environ)
+            python_paths = [str(root / "src"), str(root / "plugins" / plugin.id / "src")]
+            env["PYTHONPATH"] = os.pathsep.join(python_paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        command = build_launch_command(plugin, root=root, arguments=arguments)
+        if profile is not None:
+            profile.checkpoint("command_ready")
+        process = subprocess.Popen(command, cwd=str(cwd), env=env)
+        started = True
+        if profile is not None:
+            profile.checkpoint("process_started")
+        return process
+    finally:
+        if profile is not None:
+            profile.finish(ready=None if started else False)
 
 
 def build_install_command(plugin: PluginMetadata) -> list[str]:

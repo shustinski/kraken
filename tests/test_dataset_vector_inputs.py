@@ -74,6 +74,11 @@ def test_dataset_rejects_image_representation_as_vector_input(vector_job):
 
 def test_controller_passes_selected_vector_representation(vector_job, monkeypatch, tmp_path):
     from kraken_hub.presentation.qt import manager_app
+    from kraken_core.frame_matrix import profiling
+
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text("[profiling]\nplugin_launch = true\n", encoding="utf-8")
+    profiling.configure(tmp_path)
 
     _server, local, session, project, layer, vectors, _gateway, _imported = vector_job
     manifests = []
@@ -99,6 +104,10 @@ def test_controller_passes_selected_vector_representation(vector_job, monkeypatc
     )
     assert manifests[0].parameters["vector_representation_id"] == str(vectors.id)
     assert len(manifests[0].parameters["vector_inputs"]) == 2
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[plugin_launch] frames.dataset.prepare.v1" in report
+    assert "inputs_ready:" in report
+    assert "job_submitted:" in report
 
     from kraken_manager.infrastructure.plugin.agent_gateway import AgentPluginGateway
     import hashlib

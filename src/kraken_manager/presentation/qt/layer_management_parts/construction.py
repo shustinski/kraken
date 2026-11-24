@@ -1,5 +1,6 @@
 """layer_management: construction."""
 from __future__ import annotations
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QDialogButtonBox,
@@ -16,6 +17,7 @@ from kraken_manager.presentation.qt.layer_management_parts.format_scalar import 
     _event_type_label,
     _local_timestamp,
     _is_uuid_like,
+    _property_display_value,
 )
 from kraken_manager.presentation.qt.text_bounds import bounded_popup_text, cap_table_row_heights
 
@@ -42,11 +44,12 @@ class ConstructionMixin:
             if not str(name).startswith("Идентификатор")
             and not _is_uuid_like(value)
             and not any(part in str(name).casefold() for part in ("sha-256", "sha256", "fingerprint", "token"))
+            and not _empty_property(value)
         )
         self.properties_table.setRowCount(len(properties))
         for row, (name, value) in enumerate(properties):
             self.properties_table.setItem(row, 0, QTableWidgetItem(str(name)))
-            value_item = QTableWidgetItem(_display_value(value))
+            value_item = QTableWidgetItem(_property_display_value(str(name), value))
             value_item.setToolTip(bounded_popup_text(value_item.text()))
             self.properties_table.setItem(row, 1, value_item)
         self.properties_table.resizeRowsToContents()
@@ -151,3 +154,9 @@ class ConstructionMixin:
 
 if TYPE_CHECKING:
     from kraken_manager.presentation.qt.layer_management_parts.format_scalar import ObjectPropertiesSnapshot
+
+
+def _empty_property(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (str, Mapping, tuple, list, set)) and not value
+    )

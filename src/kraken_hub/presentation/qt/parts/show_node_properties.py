@@ -1,12 +1,13 @@
 """manager_app: show node properties."""
 from __future__ import annotations
+
 from collections.abc import Mapping
+
+from kraken_core.frame_matrix import profiling
 from kraken_manager.presentation.qt import (
     ObjectPropertiesSnapshot,
     PipelineNode,
 )
-
-
 from kraken_hub.presentation.qt.parts.event_matches_node import (
     _count_regular_files,
     _creator,
@@ -16,14 +17,20 @@ from kraken_hub.presentation.qt.parts.event_matches_node import (
     _nested_mapping,
     _plain_value,
 )
+from kraken_hub.presentation.qt.parts.pipeline_snapshot import _STATE_TITLES
 
 
 def _visible_parameters(value: object) -> object:
     if isinstance(value, Mapping):
-        hidden = {"format", "version", "input_media_types", "execution_host", "input_transport", "model_version"}
+        hidden = {
+            "format", "version", "input_media_types", "execution_host",
+            "input_transport", "model_version", "project_width",
+        }
         return {
-            key: _visible_parameters(item) for key, item in value.items()
-            if not any(part in str(key).lower() for part in ("sha256", "fingerprint", "token")) and key not in hidden
+            key: _visible_parameters(item)
+            for key, item in value.items()
+            if key not in hidden
+            and not any(part in str(key).lower() for part in ("sha256", "fingerprint", "token"))
         }
     if isinstance(value, (list, tuple)):
         return [_visible_parameters(item) for item in value]
@@ -32,6 +39,20 @@ def _visible_parameters(value: object) -> object:
 
 class ShowNodePropertiesMixin:
     def _show_node_properties(self, layer_id: str, node: PipelineNode) -> None:
+        profile = profiling.begin_region("node_properties", label=node.kind)
+        try:
+            snapshot = self._node_properties_snapshot(layer_id, node)
+            if profile is not None:
+                profile.checkpoint("data_ready")
+                self._open_node_properties(snapshot, profile)
+            else:
+                self._open_properties(snapshot)
+        except Exception:
+            if profile is not None:
+                profile.finish(ready=False)
+            raise
+
+    def _node_properties_snapshot(self, layer_id: str, node: PipelineNode) -> ObjectPropertiesSnapshot:
         project_history = tuple(self.service.history(self._project_id))
         snapshot = self._pipeline_snapshot(self._project_id, layer_id)
         if node.kind == "blackbox":
@@ -51,42 +72,67 @@ class ShowNodePropertiesMixin:
                 for event in project_history
                 if any(_event_matches_node(event, item) for item in hidden)
             )
-            self._open_properties(
-                ObjectPropertiesSnapshot(
-                    title=node.title,
-                    object_kind=node.kind,
-                    properties=(
-                        ("Название", node.title),
-                        ("Тип объекта", "Сгруппированные этапы"),
-                        ("Идентификатор", node.node_id),
-                        ("Путь", None),
-                        ("Примечание", node.subtitle),
-                        ("Количество файлов", None),
-                        ("Кто добавил", None),
-                        ("Когда добавлен", None),
-                        ("Количество скрытых этапов", len(hidden)),
-                        (
-                            "Скрытые этапы",
-                            [
-                                {
-                                    "id": item.node_id,
-                                    "name": item.title,
-                                    "kind": item.kind,
-                                    "state": item.state,
-                                }
-                                for item in hidden
-                            ],
-                        ),
-                    ),
-                    history=_history_entries(hidden_events),
-                )
+            return ObjectPropertiesSnapshot(
+                title=node.title,
+                object_kind=node.kind,
+                properties=(
+                    ("Название", node.title),
+                    ("Тип объекта", "Сгруппированные этапы"),
+                    ("Примечание", node.subtitle),
+                    ("Количество скрытых этапов", len(hidden)),
+                    ("Скрытые этапы", [
+                        {"Название": item.title, "Состояние": _STATE_TITLES.get(item.state, item.subtitle)}
+                        for item in hidden
+                    ]),
+                ),
+                history=_history_entries(hidden_events),
             )
-            return
 
         events = tuple(
             event for event in project_history if _event_matches_node(event, node)
         )
         actor, created_at = _creator(events)
+        capability = str(node.details.get("capability", ""))
+        if node.kind == "job" and capability == "frames.vectorize.v1":
+            creation = next(
+                (event for event in events if event.event_type == "PluginJobCreated"), None
+            )
+            result = next(
+                (
+                    event for event in reversed(events)
+                    if isinstance(
+                        _nested_mapping(_event_payload(event), "result").get("parameters_applied"),
+                        Mapping,
+                    )
+                ),
+                None,
+            )
+            result_payload = {} if result is None else _nested_mapping(_event_payload(result), "result")
+            applied = result_payload.get("parameters_applied")
+            plugin = (
+                result_payload.get("plugin_name")
+            ) or (
+                getattr(getattr(creation, "program", None), "name", None) if creation is not None else None
+            ) or "Contour"
+            visible_parameters = _visible_parameters(applied)
+            parameters = (
+                visible_parameters if visible_parameters
+                else "Параметры распознавания появятся после сохранения результата"
+            )
+            actions = self._parameter_export_actions(applied) if visible_parameters else ()
+            return ObjectPropertiesSnapshot(
+                title=node.title,
+                object_kind=node.kind,
+                properties=(
+                    ("Кто добавил", actor),
+                    ("Когда добавлен", created_at),
+                    ("Плагин", "Contour" if str(plugin).casefold() == "contour" else plugin),
+                    ("Состояние", _STATE_TITLES.get(node.state, node.subtitle or node.state)),
+                    ("Параметры", parameters),
+                ),
+                history=_history_entries(events),
+                actions=actions,
+            )
         representations = self.service.list_representations(self._project_id, layer_id)
         representation = next(
             (
@@ -151,9 +197,6 @@ class ShowNodePropertiesMixin:
                         else str(representation.source_image_representation_id),
                     ),
                     ("Активно", representation.active),
-                    ("Состояние объекта", representation.state.value),
-                    ("Ревизия", representation.revision),
-                    ("Дата объекта", representation.created_at.isoformat()),
                 )
             )
         elif derived_run is not None:
@@ -167,10 +210,7 @@ class ShowNodePropertiesMixin:
                 (
                     ("Идентификатор запуска", derived_run.run_id),
                     ("Тип результата", derived_run.kind.value),
-                    ("Состояние запуска", derived_run.state.value),
                     ("Плагин", derived_run.plugin_id),
-                    ("Операция", node.title),
-                    ("Дата запуска", derived_run.created_at),
                     ("Параметры", derived_run.provenance.get("parameters", {})),
                 )
             )
@@ -227,20 +267,19 @@ class ShowNodePropertiesMixin:
                             or job.get("id")
                             or node.details.get("job_id"),
                         ),
-                        ("Плагин", manifest.get("plugin_name") or node.details.get("программа")),
+                        ("Плагин", manifest.get("plugin_name") or node.details.get("программа")
+                         or getattr(getattr(creation, "program", None), "name", None)),
                         ("Параметры", node.details.get("параметры") or manifest.get("parameters")),
-                        ("Прогресс", job.get("progress") or node.details.get("прогресс")),
+                        ("Прогресс", job.get("progress") or node.details.get("прогресс") or None),
                         ("Ошибка", job.get("error") or node.details.get("ошибка")),
                     )
                 )
             elif creation is not None:
                 properties.extend(
                     (
-                        ("Событие создания", getattr(creation, "event_type", "")),
                         ("Плагин", creation_payload.get("plugin_id")),
                         ("Режим", creation_payload.get("mode")),
                         ("Параметры", creation_payload.get("parameters")),
-                        ("Параметры события", creation_payload),
                     )
                 )
         properties.extend(
@@ -250,34 +289,39 @@ class ShowNodePropertiesMixin:
                 ("Количество файлов", file_count),
                 ("Кто добавил", actor),
                 ("Когда добавлен", created_at),
-                ("Дополнительные свойства", {
-                    key: value for key, value in node.details.items()
-                    if key in {"время", "автор", "программа", "прогресс", "ошибка", "версия"}
-                }),
             )
         )
         parameter_payload = node.details.get("параметры")
-        actions = ()
-        if parameter_payload:
-            def export_parameters() -> None:
-                import json
-                from pathlib import Path
-                from PyQt6.QtWidgets import QFileDialog
-
-                destination, _ = QFileDialog.getSaveFileName(self.shell, "Сохранить параметры", "parameters.json", "JSON (*.json)")
-                if destination:
-                    try:
-                        Path(destination).write_text(json.dumps(_plain_value(parameter_payload), ensure_ascii=False, indent=2), encoding="utf-8")
-                    except (OSError, TypeError, ValueError) as exc:
-                        self._error(f"Не удалось сохранить параметры: {exc}")
-
-            actions = (("Сохранить параметры в JSON…", export_parameters),)
-        self._open_properties(
-            ObjectPropertiesSnapshot(
-                title=node.title,
-                object_kind=node.kind,
-                properties=tuple((name, _visible_parameters(value) if name == "Параметры" else value) for name, value in properties),
-                history=_history_entries(events),
-                actions=actions,
-            )
+        actions = self._parameter_export_actions(parameter_payload) if _visible_parameters(parameter_payload) else ()
+        order = {name: index for index, name in enumerate((
+            "Название", "Тип объекта", "Кто добавил", "Когда добавлен", "Плагин", "Состояние", "Параметры"
+        ))}
+        properties.sort(key=lambda pair: order.get(pair[0], len(order)))
+        return ObjectPropertiesSnapshot(
+            title=node.title,
+            object_kind=node.kind,
+            properties=tuple((name, _visible_parameters(value) if name == "Параметры" else value) for name, value in properties),
+            history=_history_entries(events),
+            actions=actions,
         )
+
+    def _parameter_export_actions(self, parameter_payload: object):
+        def export_parameters() -> None:
+            import json
+            from pathlib import Path
+
+            from PyQt6.QtWidgets import QFileDialog
+
+            destination, _ = QFileDialog.getSaveFileName(
+                self.shell, "Сохранить параметры", "parameters.json", "JSON (*.json)"
+            )
+            if destination:
+                try:
+                    Path(destination).write_text(
+                        json.dumps(_plain_value(parameter_payload), ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    self._error(f"Не удалось сохранить параметры: {exc}")
+
+        return (("Сохранить параметры в JSON…", export_parameters),)

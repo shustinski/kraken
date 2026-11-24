@@ -1,5 +1,10 @@
 """manager_app: open layer manager."""
+
 from __future__ import annotations
+
+from PyQt6.QtCore import QTimer
+
+from kraken_core.frame_matrix import profiling
 from kraken_manager.presentation.qt import (
     LayerManagerDialog,
 )
@@ -51,10 +56,28 @@ class OpenLayerManagerMixin:
             self._refresh_layer_pipeline(project_id, item.layer_id)
 
     def open_layer_manager(self) -> None:
+        profile = profiling.begin_region("layer_manager")
+        scheduled = False
+        try:
+            if not self._open_layer_manager(profile):
+                return
+            if profile is not None:
+
+                def finish_profile() -> None:
+                    profile.checkpoint("first_event_loop")
+                    profile.finish(ready=True)
+
+                QTimer.singleShot(0, finish_profile)
+                scheduled = True
+        finally:
+            if profile is not None and not scheduled:
+                profile.finish(ready=False)
+
+    def _open_layer_manager(self, profile: profiling.ProfileSession | None) -> bool:
         workspace = self._workspace
         project_id = self._project_id
         if workspace is None or not project_id or not self.shell.current_page_key().startswith("project:"):
-            return
+            return False
         if self._layer_dialog is None:
             dialog = LayerManagerDialog(
                 project_id,
@@ -74,13 +97,22 @@ class OpenLayerManagerMixin:
                 lambda: self._add_layer(workspace, project_id)
             )
             self._layer_dialog = dialog
+            if profile is not None:
+                profile.checkpoint("dialog_created")
         self._layer_dialog.set_layers(
             list(workspace.layer_model.items()),
             str(getattr(workspace, "_selected_layer_id", "")),
         )
+        if profile is not None:
+            profile.checkpoint("layers_loaded")
         selected = str(getattr(workspace, "_selected_layer_id", ""))
         if selected and not self._refresh_layer_pipeline(project_id, selected):
-            return
+            return False
+        if profile is not None:
+            profile.checkpoint("pipeline_ready")
         self._layer_dialog.show()
         self._layer_dialog.raise_()
         self._layer_dialog.activateWindow()
+        if profile is not None:
+            profile.checkpoint("window_shown")
+        return True

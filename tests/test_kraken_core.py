@@ -113,6 +113,23 @@ def test_standalone_plugin_launches_from_its_install_directory(tmp_path, monkeyp
     }
 
 
+def test_plugin_launch_profile_covers_command_and_process_start(tmp_path, monkeypatch):
+    from kraken_core.frame_matrix import profiling
+
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text("[profiling]\nplugin_launch = true\n", encoding="utf-8")
+    profiling.configure(tmp_path)
+    monkeypatch.setattr(hub_app, "workspace_root", lambda: tmp_path)
+    monkeypatch.setattr(hub_app.subprocess, "Popen", lambda *_args, **_kwargs: object())
+
+    hub_app.launch_plugin(PluginMetadata(id="contour", display_name="Contour"))
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[plugin_launch] contour" in report
+    assert "command_ready:" in report
+    assert "process_started:" in report
+
+
 def test_registered_plugin_overrides_catalog_executable(tmp_path, monkeypatch):
     catalog = tmp_path / "catalog.json"
     catalog.write_text(

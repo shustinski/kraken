@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -182,7 +183,11 @@ class FramePathFilterProxyModel(QSortFilterProxyModel):
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         del source_parent
         widget = self._widget
-        if widget is None or not bool(getattr(widget, "_asset_filter_match_only", False)):
+        if widget is None:
+            return True
+        source_filter = getattr(widget, "_source_filter_paths", None)
+        match_only = bool(getattr(widget, "_asset_filter_match_only", False))
+        if not source_filter and not match_only:
             return True
         model = getattr(widget, "_image_list_model", None)
         if model is None:
@@ -190,7 +195,9 @@ class FramePathFilterProxyModel(QSortFilterProxyModel):
         path = model.path_at(source_row)
         if not path:
             return False
-        return bool(widget._image_path_has_matching_vector(path))
+        if source_filter and os.path.normcase(str(path)) not in source_filter:
+            return False
+        return not match_only or bool(widget._image_path_has_matching_vector(path))
 
 
 class FramePathListView(QListView):

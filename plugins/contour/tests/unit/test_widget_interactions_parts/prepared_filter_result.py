@@ -53,10 +53,10 @@ class PreparedFilterResultMixin:
             file_path = folder / "pipeline.json"
             file_path.write_text("{}", encoding="utf-8")
 
-            self.widget.input_dir_edit.setText(str(file_path))
+            self.widget.output_dir_edit.setText(str(file_path))
 
             self.assertEqual(
-                self.widget._dialog_start_directory_from_line_edit(self.widget.input_dir_edit), str(folder)
+                self.widget._dialog_start_directory_from_line_edit(self.widget.output_dir_edit), str(folder)
             )
 
     def test_extraction_change_does_not_process_when_auto_apply_disabled(self) -> None:

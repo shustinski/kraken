@@ -64,16 +64,13 @@ class WidgetSettingsMixin(WidgetMixinHost):
             self.output_dir_edit.setText(paths.output_directory)
         if paths.dataset_directory:
             self.dataset_dir_edit.setText(paths.dataset_directory)
-        if paths.cif_directory:
-            self.cif_dir_edit.setText(paths.cif_directory)
-        if paths.input_directory:
-            self.input_dir_edit.setText(paths.input_directory)
 
     def _save_persisted_paths(self: Any) -> None:
         self._path_settings.save(
             PersistedPaths(
-                input_directory=self.input_dir_edit.text().strip(),
-                cif_directory=self.cif_dir_edit.text().strip(),
+                # Kept for older Contour builds; current sessions use sources.
+                input_directory=self._first_source_folder("images"),
+                cif_directory=self._first_source_folder("vectors"),
                 output_directory=self.output_dir_edit.text().strip(),
                 dataset_directory=self.dataset_dir_edit.text().strip(),
             )
@@ -272,6 +269,7 @@ class WidgetSettingsMixin(WidgetMixinHost):
         )
         if hasattr(self, "_session_settings_store"):
             self._session_settings_store.save_image_list_mode(self._image_list_mode)
+        self._schedule_path_card_status_refresh()
 
     def _persist_session_state(self: Any) -> None:
         self._save_persisted_display_settings()

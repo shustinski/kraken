@@ -32,6 +32,7 @@ datas = collect_data_files(
     includes=[
         "pipeline_example.json",
         "resources/ui_texts_*.json",
+        "ui/icons/*.svg",
         "gamification/assets/gamification.qrc",
         "gamification/assets/pets/*/*/*.png",
     ],

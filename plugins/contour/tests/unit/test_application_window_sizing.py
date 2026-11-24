@@ -74,7 +74,8 @@ def test_main_view_dock_contents_do_not_force_excessive_minimum_height() -> None
 
         assert view.minimumSizeHint().height() <= 560
         assert view._pipeline_dock.widget() is view.widget.pipeline_panel_scroll
-        assert view._display_dock.widget() is view.widget.display_panel_scroll
+        assert view.findChild(QDockWidget, "displayDock") is None
+        assert not hasattr(view, "_display_dock")
         assert view.findChild(QDockWidget, "pathsDock") is None
 
         view.resize(800, 560)
@@ -173,7 +174,8 @@ def test_main_view_docks_thumbnail_matrix_and_keeps_file_menu_first() -> None:
         dock = view.findChild(QDockWidget, "thumbnailMatrixDock")
 
         assert files_dock is not None
-        assert files_dock.widget() is view.widget.files_tab
+        assert files_dock.widget() is view.widget.files_panel_scroll
+        assert view.widget.files_panel_scroll.widget() is view.widget.files_tab
         assert recognition_dock is not None
         assert recognition_dock.widget() is view.widget.recognition_panel_scroll
         assert view.widget.recognition_panel_scroll.widget() is view.widget.extraction_tab
@@ -307,7 +309,10 @@ def test_main_view_uses_flat_dock_roots_and_full_width_editor_toolbar() -> None:
         assert not isinstance(widget.editor_group, QGroupBox)
 
         assert not isinstance(widget.path_group, QGroupBox)
-        assert not widget.path_panel.isVisible()
+        assert widget.files_tab.isAncestorOf(widget.sources_panel)
+        assert view._run_dock.isAncestorOf(widget.output_dir_edit)
+        assert view._run_dock.isAncestorOf(widget.dataset_dir_edit)
+        assert view._run_dock.isAncestorOf(widget.autosave_on_frame_transition_checkbox)
         assert widget.files_tab.isAncestorOf(widget.extra_layers_group)
         assert not isinstance(widget.run_group, QGroupBox)
         assert view._run_dock.isAncestorOf(widget.save_group)
@@ -371,18 +376,18 @@ def test_main_view_restores_floating_thumbnail_matrix_from_view_toggle() -> None
 
         assert dock.isVisible()
         assert not dock.isFloating()
-        assert view.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
+        assert view.dockWidgetArea(dock) == Qt.DockWidgetArea.LeftDockWidgetArea
     finally:
         view.close()
         view.deleteLater()
 
 
-def test_main_view_default_left_dock_tab_order_is_pipeline_recognition_display() -> None:
+def test_main_view_default_settings_tab_order_is_recognition_preprocessing() -> None:
     _app()
     view = ContourMainView()
     try:
         view.set_ui_language("en")
-        expected = ["Pipeline", "Recognition", "Display"]
+        expected = ["Recognition", "Preprocessing"]
         matching_bars = [
             [bar.tabText(index) for index in range(bar.count())]
             for bar in view.findChildren(QTabBar)
@@ -495,3 +500,136 @@ def test_main_view_does_not_duplicate_update_menu_on_language_change() -> None:
     finally:
         view.close()
         view.deleteLater()
+
+
+def test_main_view_has_no_display_dock_or_view_toggle() -> None:
+    _app()
+    view = ContourMainView()
+    try:
+        view.set_ui_language("ru")
+        assert view.findChild(QDockWidget, "displayDock") is None
+        view_texts = {action.text() for action in view._view_menu.actions()}
+        assert "Отображение" not in view_texts
+        tabs = view.widget.control_tabs
+        assert tabs.indexOf(view.widget.display_tab) < 0
+        # Frame autosave is not a preference; it stays on the widget until it moves.
+        assert view.widget.autosave_on_frame_transition_checkbox is not None
+        assert not view._preferences_dialog.isAncestorOf(view.widget.autosave_on_frame_transition_checkbox)
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_preferences_dialog_opens_from_tools_menu_without_blocking() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        view.set_ui_language("ru")
+        tools_actions = view._tools_menu.actions()
+        assert view._preferences_action in tools_actions
+        assert view._preferences_action.text() == "Предпочтения…"
+        assert view._preferences_action.shortcut().toString() == "Ctrl+,"
+
+        view.show()
+        view._preferences_action.trigger()
+        app.processEvents()
+        dialog = view._preferences_dialog
+        assert dialog.isVisible()
+        assert not dialog.isModal()
+        assert dialog.windowTitle() == "Предпочтения"
+        sections = [dialog.section_list.item(row).text() for row in range(dialog.section_list.count())]
+        assert sections == [
+            "Контуры и цвета",
+            "Вершины и подписи",
+            "Контакты",
+            "Матрица кадров",
+            "Соседние кадры",
+        ]
+        assert view.widget.via_display_mode_label_widget.text() == "Вид контактов"
+        assert view.widget.via_display_mode_combo.itemText(0) == "Круг"
+        widget = view.widget
+        for control in (
+            widget.line_width_spin,
+            widget.vertex_size_spin,
+            widget.fill_opacity_spin,
+            widget.external_color_button,
+            widget.vertex_color_button,
+            widget.via_display_mode_combo,
+            widget.show_frame_matrix_checkbox,
+            widget.show_neighbor_frames_checkbox,
+            widget.neighbor_overlap_spin,
+        ):
+            assert dialog.isAncestorOf(control)
+
+        # Opening it again reuses the same window.
+        view._preferences_action.trigger()
+        assert view._preferences_dialog is dialog
+
+        view.set_ui_language("en")
+        assert view._preferences_action.text() == "Preferences…"
+        assert dialog.windowTitle() == "Preferences"
+        assert dialog.section_list.item(0).text() == "Contours and colors"
+        assert widget.line_width_label_widget.text() != ""
+    finally:
+        view._preferences_dialog.close()
+        view.close()
+        view.deleteLater()
+
+
+def test_preferences_dialog_line_width_change_applies_and_is_saved() -> None:
+    _app()
+    view = ContourMainView()
+    saved: list[dict] = []
+
+    class _RecordingStore:
+        def save(self, payload: dict) -> None:
+            saved.append(dict(payload))
+
+    try:
+        widget = view.widget
+        widget._display_settings_store = _RecordingStore()
+        view._preferences_dialog.open_preferences()
+        view._preferences_dialog.show_section("contours")
+        assert view._preferences_dialog.pages.currentWidget().isAncestorOf(widget.line_width_spin)
+
+        new_value = 7.0 if widget.line_width_spin.value() != 7.0 else 8.0
+        widget.line_width_spin.setValue(new_value)
+
+        assert widget._display_settings.line_width == new_value
+        assert saved and saved[-1]["line_width"] == new_value
+    finally:
+        view._preferences_dialog.close()
+        view.close()
+        view.deleteLater()
+
+
+def test_default_layout_follows_data_editor_settings_flow() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        view.resize(1400, 860)
+        view.show()
+        app.processEvents()
+
+        left, right = Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea
+        assert view.dockWidgetArea(view._files_dock) == left
+        assert view.dockWidgetArea(view._thumbnail_matrix_dock) == left
+        assert view.dockWidgetArea(view._recognition_dock) == right
+        assert view.dockWidgetArea(view._pipeline_dock) == right
+        assert view.dockWidgetArea(view._run_dock) == right
+        assert view._run_dock.isVisible()
+        assert not view._recognition_dock.visibleRegion().isEmpty()
+        assert view._pipeline_dock.visibleRegion().isEmpty()
+        assert view.findChild(QDockWidget, "displayDock") is None
+    finally:
+        view.close()
+
+
+def test_layout_saved_by_previous_version_is_not_restored() -> None:
+    _app()
+    view = ContourMainView()
+    try:
+        old_state = view.saveState(view.WINDOW_STATE_VERSION - 1)
+        assert not view.restoreState(old_state, view.WINDOW_STATE_VERSION)
+    finally:
+        view.close()

@@ -15,28 +15,6 @@ from contour.widget_parts.navigation_mixin_parts.module_state import _LOGGER
 
 
 class RefreshExtraLayersListMixin:
-    def _apply_cif_directory_edit(self: Any) -> None:
-        path = self.cif_dir_edit.text().strip()
-        if path:
-            self.set_cif_directory(path)
-        else:
-            self._vector_indexer.invalidate_pending_results()
-            self._workspace.clear_cif_index()
-            self._save_persisted_paths()
-            self._rebuild_vector_list()
-            self._refresh_image_list_item_states()
-            self._rebuild_asset_filter_lists()
-            self._apply_asset_view_filter()
-            if self._workspace.current_image_path:
-                try:
-                    self.load_image(self._workspace.current_image_path)
-                except Exception as exc:
-                    _LOGGER.exception(
-                        "Failed to reload image %s after directory change",
-                        self._workspace.current_image_path,
-                    )
-                    self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
-
     def _apply_output_directory_edit(self: Any) -> None:
         self.set_output_directory(self.output_dir_edit.text().strip())
 

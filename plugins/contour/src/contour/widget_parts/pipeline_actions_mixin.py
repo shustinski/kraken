@@ -19,7 +19,6 @@ from ._imports import (
     Qt,
     QTimer,
     build_image_cif_matching_report,
-    index_cif_file_paths,
     load_pipeline_config_from_path,
     normalize_via_search_mode,
     save_pipeline_config_to_path,
@@ -222,7 +221,7 @@ class WidgetPipelineActionsMixin(WidgetMixinHost):
         path, _ = QFileDialog.getOpenFileName(
             self,
             self._tr("load_pipeline_dialog_title"),
-            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._sources_dialog_start_directory("images"),
             self._tr("json_file_filter"),
         )
         if not path:
@@ -482,33 +481,18 @@ class WidgetPipelineActionsMixin(WidgetMixinHost):
             self.files_scan_progress_bar.setRange(0, 100)
             self.files_scan_progress_bar.setValue(0)
 
-    def _begin_async_directory_scan(self, directory: str, *, append: bool = False) -> None:
-        self._directory_scan_append_mode = bool(append)
-        self._directory_scanner.start(directory)
-
     def _on_input_directory_scan_finished(self, paths: list[str]) -> None:
-        from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
-
-        if getattr(self, "_directory_scan_append_mode", False):
-            self._directory_scan_append_mode = False
-            self.append_images(paths)
-            return
-        preferred = getattr(self, "_pending_restore_current_image_path", None)
-        self._pending_restore_current_image_path = None
-        self.load_images(
-            paths,
-            preferred_current_image_path=preferred,
-            image_list_mode=IMAGE_LIST_MODE_DIRECTORY,
-        )
+        # Every frame-folder scan belongs to a source (see SourcesMixin).
+        self._on_source_scan_finished("images", list(paths))
 
     def _on_input_directory_scan_failed(self, message: str) -> None:
-        self._directory_scan_append_mode = False
         self._append_log(
             self._tr(
                 "scan_input_directory_failed_log",
                 error=message,
             )
         )
+        self._on_source_scan_finished("images", None)
 
     def _on_cif_directory_index_started(self, _directory: str) -> None:
         if hasattr(self, "files_scan_progress_bar"):
@@ -524,62 +508,24 @@ class WidgetPipelineActionsMixin(WidgetMixinHost):
             self.files_scan_progress_bar.setRange(0, 100)
             self.files_scan_progress_bar.setValue(0)
 
-    def _begin_async_cif_directory_index(self, directory: str) -> None:
-        self._vector_indexer.start(directory)
-
     def _start_vector_index_or_rebuild_frame_matrix_after_images(self) -> None:
         if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
             return
         # The frame matrix depends only on image paths. Build it immediately;
-        # CIF indexing may still be running (or unavailable during session restore).
+        # vector folders may still be indexing.
         self._schedule_thumbnail_grid_rebuild(force=True)
-        pending_directory = getattr(self, "_pending_cif_directory_path_after_images", None)
-        if pending_directory:
-            self._pending_cif_directory_path_after_images = None
-            self._begin_async_cif_directory_index(str(Path(pending_directory)))
-            return
-        directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
-        normalized_directory = str(Path(directory)) if directory else ""
-        if normalized_directory and getattr(self, "_indexed_cif_directory", None) != normalized_directory:
+        if self._vector_scan_pending():
             self._mark_thumbnail_grid_rebuild_pending()
-            self._begin_async_cif_directory_index(normalized_directory)
-            return
 
     def _on_cif_directory_index_finished(self, directory_state) -> None:
-        if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
-            self._pending_cif_directory_state = directory_state
-            return
-        self._apply_cif_directory_state(directory_state)
-
-    def _apply_pending_cif_directory_state_after_image_rebuild(self) -> bool:
-        directory_state = getattr(self, "_pending_cif_directory_state", None)
-        if directory_state is None:
-            return False
-        self._pending_cif_directory_state = None
-        self._apply_cif_directory_state(directory_state)
-        return True
-
-    def _apply_cif_directory_state(self, directory_state) -> None:
-        self.cif_dir_edit.setText(directory_state.directory)
-        self._save_persisted_paths()
-        self._workspace.set_cif_index(directory_state.indexed_paths)
-        self._workspace.forget_cleared_vectors(self._workspace.image_paths)
-        pending_vector_paths = list(getattr(self, "_pending_restore_vector_paths", []) or [])
-        if pending_vector_paths:
-            self._workspace.merge_cif_paths(index_cif_file_paths(pending_vector_paths))
-            self._pending_restore_vector_paths: list[str] = []
-        self._indexed_cif_directory = directory_state.directory
-        if directory_state.available:
-            self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))
+        indexed = list(getattr(directory_state, "indexed_paths", {}).values())
+        if getattr(directory_state, "available", True):
+            self._append_log(self._tr("cif_indexed_log", count=len(indexed)))
         else:
             self._append_log(self._tr("cif_directory_unavailable_log"))
-        self._defer_vector_load_until_cif_index = False
-        self._rebuild_vector_list()
-        self._mark_thumbnail_grid_rebuild_pending()
-        self._sync_after_cif_index_changed()
+        self._on_source_scan_finished("vectors", indexed)
 
     def _on_cif_directory_index_failed(self, message: str) -> None:
-        self._indexed_cif_directory = None
         self._append_log(
             self._tr(
                 "cif_index_failed_log",
@@ -589,5 +535,6 @@ class WidgetPipelineActionsMixin(WidgetMixinHost):
                 error=message,
             )
         )
+        self._on_source_scan_finished("vectors", None)
         if not bool(getattr(self, "_image_list_rebuild_in_progress", False)):
             self._rebuild_thumbnail_grid()

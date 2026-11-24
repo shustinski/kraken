@@ -13,7 +13,6 @@ from contour.widget_parts._imports import (
     QPoint,
     Qt,
     classify_dropped_paths,
-    index_cif_file_paths,
 )
 
 from contour.widget_parts.navigation_mixin_parts.module_state import _LOGGER
@@ -164,35 +163,21 @@ class ActivateFramePathMatrixMixin:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             self._tr("select_image_files_dialog"),
-            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._sources_dialog_start_directory("images"),
             self._tr("supported_image_files_filter"),
         )
-        if not paths:
-            return
-        self.input_dir_edit.setText(str(Path(paths[0]).parent))
-        self._save_persisted_paths()
-        self.append_images([str(Path(p)) for p in paths])
+        if paths:
+            self.add_image_files([str(Path(p)) for p in paths])
 
     def _merge_cif_files_dialog(self: Any) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             self._tr("merge_cif_files_dialog"),
-            self._dialog_start_directory_from_line_edit(self.cif_dir_edit),
+            self._sources_dialog_start_directory("vectors"),
             self._tr("cif_files_filter"),
         )
-        if not paths:
-            return
-        self._merge_cif_file_paths([str(Path(path)) for path in paths])
+        if paths:
+            self._merge_cif_file_paths([str(Path(path)) for path in paths])
 
     def _merge_cif_file_paths(self: Any, paths: list[str]) -> None:
-        additions = index_cif_file_paths(paths)
-        if not additions:
-            return
-        self._workspace.merge_cif_paths(additions)
-        self._workspace.forget_cleared_vectors(
-            [path for path in self._workspace.image_paths if Path(path).stem.lower() in additions]
-        )
-        self.cif_dir_edit.setText(str(Path(paths[0]).parent))
-        self._save_persisted_paths()
-        self._append_log(self._tr("cif_indexed_log", count=len(self._workspace.cif_paths_by_stem)))
-        self._sync_after_cif_index_changed()
+        self.add_vector_files(paths)

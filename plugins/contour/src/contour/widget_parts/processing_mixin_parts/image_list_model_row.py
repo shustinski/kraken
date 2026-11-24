@@ -80,3 +80,4 @@ class ImageListModelRowMixin:
         self._image_path_stem_lower = stem_lower_by_path
         self._image_path_by_stem_lower = path_by_stem_lower
         self._image_list_model.set_paths(paths)
+        self._schedule_path_card_status_refresh()

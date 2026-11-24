@@ -17,39 +17,16 @@ def _retranslate_ui_section_1(self):
 
     if hasattr(self.path_group, "setTitle"):
         self.path_group.setTitle(self._tr("path_panel_title"))
-    self.input_dir_label.setText(self._tr("input_directory_label"))
-    self.cif_dir_label.setText(self._tr("cif_overlay_directory_label"))
-    self.output_dir_label.setText(self._tr("output_directory_label"))
-    self.dataset_dir_label.setText(self._tr("dataset_directory_label"))
-    for button, accessible_name in (
-        (self.browse_input_button, self._tr("browse_input_button")),
-        (self.browse_cif_button, self._tr("browse_cif_button")),
-        (self.browse_output_button, self._tr("browse_output_button")),
-        (self.browse_dataset_button, self._tr("browse_dataset_button")),
-        (self.refresh_button, self._tr("refresh_files_button")),
-        (self.pick_input_files_button, self._tr("pick_input_files_button")),
-        (self.merge_cif_files_button, self._tr("merge_cif_files_button")),
-    ):
-        button.setText("")
-        button.setAccessibleName(accessible_name)
-    for widget, tooltip_key in (
-        (self.input_dir_label, "input_dir"),
-        (self.input_dir_edit, "input_dir"),
-        (self.cif_dir_label, "cif_dir"),
-        (self.cif_dir_edit, "cif_dir"),
-        (self.output_dir_label, "output_dir"),
+    self.path_outputs_label.setText(self._tr("path_section_outputs"))
+    self.sources_panel.retranslate()
+    self.refresh_button.setAccessibleName(self._tr("refresh_files_button"))
+    for card, tooltip_key in (
         (self.output_dir_edit, "output_dir"),
-        (self.dataset_dir_label, "dataset_dir"),
         (self.dataset_dir_edit, "dataset_dir"),
-        (self.browse_input_button, "browse_input"),
-        (self.browse_cif_button, "browse_cif"),
-        (self.browse_output_button, "browse_output"),
-        (self.browse_dataset_button, "browse_dataset"),
-        (self.refresh_button, "refresh_files"),
-        (self.pick_input_files_button, "pick_input_images"),
-        (self.merge_cif_files_button, "merge_cif_files"),
     ):
-        self._set_common_tooltip(widget, tooltip_key)
+        card.retranslate()
+        self._set_common_tooltip(card, tooltip_key)
+    self._refresh_path_card_statuses()
     for tab, key in (
         (getattr(self, "paths_tab", None), "tab_paths"),
         (getattr(self, "pipeline_tab", None), "tab_pipeline"),
@@ -138,13 +115,17 @@ def _retranslate_ui_section_1(self):
             if self._ui_language == "ru"
             else "Drop 3-vertex outer triangles as artifacts"
         )
-    for button, accessible_name in (
-        (self.process_current_button, self._tr("process_current_button")),
-        (self.batch_button, self._tr("start_batch_button")),
-        (self.stop_batch_button, self._tr("stop_batch_button")),
+    for button, text_key, accessible_key in (
+        (self.process_current_button, "run_frame_button", "process_current_button"),
+        (self.batch_button, "run_all_frames_button", "start_batch_button"),
+        (self.stop_batch_button, "run_stop_button", "stop_batch_button"),
     ):
-        button.setText("")
-        button.setAccessibleName(accessible_name)
+        button.setText(self._tr(text_key))
+        button.setAccessibleName(self._tr(accessible_key))
+    self.run_section_launch_label.setText(self._tr("run_section_launch"))
+    self.run_section_save_label.setText(self._tr("run_section_save"))
+    self.run_section_dataset_label.setText(self._tr("run_section_dataset"))
+    self.run_section_vector_tools_label.setText(self._tr("run_section_vector_tools"))
     self.antialias_opened_cif_button.setText(self._tr("antialias_opened_cif_button"))
     self.antialias_opened_cif_button.setAccessibleName(self._tr("antialias_opened_cif_button"))
     if hasattr(self, "fix_internal_contours_button"):

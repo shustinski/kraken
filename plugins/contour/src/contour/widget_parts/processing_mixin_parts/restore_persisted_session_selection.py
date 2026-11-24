@@ -6,8 +6,6 @@ from contour.widget_parts._imports import (
     Path,
     QListWidgetItem,
     Qt,
-    index_cif_file_paths,
-    is_image_path,
 )
 
 
@@ -59,28 +57,32 @@ class RestorePersistedSessionSelectionMixin:
         self._append_log(self._tr("batch_error_log", image_name=Path(image_path).name, message=message))
 
     def refresh_image_list(self: Any) -> None:
-        from ...infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+        """Rescan folder sources and drop file-source frames that vanished on disk."""
 
-        if getattr(self, "_image_list_mode", None) == IMAGE_LIST_MODE_EXPLICIT:
-            self._revalidate_explicit_image_paths()
-            return
-        directory = self.input_dir_edit.text().strip()
-        if not directory:
+        from ...application.sources import SOURCE_IMAGES, SOURCE_VECTORS
+        from dataclasses import replace as _replace
+
+        registry = self.source_registry
+        if registry.is_empty():
             self._append_log(self._tr("input_directory_empty_log"))
             return
-        self._begin_async_directory_scan(directory)
-
-    def _revalidate_explicit_image_paths(self: Any) -> None:
-        existing_paths = [
-            str(Path(path))
-            for path in self._workspace.image_paths
-            if (str(Path(path)) in getattr(self, "_source_frame_numbers", {}) or Path(path).is_file()) and is_image_path(path)
-        ]
-        preferred = self._workspace.current_image_path
-        self.load_images(existing_paths, preferred_current_image_path=preferred)
+        for source in registry.sources():
+            if source.locked:
+                continue
+            if source.is_folder:
+                registry.update(_replace(source, scanned=False))
+                self._queue_source_scan(registry.get(source.id))
+            else:
+                existing = tuple(path for path in source.paths if Path(path).is_file())
+                if existing != source.paths:
+                    registry.update(_replace(source, paths=existing))
+        self._apply_sources(SOURCE_IMAGES)
+        self._apply_sources(SOURCE_VECTORS)
 
     def set_input_directory(self: Any, path: str) -> None:
-        from ...infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
+        """Load one frame folder instead of all current frame sources (CLI, Kraken)."""
+
+        from ...application.sources import SOURCE_IMAGES, folder_source
 
         directory = self._path_settings.validate_input_directory(path)
         if not directory.available:
@@ -91,71 +93,34 @@ class RestorePersistedSessionSelectionMixin:
                 )
             )
             return
-        self.input_dir_edit.setText(directory.path)
-        self._save_persisted_paths()
-        self._set_image_list_mode(IMAGE_LIST_MODE_DIRECTORY)
-        self._begin_async_directory_scan(directory.path)
+        self._remember_recent_path("input", directory.path)
+        self.replace_sources(SOURCE_IMAGES, folder_source(SOURCE_IMAGES, directory.path))
 
     def set_cif_directory(self: Any, path: str) -> None:
+        """Load one vector folder instead of all current vector sources (CLI, Kraken)."""
+
+        from ...application.sources import SOURCE_VECTORS, folder_source
+
         directory = str(Path(path))
-        self.cif_dir_edit.setText(directory)
-        self._save_persisted_paths()
-        self._indexed_cif_directory = None
-        if bool(getattr(self, "_image_list_rebuild_in_progress", False)):
-            self._pending_cif_directory_path_after_images = directory
-            return
-        self._begin_async_cif_directory_index(directory)
+        self._remember_recent_path("cif", directory)
+        self.replace_sources(SOURCE_VECTORS, folder_source(SOURCE_VECTORS, directory))
 
     def set_output_directory(self: Any, path: str) -> None:
         self.output_dir_edit.setText(path)
         self._save_persisted_paths()
+        self._remember_recent_path("output", path)
+        self._schedule_path_card_status_refresh()
 
     def set_dataset_directory(self: Any, path: str) -> None:
         self.dataset_dir_edit.setText(path)
         self._save_persisted_paths()
+        self._remember_recent_path("dataset", path)
+        self._schedule_path_card_status_refresh()
 
     def _restore_persisted_session_selection(self: Any) -> None:
         if not hasattr(self, "_session_settings_store"):
             return
-        from ...infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY
-
-        image_paths = [
-            str(Path(path))
-            for path in self._session_settings_store.load_image_paths()
-            if Path(path).is_file() and is_image_path(path)
-        ]
-        vector_paths = [
-            str(Path(path))
-            for path in self._session_settings_store.load_vector_paths()
-            if Path(path).is_file()
-        ]
-        if vector_paths:
-            self._pending_restore_vector_paths = list(vector_paths)
-            self._workspace.set_cif_index(index_cif_file_paths(vector_paths))
-            self._rebuild_vector_list()
-        self._image_list_mode = self._session_settings_store.load_image_list_mode()
-        preferred = self._session_settings_store.load_current_image_path()
-        if preferred:
-            preferred = str(Path(preferred))
-        self._pending_restore_current_image_path = preferred
-        input_directory = self.input_dir_edit.text().strip() if hasattr(self, "input_dir_edit") else ""
-        if (
-            self._image_list_mode == IMAGE_LIST_MODE_DIRECTORY
-            and input_directory
-            and Path(input_directory).is_dir()
-        ):
-            cif_directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
-            self._pending_cif_directory_path_after_images = (
-                str(Path(cif_directory))
-                if cif_directory and Path(cif_directory).is_dir()
-                else None
-            )
-            self._begin_async_directory_scan(str(Path(input_directory)))
-            return
-        if not image_paths:
-            self._refresh_image_list_item_states()
-            return
-        self.load_images(image_paths, preferred_current_image_path=preferred)
+        self._restore_sources_from_settings()
         self._refresh_image_list_item_states()
 
     def _rebuild_image_list_items(self: Any, normalized_paths: list[str]) -> None:
@@ -189,30 +154,22 @@ class RestorePersistedSessionSelectionMixin:
 
     def _finish_pending_image_list_rebuild(self: Any) -> None:
         self._image_list_rebuild_in_progress = False
-        directory = self.cif_dir_edit.text().strip() if hasattr(self, "cif_dir_edit") else ""
-        normalized_directory = str(Path(directory)) if directory else ""
-        self._defer_vector_load_until_cif_index = bool(
-            normalized_directory and getattr(self, "_indexed_cif_directory", None) != normalized_directory
-        )
+        # Frames must not load "no vectors" while a vector folder is still indexing.
+        self._defer_vector_load_until_cif_index = bool(self._vector_scan_pending())
         pending = getattr(self, "_pending_image_list_post_build", None)
-        if not pending:
-            if self._defer_vector_load_until_cif_index:
-                self._mark_thumbnail_grid_rebuild_pending()
-            if not self._apply_pending_cif_directory_state_after_image_rebuild():
-                self._start_vector_index_or_rebuild_frame_matrix_after_images()
-            return
-        self._pending_image_list_post_build = None
-        select_path = pending.get("select_path")
-        self._select_loaded_image_path(
-            str(select_path) if select_path else None,
-            fallback_to_first=bool(pending.get("fallback_to_first", True)),
-        )
-        self._refresh_vector_rows_for_workspace()
-        if not self._uses_large_frame_list():
-            self._log_matching_gaps_after_refresh(self._matching_report())
+        if pending:
+            self._pending_image_list_post_build = None
+            select_path = pending.get("select_path")
+            self._select_loaded_image_path(
+                str(select_path) if select_path else None,
+                fallback_to_first=bool(pending.get("fallback_to_first", True)),
+            )
+            self._refresh_vector_rows_for_workspace()
+            if not self._uses_large_frame_list():
+                self._log_matching_gaps_after_refresh(self._matching_report())
         if self._defer_vector_load_until_cif_index:
             self._mark_thumbnail_grid_rebuild_pending()
-        if not self._apply_pending_cif_directory_state_after_image_rebuild():
+        if not self._apply_vector_sources_if_dirty():
             self._start_vector_index_or_rebuild_frame_matrix_after_images()
 
     def _select_loaded_image_path(self: Any, image_path: str | None, *, fallback_to_first: bool = True) -> None:

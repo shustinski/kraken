@@ -349,11 +349,15 @@ class ContourKrakenSession:
             # manifest's pinned CIFs, not the host's persisted CIF directory.
             widget._pending_cif_directory_path_after_images = None
             widget._indexed_cif_directory = None
-            if hasattr(widget, "_vector_indexer"):
-                widget._vector_indexer.invalidate_pending_results()
-            if hasattr(widget, "cif_dir_edit"):
-                widget.cif_dir_edit.setText("")
-            if hasattr(widget, "_workspace"):
+            if hasattr(widget, "replace_sources"):
+                from .application.sources import SOURCE_VECTORS, files_source
+
+                # The job's pinned CIFs are the only vector source.
+                widget.replace_sources(
+                    SOURCE_VECTORS,
+                    files_source(SOURCE_VECTORS, self.vector_paths, locked=True) if self.vector_paths else None,
+                )
+            elif hasattr(widget, "_workspace"):
                 widget._workspace.set_cif_index({path.stem.casefold(): str(path) for path in self.vector_paths})
             if self.server_source is not None:
                 loader = AssetImageLoader(self.server_source, self.staging_root)
@@ -370,7 +374,20 @@ class ContourKrakenSession:
                 str(path): (item.y - 1) * width + item.x - 1
                 for path, item in zip(self.input_paths, self.manifest.inputs, strict=True)
             }
-            widget.load_images([str(path) for path in self.input_paths], image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
+            if hasattr(widget, "replace_sources"):
+                from .application.sources import SOURCE_IMAGES, files_source
+
+                widget._set_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
+                widget.replace_sources(
+                    SOURCE_IMAGES,
+                    files_source(SOURCE_IMAGES, [str(path) for path in self.input_paths], locked=True),
+                )
+            else:
+                widget.load_images([str(path) for path in self.input_paths], image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
+        if hasattr(window._widget, "lock_paths_for_kraken"):
+            # Results are always collected from the job's staging directory,
+            # so none of the visible paths can change what Kraken receives.
+            window._widget.lock_paths_for_kraken(lock_destinations=True)
         menu_bar = window.menuBar()
         assert menu_bar is not None
         menu = QMenu("Kraken", window)
@@ -508,13 +525,23 @@ class ContourWorkspaceSession:
         widget._pending_cif_directory_state = None
         widget._pending_cif_directory_path_after_images = None
         widget._indexed_cif_directory = str(self.vector_directory) if self.vector_directory else None
-        if hasattr(widget, "cif_dir_edit"):
-            widget.cif_dir_edit.setText(str(self.vector_directory) if self.vector_directory else "")
-        if hasattr(widget, "_workspace"):
-            vector_paths = self.vector_directory.glob("*.cif") if self.vector_directory else ()
-            widget._workspace.set_cif_index(
-                {path.stem.casefold(): str(path) for path in vector_paths if path.is_file()}
+        vector_paths = (
+            [path for path in self.vector_directory.glob("*.cif") if path.is_file()] if self.vector_directory else []
+        )
+        if hasattr(widget, "replace_sources"):
+            from .application.sources import SOURCE_VECTORS, files_source
+
+            # Index the staged vectors now instead of waiting for a folder scan.
+            widget.replace_sources(
+                SOURCE_VECTORS,
+                files_source(SOURCE_VECTORS, vector_paths, locked=True) if vector_paths else None,
             )
+        elif hasattr(widget, "_workspace"):
+            widget._workspace.set_cif_index({path.stem.casefold(): str(path) for path in vector_paths})
+        if hasattr(widget, "lock_paths_for_kraken"):
+            # Kraken only proposes the result folder: _selected_output_directory
+            # reads whatever the user picks, so the destination stays editable.
+            widget.lock_paths_for_kraken(lock_destinations=False)
         menu_bar = window.menuBar()
         assert menu_bar is not None
         menu = QMenu("Kraken", window)

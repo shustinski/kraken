@@ -95,6 +95,7 @@ class RefreshAssetFilterListMixin:
         )
 
     def _rebuild_vector_list(self: Any) -> None:
+        self._schedule_path_card_status_refresh()
         if not hasattr(self, "vector_list"):
             return
         self.vector_list.blockSignals(True)

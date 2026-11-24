@@ -97,7 +97,7 @@ class ExtraLayerDirectoryMixin:
             "Выберите папку дополнительного слоя"
             if self._ui_language == "ru"
             else "Select additional layer directory",
-            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._sources_dialog_start_directory("images"),
         )
         if not folder_path:
             return

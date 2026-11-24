@@ -1,25 +1,29 @@
 """test_widget_interactions: test toolbar icons use."""
 from __future__ import annotations
+
 from PyQt6.QtGui import QRegion
+
 from contour.graphics_view import (
     EditorTool,
 )
+from contour.ui.editor_icons import TOOLBAR_ICON_SIZE_PX
 
 
 class ToolbarIconsUseMixin:
-    def test_checked_toolbar_tool_has_explicit_high_contrast_style(self) -> None:
+    def test_checked_toolbar_tool_has_accent_backdrop_instead_of_green_fill(self) -> None:
         stylesheet = self.widget.styleSheet()
 
         self.assertIn("QToolButton:checked", stylesheet)
-        self.assertIn("#16A34A", stylesheet)
+        self.assertNotIn("#16A34A", stylesheet)
 
         tool_button = self.widget._tool_buttons[EditorTool.SELECT]
         self.assertTrue(tool_button.isCheckable())
         self.assertTrue(tool_button.isChecked())
         self.assertIn("QToolButton:checked", tool_button.styleSheet())
-        self.assertIn("#16A34A", tool_button.styleSheet())
+        self.assertIn("rgba(", tool_button.styleSheet())
+        self.assertNotIn("#16A34A", tool_button.styleSheet())
 
-    def test_toolbar_icons_use_the_complete_button_area(self) -> None:
+    def test_toolbar_icons_are_centred_line_icons(self) -> None:
         buttons = [
             *self.widget._tool_buttons.values(),
             self.widget.undo_button,
@@ -30,14 +34,15 @@ class ToolbarIconsUseMixin:
         ]
 
         for button in buttons:
-            self.assertEqual(button.iconSize().width(), button.maximumWidth())
-            self.assertEqual(button.iconSize().height(), button.maximumHeight())
+            self.assertEqual(button.iconSize().width(), TOOLBAR_ICON_SIZE_PX)
+            self.assertEqual(button.iconSize().height(), TOOLBAR_ICON_SIZE_PX)
+            self.assertLess(button.iconSize().width(), button.maximumWidth())
             self.assertIn("padding: 0", button.styleSheet())
             self.assertTrue(button.toolTip())
             pixmap = button.icon().pixmap(button.iconSize())
             visible_rect = QRegion(pixmap.mask()).boundingRect()
-            self.assertGreaterEqual(visible_rect.width(), pixmap.width() * 0.9)
-            self.assertGreaterEqual(visible_rect.height(), pixmap.height() * 0.9)
+            self.assertGreaterEqual(visible_rect.width(), pixmap.width() * 0.5)
+            self.assertGreaterEqual(visible_rect.height(), pixmap.height() * 0.5)
 
     def test_hotkey_tool_switch_updates_toolbar_checked_state(self) -> None:
         self.widget.polygon_editor.set_tool(EditorTool.BRUSH)

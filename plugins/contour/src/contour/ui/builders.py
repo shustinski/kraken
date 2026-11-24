@@ -79,7 +79,6 @@ from .builders_parts.build_strategy_parameter_page import (
 from .builders_parts.sync_metal_strategy_panel import _sync_metal_strategy_panel
 from .builders_parts.dock_width_combo_box import _DockWidthComboBox
 from .builders_parts.build_ui import (
-    _connect_line_edit_with_delay,
     build_ui,
     _apply_size_hint_geometry,
 )
@@ -105,7 +104,6 @@ _FACADE_EXPORTS = (
     _build_strategy_parameter_page,
     _sync_metal_strategy_panel,
     _DockWidthComboBox,
-    _connect_line_edit_with_delay,
     build_ui,
     _apply_size_hint_geometry,
     build_path_panel,

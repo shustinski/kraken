@@ -1,9 +1,8 @@
 """builders: build ui."""
 from __future__ import annotations
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
-    QLineEdit,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -14,18 +13,6 @@ from PyQt6.QtWidgets import (
 from ...gamification.ui import GamificationPanel
 
 from contour.ui.builders_parts.module_state import USE_GAMIFICATION
-
-def _connect_line_edit_with_delay(self, line_edit: QLineEdit, slot, *, delay_ms: int = 500) -> None:
-    if not hasattr(self, "_line_edit_debounce_timers"):
-        self._line_edit_debounce_timers = []
-
-    timer = QTimer(self)
-    timer.setSingleShot(True)
-    timer.setInterval(delay_ms)
-    timer.timeout.connect(slot)
-    self._line_edit_debounce_timers.append(timer)
-
-    line_edit.textEdited.connect(lambda *_args, _timer=timer: _timer.start())
 
 def build_ui(self) -> None:
     root_layout = QVBoxLayout(self)

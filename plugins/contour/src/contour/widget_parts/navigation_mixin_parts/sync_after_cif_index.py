@@ -15,6 +15,7 @@ from contour.widget_parts.navigation_mixin_parts.module_state import _LOGGER
 
 class SyncAfterCifIndexMixin:
     def _sync_after_cif_index_changed(self: Any) -> None:
+        self._schedule_path_card_status_refresh()
         self._clear_cif_transient_hints()
         self._refresh_image_list_item_states()
         desired = str(getattr(self, "_desired_image_path", "") or "")
@@ -151,7 +152,7 @@ class SyncAfterCifIndexMixin:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_input_directory_dialog"),
-            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._sources_dialog_start_directory("images"),
         )
         if not path:
             return
@@ -159,16 +160,18 @@ class SyncAfterCifIndexMixin:
         if not directory.available:
             self._append_log(self._tr("input_directory_missing_log", directory=directory.path))
             return
-        self.set_input_directory(directory.path)
+        self._remember_recent_path("input", directory.path)
+        self.add_image_folder(directory.path)
 
     def _select_cif_directory(self: Any) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
             self._tr("select_cif_directory_dialog"),
-            self._dialog_start_directory_from_line_edit(self.cif_dir_edit),
+            self._sources_dialog_start_directory("vectors"),
         )
         if path:
-            self.set_cif_directory(path)
+            self._remember_recent_path("cif", str(Path(path)))
+            self.add_vector_folder(str(Path(path)))
 
     def _select_output_directory(self: Any) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -187,20 +190,3 @@ class SyncAfterCifIndexMixin:
         )
         if path:
             self.set_dataset_directory(path)
-
-    def _apply_input_directory_edit(self: Any) -> None:
-        path = self.input_dir_edit.text().strip()
-        if path:
-            self.set_input_directory(path)
-        else:
-            self._workspace.replace_image_selection([], is_supported_image=is_image_path)
-            self._base_frame_number_by_path: dict[str, int] = {}
-            self._base_frame_numbers: set[int] = set()
-            self._set_image_list_paths([])
-            self._rebuild_thumbnail_grid()
-            self._clear_extra_layers()
-            self._update_extra_layers_enabled_state()
-            self._rebuild_vector_list()
-            self._refresh_image_list_item_states()
-            self._sync_current_state_views()
-            self._save_persisted_paths()

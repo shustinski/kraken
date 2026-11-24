@@ -20,6 +20,7 @@ SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
 SESSION_IMAGE_PATHS_KEY = "session/image_paths"
 SESSION_VECTOR_PATHS_KEY = "session/vector_paths"
 SESSION_IMAGE_LIST_MODE_KEY = "session/image_list_mode"
+SESSION_SOURCES_KEY = "session/sources_v1"
 SESSION_VIEWED_IMAGE_PATHS_KEY = "session/viewed_image_paths"
 SESSION_MODIFIED_IMAGE_PATHS_KEY = "session/modified_image_paths"
 SESSION_PERSISTED_IMAGE_PATHS_KEY = "session/persisted_image_paths"
@@ -78,6 +79,24 @@ class WidgetPathSettingsStore:
         settings.setValue("paths/cif_directory", paths.cif_directory)
         settings.setValue("paths/output_directory", paths.output_directory)
         settings.setValue("paths/dataset_directory", paths.dataset_directory)
+        settings.sync()
+
+    def load_recent_paths(self, role: str) -> list[str]:
+        settings = self._settings_factory()
+        raw = settings.value(f"paths/recent/{role}", "", type=str)
+        try:
+            payload = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [str(item) for item in payload if isinstance(item, str) and item.strip()]
+
+    def save_recent_paths(self, role: str, paths: list[str]) -> None:
+        if _managed_job_active():
+            return
+        settings = self._settings_factory()
+        settings.setValue(f"paths/recent/{role}", json.dumps([str(path) for path in paths], ensure_ascii=False))
         settings.sync()
 
 
@@ -268,6 +287,28 @@ class WidgetSessionSettingsStore:
 
     def save_persisted_image_paths(self, paths: Iterable[str | Path]) -> None:
         self._save_path_list(SESSION_PERSISTED_IMAGE_PATHS_KEY, paths)
+
+    def load_sources(self) -> list[dict[str, object]] | None:
+        """Saved frame/vector sources, or ``None`` when never saved (migrate)."""
+
+        settings = self._settings_factory()
+        if not settings.contains(SESSION_SOURCES_KEY):
+            return None
+        raw = settings.value(SESSION_SOURCES_KEY, "", type=str)
+        try:
+            payload = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [dict(item) for item in payload if isinstance(item, dict)]
+
+    def save_sources(self, payload: list[dict[str, object]]) -> None:
+        if _managed_job_active():
+            return
+        settings = self._settings_factory()
+        settings.setValue(SESSION_SOURCES_KEY, json.dumps(payload, ensure_ascii=False))
+        settings.sync()
 
     def load_image_list_mode(self) -> str:
         settings = self._settings_factory()

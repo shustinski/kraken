@@ -14,6 +14,10 @@ selectionStatusChanged
 workSimulationActiveChanged
 
 [methods]
+add_image_files
+add_image_folder
+add_vector_files
+add_vector_folder
 append_images
 apply_launch_frames_per_row
 attach_help_menu
@@ -26,16 +30,22 @@ get_polygons
 help_menu_title
 load_image
 load_images
+lock_paths_for_kraken
+lock_sources_for_kraken
 process_current_image
 refresh_image_list
 remove_images
+remove_source
+replace_sources
 reset_project
 save_current_result
+scanning_source_ids
 set_cif_directory
 set_dataset_directory
 set_input_directory
 set_output_directory
 set_pipeline
+set_source_filter
 set_ui_language
 start_batch_processing
 stop_batch_processing

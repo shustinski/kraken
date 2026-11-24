@@ -1,6 +1,8 @@
 """navigation_mixin: take scrollable control panel."""
 from __future__ import annotations
+
 from typing import Any
+
 from contour.widget_parts._imports import (
     THUMBNAIL_VISIBLE_LOAD_DEBOUNCE_MS,
     Path,
@@ -58,7 +60,25 @@ class TakeScrollableControlPanelMixin:
                 self.right_tabs.hide()
                 if hasattr(self, "main_splitter"):
                     self.right_tabs.setParent(None)
-        return panel
+        # The path cards sit above the frame lists; scrolling keeps them from
+        # raising the window's minimum height when the dock is short.
+        scroll = self._wrap_in_scroll_area(panel, object_name="filesPanelScroll", attribute_name="files_panel_scroll")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return scroll
+
+    def _sync_files_panel_minimum_width(self: Any) -> None:
+        """Scroll only vertically: keep the Files dock as wide as its content.
+
+        Called once the run and matrix panels have left the files tab, so they
+        do not count towards its width.
+        """
+
+        scroll = getattr(self, "files_panel_scroll", None)
+        if scroll is None:
+            return
+        scrollbar = scroll.verticalScrollBar()
+        scrollbar_width = scrollbar.sizeHint().width() if scrollbar is not None else 0
+        scroll.setMinimumWidth(self.files_tab.minimumSizeHint().width() + scrollbar_width)
 
     def _take_paths_panel(self: Any) -> QWidget:
         return self._take_scrollable_control_panel(
@@ -96,6 +116,9 @@ class TakeScrollableControlPanelMixin:
         attribute_name: str,
     ) -> QWidget:
         panel = self._take_control_tab(panel)
+        return self._wrap_in_scroll_area(panel, object_name=object_name, attribute_name=attribute_name)
+
+    def _wrap_in_scroll_area(self: Any, panel: QWidget, *, object_name: str, attribute_name: str) -> QWidget:
         scroll = QScrollArea()
         scroll.setObjectName(object_name)
         scroll.setWidgetResizable(True)
@@ -125,7 +148,9 @@ class TakeScrollableControlPanelMixin:
         panel = self.run_group
         if hasattr(self, "files_tab") and self.files_tab.layout() is not None:
             self.files_tab.layout().removeWidget(panel)
-        return panel
+        scroll = self._wrap_in_scroll_area(panel, object_name="runPanelScroll", attribute_name="run_panel_scroll")
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return scroll
 
     def _frame_matrix_enabled(self: Any) -> bool:
         if not hasattr(self, "show_frame_matrix_checkbox"):

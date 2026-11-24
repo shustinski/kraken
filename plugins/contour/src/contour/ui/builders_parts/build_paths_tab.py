@@ -13,10 +13,6 @@ from contour.ui.no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
 def build_paths_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    self.path_panel = self._build_path_panel()
-    self.path_panel.setParent(tab)
-    self.path_panel.hide()
-
     self.vector_geom_group = QGroupBox("Постобработка ручных инструментов")
     self.vector_geom_group.setToolTip(
         "Post-process manual vectors when opening frames and after edits.\n"

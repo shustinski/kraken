@@ -6,7 +6,6 @@ from contour.widget_parts._imports import (
     QApplication,
     QEventLoop,
     QMessageBox,
-    index_cif_file_paths,
 )
 
 
@@ -85,18 +84,7 @@ class PolygonsEditedMixin:
             if cif_path.is_file() and cif_path.suffix.lower() in {".cif", ".cv"}:
                 entries.setdefault(cif_path.stem.lower(), str(cif_path.resolve()))
 
-        if hasattr(self, "cif_dir_edit"):
-            cif_directory = self.cif_dir_edit.text().strip()
-            if cif_directory:
-                directory = Path(cif_directory)
-                if directory.is_dir():
-                    vector_paths = [
-                        str(path.resolve())
-                        for path in directory.iterdir()
-                        if path.is_file() and path.suffix.lower() in {".cif", ".cv"}
-                    ]
-                    entries.update(index_cif_file_paths(vector_paths))
-
+        # Every vector source (folders included) is already in the CIF index.
         return entries
 
     def _confirm_and_start_batch_processing(self: Any) -> None:

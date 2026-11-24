@@ -132,8 +132,9 @@ def test_contact_and_metal_panels_retranslate_to_english() -> None:
         assert widget.bright_via_quality_group.title() == "Quality filters"
         assert widget.via_heuristic_polarity_combo.itemText(0) == "Bright"
         assert widget.metal_show_border_checkbox.text() == "Highlight objects at frame border"
-        assert not _has_cyrillic(widget.pick_input_files_button.toolTip())
-        assert not _has_cyrillic(widget.browse_input_button.toolTip())
+        assert widget.sources_panel.title_label.text() == "Sources"
+        assert not _has_cyrillic(widget.sources_panel.add_button.toolTip())
+        assert not _has_cyrillic(widget.output_dir_edit.menu_button.toolTip())
         overlay_index = widget.metal_debug_visual_combo.findData("overlay")
         assert overlay_index >= 0
         assert widget.metal_debug_visual_combo.itemText(overlay_index) == "Final overlay"

@@ -101,27 +101,26 @@ class IngestDroppedPathsMixin:
         )
         self.assertIn("frame_002", self.widget._workspace.cif_paths_by_stem)
 
-    def test_select_input_directory_replaces_instead_of_appending(self) -> None:
+    def test_select_input_directory_adds_a_folder_source(self) -> None:
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
             first = os.path.join(first_dir, "frame_001.png")
-            second = os.path.join(second_dir, "frame_001.png")
+            second = os.path.join(second_dir, "frame_002.png")
             cv2.imwrite(first, np.zeros((8, 8), dtype=np.uint8))
             cv2.imwrite(second, np.ones((8, 8), dtype=np.uint8))
-            scans: list[tuple[str, bool]] = []
+            scans: list[str] = []
 
             self.widget.load_images([first])
-            self.widget._begin_async_directory_scan = lambda directory, *, append=False: scans.append(
-                (str(Path(directory)), bool(append))
-            )  # type: ignore[method-assign]
+            self.widget._directory_scanner.start = lambda directory: scans.append(str(Path(directory)))  # type: ignore[method-assign]
 
             with patch(
                 "contour.widget_parts.navigation_mixin.QFileDialog.getExistingDirectory", return_value=second_dir
             ):
                 self.widget._select_input_directory()
 
-            self.assertEqual(scans, [(str(Path(second_dir)), False)])
-            self.assertEqual(self.widget.input_dir_edit.text(), str(Path(second_dir)))
-            self.assertEqual(self.widget._image_list_mode, "directory_scan")
+            self.assertEqual(scans, [str(Path(second_dir))])
+            sources = self.widget.source_registry.sources()
+            self.assertEqual([source.origin for source in sources], ["files", "folder"])
+            self.assertEqual(sources[1].root, str(Path(second_dir)))
 
     def test_scan_finish_restores_persisted_current_file_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -131,6 +130,8 @@ class IngestDroppedPathsMixin:
                 cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
                 paths.append(path)
 
+            self.widget._directory_scanner.start = lambda _directory: None  # type: ignore[method-assign]
+            self.widget.add_image_folder(directory)
             self.widget._pending_restore_current_image_path = str(Path(paths[1]))
             self.widget._on_input_directory_scan_finished(paths)
 
@@ -167,12 +168,15 @@ class IngestDroppedPathsMixin:
                 cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
                 image_paths.append(path)
 
+            from contour.application.dto import PersistedPaths
+            from contour.infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
             self.widget._session_settings_store.save_image_paths(image_paths)
+            self.widget._session_settings_store.save_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
             self.widget._session_settings_store.save_current_image_path(image_paths[0])
-            self.widget.cif_dir_edit.setText(directory)
-            self.widget._indexed_cif_directory = None
+            self.widget._path_settings.save(PersistedPaths(cif_directory=directory))
             index_requests: list[str] = []
-            self.widget._begin_async_cif_directory_index = lambda path: index_requests.append(  # type: ignore[method-assign]
+            self.widget._vector_indexer.start = lambda path: index_requests.append(  # type: ignore[method-assign]
                 str(Path(path))
             )
 

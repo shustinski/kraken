@@ -32,8 +32,10 @@ class DirectorySessionRestoreMixin:
                 ),
                 encoding="utf-8",
             )
-            self.widget.input_dir_edit.setText(directory)
-            self.widget.cif_dir_edit.setText(directory)
+            from contour.application.dto import PersistedPaths
+
+            # Settings written before sources existed are migrated on restore.
+            self.widget._path_settings.save(PersistedPaths(input_directory=directory, cif_directory=directory))
             self.widget._session_settings_store.save_image_list_mode(IMAGE_LIST_MODE_DIRECTORY)
             self.widget._session_settings_store.save_image_paths([image_path])
             self.widget._session_settings_store.save_vector_paths([])
@@ -73,7 +75,6 @@ class DirectorySessionRestoreMixin:
                 paths.append(path)
             self.widget._set_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
             self.widget.append_images(paths[:2])
-            self.widget.input_dir_edit.setText(directory)
             self.widget.refresh_image_list()
             self._app.processEvents()
 
@@ -87,8 +88,7 @@ class DirectorySessionRestoreMixin:
             path = os.path.join(directory, "frame_001.png")
             cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
             self.widget.load_images([path])
-            self.widget.input_dir_edit.setText(directory)
-            self.widget.cif_dir_edit.setText(directory)
+            self.widget.add_vector_folder(directory)
             self.widget.line_width_spin.setValue(4.0)
 
             self.widget.reset_project()
@@ -98,8 +98,8 @@ class DirectorySessionRestoreMixin:
             self.assertEqual(self.widget.vector_list.count(), 0)
             self.assertEqual(self.widget._workspace.image_paths, ())
             self.assertIsNone(self.widget._workspace.current_image_path)
-            self.assertEqual(self.widget.input_dir_edit.text(), "")
-            self.assertEqual(self.widget.cif_dir_edit.text(), "")
+            self.assertTrue(self.widget.source_registry.is_empty())
+            self.assertEqual(self.widget._session_settings_store.load_sources(), [])
             self.assertEqual(self.widget.line_width_spin.value(), 4.0)
             self.assertIsNone(self.widget._session_settings_store.load_current_image_path())
             self.assertEqual(self.widget._session_settings_store.load_image_paths(), [])

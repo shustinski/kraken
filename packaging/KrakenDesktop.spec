@@ -8,7 +8,7 @@ analysis = Analysis(
     pathex=[".."],
     binaries=[],
     datas=(collect_data_files("kraken_core") + collect_data_files("kraken_hub") + collect_data_files("kraken_manager")
-           + collect_data_files("contour", includes=["resources/ui_texts_*.json"])),
+           + collect_data_files("contour", includes=["resources/ui_texts_*.json", "ui/icons/*.svg"])),
     hiddenimports=(
         collect_submodules("kraken_core")
         + collect_submodules("kraken_hub")

@@ -7,6 +7,8 @@ if TYPE_CHECKING:
     from ..widget import PolygonExtractionWidget
 
 from ..adapters.qt.object_validity import qt_object_is_valid, safe_viewport
+from ..ui.icon_set import icon_colors
+from ..ui.styles import toolbar_button_stylesheet
 from ._imports import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
@@ -91,23 +93,16 @@ class WidgetUiHelpersMixin(WidgetMixinHost):
         checkable: bool = False,
     ) -> None:
         button_size = self._toolbar_button_size_px()
+        icon_size = self._toolbar_icon_size_px()
         button.setIcon(icon)
-        # The toolbar contains icon-only buttons, so let the image use the
-        # complete button area instead of leaving an artificial inner margin.
-        button.setIconSize(QSize(button_size, button_size))
-        # The shared Kraken theme adds 5x10 px padding to every QToolButton.
-        # Set this directly on editor buttons so the application stylesheet
-        # cannot shrink their icons back to the platform small-icon size.
-        # A widget-level stylesheet also replaces ancestor rules, so the
-        # selected-tool green fill must live here or it never shows.
-        if checkable:
-            button.setStyleSheet(
-                "QToolButton { padding: 0; margin: 0; border: 2px solid transparent; border-radius: 4px; }"
-                "QToolButton:checked { background-color: #16A34A; border: 2px solid #86EFAC; }"
-                "QToolButton:checked:hover { background-color: #15803D; }"
-            )
-        else:
-            button.setStyleSheet("QToolButton { padding: 0; margin: 0; }")
+        # Line icons are drawn on a 24 px grid with their own margin; show
+        # them at that size, centred in the square button.
+        button.setIconSize(QSize(icon_size, icon_size))
+        # The shared Kraken theme fills and pads every QToolButton. A
+        # widget-level stylesheet replaces those ancestor rules, so the flat
+        # look and the active-tool backdrop must live here or they never show.
+        # refresh_editor_icons() rebuilds both after a theme change.
+        button.setStyleSheet(toolbar_button_stylesheet(icon_colors(), checkable=checkable))
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(text)
         button.setStatusTip(text)

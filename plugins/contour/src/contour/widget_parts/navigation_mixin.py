@@ -21,6 +21,8 @@ from .navigation_mixin_parts.sync_after_cif_index import SyncAfterCifIndexMixin
 from .navigation_mixin_parts.refresh_extra_layers_list import RefreshExtraLayersListMixin
 from .navigation_mixin_parts.build_extra_layer_row import BuildExtraLayerRowMixin
 from .navigation_mixin_parts.extra_layer_directory import ExtraLayerDirectoryMixin
+from .navigation_mixin_parts.path_cards import PathCardsMixin
+from .sources_mixin import SourcesMixin
 
 class WidgetNavigationMixin(
     RefreshAssetFilterListMixin,
@@ -41,6 +43,8 @@ class WidgetNavigationMixin(
     RefreshExtraLayersListMixin,
     BuildExtraLayerRowMixin,
     ExtraLayerDirectoryMixin,
+    PathCardsMixin,
+    SourcesMixin,
     WidgetMixinHost,
 ):
     pass

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         QFormLayout,
         QGroupBox,
         QLabel,
-        QLineEdit,
         QListWidget,
         QListWidgetItem,
         QPushButton,
@@ -44,6 +43,7 @@ if TYPE_CHECKING:
     from contour.ui.no_wheel_controls import NoWheelComboBox as QComboBox
     from contour.ui.no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
     from contour.ui.no_wheel_controls import NoWheelSpinBox as QSpinBox
+    from contour.ui.path_card import PathCard
     from contour.ui.pipeline_list import PipelineListWidget
 
 
@@ -130,7 +130,6 @@ class WidgetMixinHost(_WidgetBase):
         bright_via_tophat_kernel_spin: QSpinBox
         bright_via_white_range_label_widget: QWidget | None
         brush_mode_combo: QComboBox
-        cif_dir_edit: QLineEdit
         conductor_gradient_band_radius_spin: QSpinBox
         conductor_gradient_checkbox: QCheckBox
         conductor_gradient_min_strength_spin: QDoubleSpinBox
@@ -187,7 +186,6 @@ class WidgetMixinHost(_WidgetBase):
         heuristic_w_size_spin: QDoubleSpinBox
         image_list: FramePathListView
         image_only_list: QListWidget
-        input_dir_edit: QLineEdit
         max_area_label_widget: QWidget | None
         max_area_spin: QDoubleSpinBox
         max_aspect_ratio_label_widget: QWidget | None
@@ -309,7 +307,7 @@ class WidgetMixinHost(_WidgetBase):
         min_via_width_label_widget: QWidget | None
         min_via_width_spin: QSpinBox
         operation_tree: QTreeWidget
-        output_dir_edit: QLineEdit
+        output_dir_edit: PathCard
         parameters_form: QFormLayout
         pipeline_help_after_image: QLabel
         pipeline_help_before_image: QLabel
@@ -458,6 +456,11 @@ class WidgetMixinHost(_WidgetBase):
         def _render_pipeline_parameters(self, row: int) -> None: ...
 
         def _save_persisted_paths(self) -> None: ...
+        def _schedule_path_card_status_refresh(self) -> None: ...
+        def _sources_dialog_start_directory(self, kind: str) -> str: ...
+        def _on_source_scan_finished(self, kind: str, paths: list[str] | None) -> bool: ...
+        def _vector_scan_pending(self) -> bool: ...
+        def _remember_recent_path(self, role: str, path: str) -> None: ...
 
         def _save_user_metal_presets(self) -> None: ...
 

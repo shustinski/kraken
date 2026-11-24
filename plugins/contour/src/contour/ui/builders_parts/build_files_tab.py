@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +24,8 @@ from contour.ui.status_list_delegate import attach_status_row_delegate
 def build_files_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
+    self.path_panel = self._build_path_panel()
+    layout.addWidget(self.path_panel)
 
     self.files_scan_progress_bar = QProgressBar()
     self.files_scan_progress_bar.setRange(0, 100)
@@ -167,60 +168,77 @@ def build_files_tab(self) -> QWidget:
     self.extra_layer_dy_label_widget = None
     layout.addWidget(self.extra_layers_group)
 
-    # The containing QDockWidget is titled "Run" / "Обработка".
+    # "Run & save" dock: where to save, launch, save options, dataset export
+    # and batch vector fixes, top to bottom in the order they are used.
     self.run_group = QWidget()
-    run_layout = QGridLayout(self.run_group)
+    run_layout = QVBoxLayout(self.run_group)
     run_layout.setContentsMargins(0, 0, 0, 0)
+    run_layout.setSpacing(6)
+
+    def section(attribute: str) -> QLabel:
+        label = QLabel()
+        label.setObjectName("runSectionTitle")
+        label.setStyleSheet("QLabel#runSectionTitle { font-weight: 600; padding-top: 4px; }")
+        setattr(self, attribute, label)
+        run_layout.addWidget(label)
+        return label
+
+    run_layout.addWidget(self.path_outputs_panel)
+
+    section("run_section_launch_label")
     self.process_current_button = QPushButton()
+    self.process_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
     self.process_current_button.clicked.connect(self._process_current_image_and_save)
     self.batch_button = QPushButton()
+    self.batch_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
     self.batch_button.clicked.connect(self._confirm_and_start_batch_processing)
     self.stop_batch_button = QPushButton()
+    self.stop_batch_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
     self.stop_batch_button.clicked.connect(self.stop_batch_processing)
-    self.antialias_opened_cif_button = QPushButton()
-    self.antialias_opened_cif_button.setIcon(self._create_editor_action_icon("antialias_all"))
-    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
-    self.fix_internal_contours_button = QPushButton()
-    self.fix_internal_contours_button.clicked.connect(self._fix_internal_contours_all_cifs)
-    self._configure_icon_only_button(
-        self.process_current_button,
-        self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
-    )
-    self._configure_icon_only_button(
-        self.batch_button,
-        self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward),
-    )
-    self._configure_icon_only_button(
-        self.stop_batch_button,
-        self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop),
-    )
-    self.save_current_button = QPushButton("Save current result")
-    self.save_current_button.clicked.connect(self.save_current_result)
-    self.export_dataset_button = QPushButton("Export frame to dataset")
-    self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
-    self.dataset_mode_checkbox = QCheckBox("Dataset mode")
     run_buttons_row = QWidget()
     run_buttons_layout = QHBoxLayout(run_buttons_row)
     run_buttons_layout.setContentsMargins(0, 0, 0, 0)
     run_buttons_layout.setSpacing(6)
-    run_buttons_layout.addWidget(self.process_current_button)
-    run_buttons_layout.addWidget(self.batch_button)
+    run_buttons_layout.addWidget(self.process_current_button, 1)
+    run_buttons_layout.addWidget(self.batch_button, 1)
     run_buttons_layout.addWidget(self.stop_batch_button)
-    run_buttons_layout.addStretch(1)
-    run_layout.addWidget(run_buttons_row, 0, 0, 1, 2)
+    run_layout.addWidget(run_buttons_row)
     self.batch_progress_bar = QProgressBar()
     self.batch_progress_bar.setRange(0, 100)
     self.batch_progress_bar.setValue(0)
     self.batch_progress_bar.setFormat("%p% (%v/%m)")
     self.batch_progress_bar.setTextVisible(True)
     self.batch_progress_bar.setVisible(False)
-    run_layout.addWidget(self.save_current_button, 1, 0, 1, 2)
-    run_layout.addWidget(self.export_dataset_button, 2, 0, 1, 2)
-    run_layout.addWidget(self.dataset_mode_checkbox, 3, 0, 1, 2)
-    run_layout.addWidget(self.antialias_opened_cif_button, 4, 0, 1, 2)
-    run_layout.addWidget(self.fix_internal_contours_button, 5, 0, 1, 2)
-    run_layout.addWidget(self.batch_progress_bar, 6, 0, 1, 2)
-    run_layout.addWidget(self.save_group, 7, 0, 1, 2)
-    run_layout.setRowStretch(8, 1)
+    run_layout.addWidget(self.batch_progress_bar)
+
+    section("run_section_save_label")
+    self.save_current_button = QPushButton("Save current result")
+    self.save_current_button.clicked.connect(self.save_current_result)
+    run_layout.addWidget(self.save_current_button)
+    run_layout.addWidget(self.save_group)
+    autosave = getattr(self, "autosave_on_frame_transition_checkbox", None)
+    if autosave is not None:
+        # Built with the display settings; it is a save option, so it lives here.
+        display_form = getattr(self, "display_form", None)
+        if display_form is not None:
+            display_form.removeWidget(autosave)
+        run_layout.addWidget(autosave)
+
+    section("run_section_dataset_label")
+    self.export_dataset_button = QPushButton("Export frame to dataset")
+    self.export_dataset_button.clicked.connect(self.export_current_frame_to_dataset)
+    self.dataset_mode_checkbox = QCheckBox("Dataset mode")
+    run_layout.addWidget(self.export_dataset_button)
+    run_layout.addWidget(self.dataset_mode_checkbox)
+
+    section("run_section_vector_tools_label")
+    self.antialias_opened_cif_button = QPushButton()
+    self.antialias_opened_cif_button.setIcon(self._create_editor_action_icon("antialias_all"))
+    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
+    self.fix_internal_contours_button = QPushButton()
+    self.fix_internal_contours_button.clicked.connect(self._fix_internal_contours_all_cifs)
+    run_layout.addWidget(self.antialias_opened_cif_button)
+    run_layout.addWidget(self.fix_internal_contours_button)
+    run_layout.addStretch(1)
     layout.addWidget(self.run_group)
     return tab

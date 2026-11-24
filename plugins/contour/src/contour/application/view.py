@@ -6,7 +6,7 @@ from typing import Any
 
 from kraken_core.theme import apply_app_theme, normalize_theme
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDragEnterEvent, QDropEvent, QIcon
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDragEnterEvent, QDropEvent, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QDockWidget,
     QLabel,
@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
 
 from ..__version__ import __version__
 from ..infrastructure import WidgetAppearanceSettingsStore, WidgetWindowSettingsStore
+from ..ui.editor_icons import refresh_editor_icons
+from ..ui.preferences_dialog import ContourPreferencesDialog
 from ..updater import create_contour_update_controller
 from ..widget import PolygonExtractionWidget
 from .styles import resolve_style_path
@@ -94,7 +96,8 @@ def _dock_toggle_action(dock: QDockWidget) -> QAction:
 
 
 class ContourMainView(QMainWindow):
-    WINDOW_STATE_VERSION = 1
+    # Bumped when the default dock layout changes so old saved layouts are ignored.
+    WINDOW_STATE_VERSION = 2
 
     def __init__(
         self,
@@ -159,31 +162,26 @@ class ContourMainView(QMainWindow):
         paths_panel.setParent(self._widget)
         paths_panel.hide()
         self._pipeline_dock = self._create_panel_dock("pipelineDock", self._widget._take_pipeline_panel())
-        self._display_dock = self._create_panel_dock("displayDock", self._widget._take_display_panel())
         self._recognition_dock = self._create_panel_dock("recognitionDock", self._widget._take_recognition_panel())
         self._run_dock = self._create_panel_dock("runDock", self._widget._take_run_panel())
         self._thumbnail_matrix_dock = self._create_panel_dock(
             "thumbnailMatrixDock",
             self._widget._take_thumbnail_matrix_panel(),
         )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._files_dock)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._thumbnail_matrix_dock)
+        # Left to right follows the workflow: data -> editor -> settings, with
+        # "Run & save" always visible under the settings.
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._files_dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._thumbnail_matrix_dock)
         self.splitDockWidget(self._files_dock, self._thumbnail_matrix_dock, Qt.Orientation.Vertical)
         self._files_dock.raise_()
-        for dock in (
-            self._pipeline_dock,
-            self._recognition_dock,
-            self._display_dock,
-        ):
-            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        self.tabifyDockWidget(self._pipeline_dock, self._recognition_dock)
-        self.tabifyDockWidget(self._pipeline_dock, self._display_dock)
-        self._pipeline_dock.raise_()
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._run_dock)
-        self._run_dock.hide()
+        # Split first, then tabify: splitting a tabified dock would add a tab.
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._recognition_dock)
+        self.splitDockWidget(self._recognition_dock, self._run_dock, Qt.Orientation.Vertical)
+        self.tabifyDockWidget(self._recognition_dock, self._pipeline_dock)
+        self._recognition_dock.raise_()
+        self._widget._sync_files_panel_minimum_width()
         self._files_toggle_action = _dock_toggle_action(self._files_dock)
         self._pipeline_toggle_action = _dock_toggle_action(self._pipeline_dock)
-        self._display_toggle_action = _dock_toggle_action(self._display_dock)
         self._recognition_toggle_action = _dock_toggle_action(self._recognition_dock)
         self._run_toggle_action = _dock_toggle_action(self._run_dock)
         self._thumbnail_matrix_toggle_action = _dock_toggle_action(self._thumbnail_matrix_dock)
@@ -192,16 +190,13 @@ class ContourMainView(QMainWindow):
             self._widget.show_frame_matrix_checkbox.stateChanged.connect(self._sync_thumbnail_matrix_dock_visibility)
         self._pipeline_dock.setWindowTitle("Pipeline")
         self._pipeline_toggle_action.setText("Pipeline")
-        self._display_dock.setWindowTitle("Display")
-        self._display_toggle_action.setText("Display")
         self._run_dock.setWindowTitle("Run")
         self._run_toggle_action.setText("Run")
         self._view_menu.addAction(self._files_toggle_action)
-        self._view_menu.addAction(self._pipeline_toggle_action)
-        self._view_menu.addAction(self._display_toggle_action)
-        self._view_menu.addAction(self._recognition_toggle_action)
-        self._view_menu.addAction(self._run_toggle_action)
         self._view_menu.addAction(self._thumbnail_matrix_toggle_action)
+        self._view_menu.addAction(self._recognition_toggle_action)
+        self._view_menu.addAction(self._pipeline_toggle_action)
+        self._view_menu.addAction(self._run_toggle_action)
         self._view_menu.addSeparator()
         self._sync_thumbnail_matrix_dock_visibility()
         self._theme_menu = self._build_theme_menu()
@@ -216,6 +211,14 @@ class ContourMainView(QMainWindow):
         self._work_simulation_action = _add_action(self._tools_menu, "")
         self._work_simulation_action.setVisible(CONTOUR_ENABLE_WORK_SIMULATION)
         self._work_simulation_action.triggered.connect(lambda _checked=False: self._widget._toggle_work_simulation())
+        self._tools_menu.addSeparator()
+        self._preferences_dialog = ContourPreferencesDialog(self._widget, self)
+        self._preferences_action = _add_action(self._tools_menu, "")
+        self._preferences_action.setObjectName("preferencesAction")
+        self._preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+        self._preferences_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._preferences_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self._preferences_action.triggered.connect(lambda _checked=False: self._preferences_dialog.open_preferences())
         self._widget.workSimulationActiveChanged.connect(self._refresh_work_simulation_action)
         self._help_menu = _add_menu(menu_bar, self._widget.help_menu_title())
         self._widget.attach_help_menu(self._help_menu)
@@ -288,7 +291,6 @@ class ContourMainView(QMainWindow):
             for dock in (
                 self._pipeline_dock,
                 self._recognition_dock,
-                self._display_dock,
                 self._files_dock,
                 self._thumbnail_matrix_dock,
                 self._run_dock,
@@ -301,13 +303,16 @@ class ContourMainView(QMainWindow):
                 [max(1, dock.minimumWidth()) for dock in horizontal_docks],
                 Qt.Orientation.Horizontal,
             )
-        right_docks = [
-            dock
-            for dock in (self._files_dock, self._thumbnail_matrix_dock, self._run_dock)
-            if dock.isVisible() and not dock.isFloating() and self.dockWidgetArea(dock) == Qt.DockWidgetArea.RightDockWidgetArea
-        ]
-        if len(right_docks) > 1:
-            self.resizeDocks(right_docks, [1 for _dock in right_docks], Qt.Orientation.Vertical)
+        def docked(*docks: QDockWidget) -> list[QDockWidget]:
+            return [dock for dock in docks if dock.isVisible() and not dock.isFloating()]
+
+        data_docks = docked(self._files_dock, self._thumbnail_matrix_dock)
+        if len(data_docks) > 1:
+            self.resizeDocks(data_docks, [3, 2], Qt.Orientation.Vertical)
+        settings_dock = self._recognition_dock if self._recognition_dock.isVisible() else self._pipeline_dock
+        settings_docks = docked(settings_dock, self._run_dock)
+        if len(settings_docks) > 1:
+            self.resizeDocks(settings_docks, [2, 1], Qt.Orientation.Vertical)
 
     def _restore_window_layout(self) -> bool:
         geometry, state = self._window_settings_store.load()
@@ -335,11 +340,12 @@ class ContourMainView(QMainWindow):
         if not self._widget._frame_matrix_enabled():
             return
         dock = self._thumbnail_matrix_dock
-        if self.dockWidgetArea(dock) == Qt.DockWidgetArea.NoDockWidgetArea:
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        files_area = self.dockWidgetArea(self._files_dock)
+        if files_area == Qt.DockWidgetArea.NoDockWidgetArea:
+            files_area = Qt.DockWidgetArea.LeftDockWidgetArea
         if dock.isFloating():
             dock.setFloating(False)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.addDockWidget(files_area, dock)
         self.splitDockWidget(self._files_dock, dock, Qt.Orientation.Vertical)
         dock.show()
         dock.raise_()
@@ -394,6 +400,7 @@ class ContourMainView(QMainWindow):
     def apply_theme(self, theme: str) -> None:
         self._theme = apply_app_theme(theme)
         self._widget._ui_theme = self._theme
+        refresh_editor_icons(self._widget)
         if hasattr(self._widget, "_refresh_image_list_item_states"):
             self._widget._refresh_image_list_item_states()
         if self._appearance_settings_store is not None:
@@ -515,14 +522,12 @@ class ContourMainView(QMainWindow):
         self._view_menu.setTitle("Вид" if language == "ru" else "View")
         self._files_dock.setWindowTitle("Файлы" if language == "ru" else "Files")
         self._files_toggle_action.setText("Файлы" if language == "ru" else "Files")
-        self._pipeline_dock.setWindowTitle("Фильтры" if language == "ru" else "Pipeline")
-        self._pipeline_toggle_action.setText("Фильтры" if language == "ru" else "Pipeline")
-        self._display_dock.setWindowTitle("Отображение" if language == "ru" else "Display")
-        self._display_toggle_action.setText("Отображение" if language == "ru" else "Display")
+        self._pipeline_dock.setWindowTitle("Предобработка" if language == "ru" else "Preprocessing")
+        self._pipeline_toggle_action.setText("Предобработка" if language == "ru" else "Preprocessing")
         self._recognition_dock.setWindowTitle("Распознавание" if language == "ru" else "Recognition")
         self._recognition_toggle_action.setText("Распознавание" if language == "ru" else "Recognition")
-        self._run_dock.setWindowTitle("Обработка" if language == "ru" else "Run")
-        self._run_toggle_action.setText("Обработка" if language == "ru" else "Run")
+        self._run_dock.setWindowTitle("Запуск и сохранение" if language == "ru" else "Run & save")
+        self._run_toggle_action.setText("Запуск и сохранение" if language == "ru" else "Run & save")
         self._editor_tools_toolbar.setWindowTitle("Инструменты" if language == "ru" else "Tools")
         self._thumbnail_matrix_dock.setWindowTitle("Матрица кадров" if language == "ru" else "Frame matrix")
         self._thumbnail_matrix_toggle_action.setText("Матрица кадров" if language == "ru" else "Frame matrix")
@@ -536,6 +541,8 @@ class ContourMainView(QMainWindow):
         self._fix_internal_contours_action.setText(
             "Исправить внутренние контуры" if language == "ru" else "Fix internal contours"
         )
+        self._preferences_action.setText(self._widget._tr("preferences_menu"))
+        self._preferences_dialog.retranslate()
         self._refresh_work_simulation_action()
 
     def _refresh_work_simulation_action(self) -> None:

@@ -14,7 +14,7 @@ class ImportMetalPresetMixin:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Загрузить пресет распознавания" if self._ui_language == "ru" else "Import recognition preset",
-            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._sources_dialog_start_directory("images"),
             self._tr("json_file_filter"),
         )
         if not path:

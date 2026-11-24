@@ -20,7 +20,7 @@ _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
 def _valid_manifest(path: Path, directory: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except OSError, ValueError, UnicodeError:
+    except (OSError, ValueError, UnicodeError):
         return False
     if not isinstance(payload, dict) or not str(payload.get("version", "")).strip():
         return False
@@ -54,7 +54,7 @@ def _valid_plugin_catalog(path: Path) -> bool:
     """A published plugins.json must be the catalog shape Hub reads: plugin objects with an id."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except OSError, ValueError, UnicodeError:
+    except (OSError, ValueError, UnicodeError):
         return False
     plugins = payload.get("plugins") if isinstance(payload, dict) else None
     if not isinstance(plugins, list):

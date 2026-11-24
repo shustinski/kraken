@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
+from contour.application.metal_filters import METAL_FILTER_KEYS
 from contour.application.processing import ContourExtractionSettings
 from contour.contour_extractor import extract_polygons
 from contour.domain import PolygonData
@@ -318,6 +319,7 @@ def test_object_source_contrast_keeps_large_conductor_with_bright_rim() -> None:
 def test_object_source_contrast_setting_reaches_recovery_config() -> None:
     config = metal_recovery_config_from_settings(
         ContourExtractionSettings(
+            metal_enabled_filters=METAL_FILTER_KEYS,
             metal_min_object_source_contrast=17.5,
             metal_min_object_rim_contrast=41.0,
             metal_min_object_rim_area_fraction=0.002,
@@ -333,6 +335,72 @@ def test_object_source_contrast_setting_reaches_recovery_config() -> None:
     assert config.auto_source_contrast_step == pytest.approx(6.0)
     assert config.auto_directional_gap_bridge_px == 4
     assert config.auto_directional_gap_min_source_intensity == pytest.approx(52.0)
+
+
+def test_only_area_and_point_filters_are_on_by_default() -> None:
+    config = metal_recovery_config_from_settings(
+        ContourExtractionSettings(
+            metal_min_area=70.0,
+            metal_max_area=5000.0,
+            min_points=5,
+            metal_min_trace_width_px=9.0,
+            metal_max_trace_width_px=30.0,
+            metal_min_trace_length_px=12.0,
+            metal_min_perimeter=40.0,
+            metal_max_perimeter=900.0,
+            min_polygon_angle=25.0,
+            metal_min_object_source_contrast=17.5,
+        )
+    )
+
+    assert config.min_area == pytest.approx(70.0)
+    assert config.max_area == pytest.approx(5000.0)
+    assert config.min_points == 5
+    assert config.min_width_px == 0.0
+    assert config.max_width_px is None
+    assert config.min_length_px == 0.0
+    assert config.min_perimeter == 0.0
+    assert config.max_perimeter is None
+    assert config.min_polygon_angle_deg == 0.0
+    assert config.min_object_source_contrast == 0.0
+    assert config.min_object_rim_contrast is None
+    assert config.min_object_rim_area_fraction is None
+
+
+def test_switching_area_filter_off_drops_area_thresholds() -> None:
+    config = metal_recovery_config_from_settings(
+        ContourExtractionSettings(metal_enabled_filters=("min_points",), metal_min_area=70.0, metal_min_object_area=70.0)
+    )
+
+    assert config.min_area == 0.0
+    assert config.min_component_area == 0.0
+
+
+def test_enabled_metal_filters_survive_settings_round_trip() -> None:
+    settings = ContourExtractionSettings(metal_enabled_filters=("min_trace_width", "min_area"))
+
+    restored = ContourExtractionSettings.from_dict(settings.to_dict())
+
+    assert restored.metal_enabled_filters == ("min_area", "min_trace_width")
+    assert ContourExtractionSettings.from_dict({}).metal_enabled_filters == ("min_area", "max_area", "min_points")
+
+
+def test_disabled_width_filter_keeps_thin_conductor() -> None:
+    img = np.zeros((120, 160), dtype=np.uint8)
+    img[40:43, 20:140] = 240
+    base = dict(
+        segmentation_strategy="legacy_otsu",
+        min_area=30.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_length_px=0.0,
+    )
+
+    strict = detect_metalization(img, MetalRecoveryConfig(**base, min_width_px=8.0))
+    relaxed = detect_metalization(img, MetalRecoveryConfig(**base, min_width_px=0.0))
+
+    assert not strict.accepted
+    assert relaxed.accepted
 
 
 def test_metal_recovery_config_preserves_zero_gap_bridge() -> None:

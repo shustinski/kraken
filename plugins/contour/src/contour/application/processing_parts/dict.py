@@ -165,6 +165,7 @@ class DictMixin:
             "metal_min_object_source_contrast": self.metal_min_object_source_contrast,
             "metal_min_object_rim_contrast": self.metal_min_object_rim_contrast,
             "metal_min_object_rim_area_fraction": self.metal_min_object_rim_area_fraction,
+            "metal_enabled_filters": list(self.metal_enabled_filters),
             "metal_contrast_bias": self.metal_contrast_bias,
             "metal_min_hole_source_contrast": self.metal_min_hole_source_contrast,
             "metal_min_hole_source_contrast_fraction": self.metal_min_hole_source_contrast_fraction,

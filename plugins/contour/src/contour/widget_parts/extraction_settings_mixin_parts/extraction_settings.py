@@ -9,6 +9,7 @@ from contour.widget_parts._imports import (
     normalize_recognition_mode,
     normalize_via_search_mode,
 )
+from contour.ui.builders_parts.sync_metal_filter_controls import set_enabled_metal_filters
 
 
 class ExtractionSettingsMixin:
@@ -414,6 +415,7 @@ class ExtractionSettingsMixin:
                     self.metal_min_object_rim_area_fraction_spin.setValue(
                         float(getattr(settings, "metal_min_object_rim_area_fraction", 0.001))
                     )
+                set_enabled_metal_filters(self, getattr(settings, "metal_enabled_filters", None))
                 if hasattr(self, "metal_auto_contrast_step_spin"):
                     self.metal_auto_contrast_step_spin.setValue(
                         float(getattr(settings, "metal_auto_contrast_step", 10.0))

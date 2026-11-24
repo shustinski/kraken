@@ -218,7 +218,3 @@ def retranslate_bright_via_panel(self: PolygonExtractionWidget) -> None:
         _set_form_field_label(expert_form_host, field, _text(language, russian, english))
         _set_form_field_label(self.bright_via_quality_group, field, _text(language, russian, english))
         _set_form_field_label(self.bright_via_basics_group, field, _text(language, russian, english))
-    if getattr(self, "metal_min_width_caption", None) is not None:
-        self.metal_min_width_caption.setText(_text(language, "Мин.", "Min"))
-    if getattr(self, "metal_max_width_caption", None) is not None:
-        self.metal_max_width_caption.setText(_text(language, "Макс.", "Max"))

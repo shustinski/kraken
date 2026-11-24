@@ -35,6 +35,8 @@ from contour.ui.no_wheel_controls import NoWheelSpinBox as QSpinBox
 from contour.ui.builders_parts.build_strategy_parameter_page import _build_strategy_parameter_page
 from contour.ui.builders_parts.dock_width_combo_box import _DockWidthComboBox
 from contour.ui.builders_parts.sync_metal_strategy_panel import _sync_metal_strategy_panel
+from contour.ui.builders_parts.sync_metal_filter_controls import _sync_metal_filter_controls
+from contour.application import metal_filters as mf
 
 def _build_extraction_tab_section_5(self, _cond_l, _rm_row, contour_layout, layout, tab):
     self.metal_recon_erode_spin.setValue(0)
@@ -74,28 +76,36 @@ def _build_extraction_tab_section_5(self, _cond_l, _rm_row, contour_layout, layo
     self.metal_filter_group = QGroupBox("Фильтрация распознанных")
     _metal_filter_form = QFormLayout(self.metal_filter_group)
     self._configure_compact_form(_metal_filter_form)
-    _metal_filter_form.addRow(
-        "Мин. контраст объекта к фону",
-        self.metal_min_object_source_contrast_spin,
-    )
-    _metal_filter_form.addRow("Bright rim minimum contrast", self.metal_min_object_rim_contrast_spin)
-    self.metal_min_object_rim_contrast_label_widget = _metal_filter_form.labelForField(
-        self.metal_min_object_rim_contrast_spin
-    )
-    _metal_filter_form.addRow(
-        "Rim-filter minimum area fraction",
-        self.metal_min_object_rim_area_fraction_spin,
-    )
-    self.metal_min_object_rim_area_fraction_label_widget = _metal_filter_form.labelForField(
-        self.metal_min_object_rim_area_fraction_spin
-    )
-    _metal_filter_form.addRow("Мин. площадь", self.metal_min_area_spin)
-    _metal_filter_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
-    _metal_filter_form.addRow("Мин. периметр", self.metal_min_perimeter_spin)
-    _metal_filter_form.addRow("Макс. периметр (0 = нет)", self.metal_max_perimeter_spin)
-    _metal_filter_form.addRow("Мин. длина проводника, px", self.metal_min_length_spin)
-    _metal_filter_form.addRow("Мин. число точек", self.metal_min_points_spin)
-    _metal_filter_form.addRow("Мин. угол полигона, °", self.metal_min_angle_spin)
+    # Each filter row is labelled by the checkbox that switches that filter on.
+    self.metal_filter_checkboxes = {}
+    self.metal_filter_fields = {}
+    for _key, _text, _field in (
+        (mf.FILTER_MIN_OBJECT_SOURCE_CONTRAST, "Мин. контраст объекта к фону", self.metal_min_object_source_contrast_spin),
+        (mf.FILTER_MIN_OBJECT_RIM_CONTRAST, "Мин. контраст яркой кромки", self.metal_min_object_rim_contrast_spin),
+        (
+            mf.FILTER_MIN_OBJECT_RIM_AREA_FRACTION,
+            "Мин. доля площади для кромочного фильтра",
+            self.metal_min_object_rim_area_fraction_spin,
+        ),
+        (mf.FILTER_MIN_AREA, "Мин. площадь", self.metal_min_area_spin),
+        (mf.FILTER_MAX_AREA, "Макс. площадь (0 = нет)", self.metal_max_area_spin),
+        (mf.FILTER_MIN_PERIMETER, "Мин. периметр", self.metal_min_perimeter_spin),
+        (mf.FILTER_MAX_PERIMETER, "Макс. периметр (0 = нет)", self.metal_max_perimeter_spin),
+        (mf.FILTER_MIN_TRACE_LENGTH, "Мин. длина проводника, px", self.metal_min_length_spin),
+        (mf.FILTER_MIN_TRACE_WIDTH, "Мин. ширина проводника, px", self.metal_min_width_spin),
+        (mf.FILTER_MAX_TRACE_WIDTH, "Макс. ширина проводника, px", self.metal_max_width_spin),
+        (mf.FILTER_MIN_POINTS, "Мин. число точек", self.metal_min_points_spin),
+        (mf.FILTER_MIN_POLYGON_ANGLE, "Мин. угол полигона, °", self.metal_min_angle_spin),
+    ):
+        _checkbox = QCheckBox(_text)
+        _checkbox.setChecked(_key in mf.DEFAULT_ENABLED_METAL_FILTERS)
+        self.metal_filter_checkboxes[_key] = _checkbox
+        self.metal_filter_fields[_key] = _field
+        _metal_filter_form.addRow(_checkbox, _field)
+    self.metal_min_object_rim_contrast_label_widget = self.metal_filter_checkboxes[mf.FILTER_MIN_OBJECT_RIM_CONTRAST]
+    self.metal_min_object_rim_area_fraction_label_widget = self.metal_filter_checkboxes[
+        mf.FILTER_MIN_OBJECT_RIM_AREA_FRACTION
+    ]
     _metal_filter_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
 
     self.metal_recognition_params_group = QGroupBox("Параметры распознавания")
@@ -227,6 +237,10 @@ def _build_extraction_tab_section_5(self, _cond_l, _rm_row, contour_layout, layo
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_min_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    for _checkbox in self.metal_filter_checkboxes.values():
+        _checkbox.toggled.connect(lambda _checked: _sync_metal_filter_controls(self))
+        _checkbox.toggled.connect(self._on_extraction_settings_changed)
+    _sync_metal_filter_controls(self)
     self.metal_max_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_conductor_size_offset_slider.valueChanged.connect(self._on_conductor_size_offset_changed)
     for _w in (

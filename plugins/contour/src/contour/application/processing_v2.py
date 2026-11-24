@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any, Literal, cast
 
 from ..domain import PolygonData
+from .metal_filters import DEFAULT_ENABLED_METAL_FILTERS, normalize_enabled_metal_filters
 from ..vision.metal_recovery.segmentation import normalize_metal_adaptive_method
 from .processing import ContourExtractionSettings, DisplaySettings, PipelineStepConfig
 
@@ -60,6 +61,7 @@ class MetalRecoverySettings:
     min_object_source_contrast: float = 12.0
     min_object_rim_contrast: float = 36.0
     min_object_rim_area_fraction: float = 0.001
+    enabled_filters: tuple[str, ...] = DEFAULT_ENABLED_METAL_FILTERS
     # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
     min_hole_source_contrast: float = 8.0
@@ -119,6 +121,7 @@ class MetalRecoverySettings:
             0.000001,
             min(1.0, float(self.min_object_rim_area_fraction)),
         )
+        self.enabled_filters = normalize_enabled_metal_filters(self.enabled_filters)
         self.adaptive_block_size = max(0, min(255, int(self.adaptive_block_size)))
         self.adaptive_c = max(-64.0, min(64.0, float(self.adaptive_c)))
         self.adaptive_method = normalize_metal_adaptive_method(self.adaptive_method)
@@ -266,6 +269,7 @@ class ProcessingRequestV2:
                 metal_min_object_source_contrast=metal_mode.min_object_source_contrast,
                 metal_min_object_rim_contrast=metal_mode.min_object_rim_contrast,
                 metal_min_object_rim_area_fraction=metal_mode.min_object_rim_area_fraction,
+                metal_enabled_filters=metal_mode.enabled_filters,
                 metal_contrast_bias=metal_mode.contrast_bias,
                 metal_min_hole_source_contrast=metal_mode.min_hole_source_contrast,
                 metal_min_hole_source_contrast_fraction=metal_mode.min_hole_source_contrast_fraction,
@@ -392,6 +396,7 @@ class ProcessingRequestV2:
                 min_object_source_contrast=legacy.metal_min_object_source_contrast,
                 min_object_rim_contrast=legacy.metal_min_object_rim_contrast,
                 min_object_rim_area_fraction=legacy.metal_min_object_rim_area_fraction,
+                enabled_filters=legacy.metal_enabled_filters,
                 contrast_bias=legacy.metal_contrast_bias,
                 min_hole_source_contrast=legacy.metal_min_hole_source_contrast,
                 min_hole_source_contrast_fraction=legacy.metal_min_hole_source_contrast_fraction,

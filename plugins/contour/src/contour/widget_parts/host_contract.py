@@ -233,7 +233,6 @@ class WidgetMixinHost(_WidgetBase):
         metal_hierarchy_combo: QComboBox
         metal_max_area_spin: QDoubleSpinBox
         metal_max_perimeter_spin: QDoubleSpinBox
-        metal_max_width_caption: QLabel
         metal_max_width_spin: QDoubleSpinBox
         metal_min_angle_spin: QDoubleSpinBox
         metal_min_area_spin: QDoubleSpinBox
@@ -246,7 +245,8 @@ class WidgetMixinHost(_WidgetBase):
         metal_min_object_source_contrast_spin: QDoubleSpinBox
         metal_min_perimeter_spin: QDoubleSpinBox
         metal_min_points_spin: QSpinBox
-        metal_min_width_caption: QLabel
+        metal_filter_checkboxes: dict[str, QCheckBox]
+        metal_filter_fields: dict[str, QWidget]
         metal_min_width_spin: QDoubleSpinBox
         metal_morph_close_spin: QDoubleSpinBox | QSpinBox
         metal_morph_open_spin: QDoubleSpinBox | QSpinBox

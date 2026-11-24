@@ -53,11 +53,6 @@ def _retranslate_ui_section_2(self, index):
             self.metal_speckle_removal_spin,
             "Удаление шума, пикс." if is_ru else "Speckle removal, px",
         )
-        _set_form_label(
-            self.metal_basic_group,
-            self.metal_width_row,
-            "Ширина проводника, пикс." if is_ru else "Conductor width, px",
-        )
         if hasattr(self, "metal_conductor_size_offset_widget"):
             _set_form_label(
                 self.metal_basic_group,
@@ -114,6 +109,16 @@ def _retranslate_ui_section_2(self, index):
             self.metal_filter_group,
             self.metal_min_length_spin,
             "Мин. длина проводника, пикс." if is_ru else "Minimum conductor length, px",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_width_spin,
+            "Мин. ширина проводника, пикс." if is_ru else "Minimum conductor width, px",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_max_width_spin,
+            "Макс. ширина проводника, пикс. (0 — без ограничения)" if is_ru else "Maximum conductor width, px (0 = unlimited)",
         )
         _set_form_label(
             self.metal_filter_group,

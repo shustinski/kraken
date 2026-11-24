@@ -10,10 +10,14 @@ def _filter_conductors_by_source_contrast(
     source_image: np.ndarray | None,
     *,
     min_contrast: float,
-    min_rim_contrast: float,
-    min_rim_area_fraction: float,
+    min_rim_contrast: float | None,
+    min_rim_area_fraction: float | None,
 ) -> list[PolygonData]:
-    """Reject dark shadow islands that watershed can grow beside a conductor."""
+    """Reject dark shadow islands that watershed can grow beside a conductor.
+
+    The rim contrast and area fraction let low-contrast objects through; ``None``
+    switches that exemption off.
+    """
     if source_image is None or min_contrast <= 0.0 or not polygons:
         return polygons
     if source_image.ndim == 3:
@@ -28,8 +32,12 @@ def _filter_conductors_by_source_contrast(
 
     kept_parent_ids: set[int] = set()
     ring_radius = 10
-    min_rim_backed_area_fraction = max(0.000001, min(1.0, float(min_rim_area_fraction)))
-    required_rim_contrast = max(0.0, float(min_rim_contrast))
+    use_area = min_rim_area_fraction is not None
+    use_rim = min_rim_contrast is not None
+    min_rim_backed_area_fraction = (
+        max(0.000001, min(1.0, float(min_rim_area_fraction))) if min_rim_area_fraction is not None else 1.0
+    )
+    required_rim_contrast = max(0.0, float(min_rim_contrast)) if min_rim_contrast is not None else 0.0
     rim_percentile = 90.0
     ring_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
@@ -81,9 +89,9 @@ def _filter_conductors_by_source_contrast(
         )
 
         if interior_contrast >= float(min_contrast):
-            is_sizeable_component = area_fraction >= min_rim_backed_area_fraction
+            is_sizeable_component = use_area and area_fraction >= min_rim_backed_area_fraction
             has_strong_interior = interior_contrast >= 2.0 * float(min_contrast)
-            has_strong_rim = rim_contrast >= required_rim_contrast
+            has_strong_rim = use_rim and rim_contrast >= required_rim_contrast
             if is_sizeable_component or has_strong_interior or has_strong_rim:
                 kept_parent_ids.add(int(polygon.id))
             continue
@@ -92,13 +100,16 @@ def _filter_conductors_by_source_contrast(
         # bright material rim remains unambiguous.  Use that evidence only for
         # dominant candidates so textured background islands are not promoted.
         is_large_rim_candidate = (
-            area_fraction >= 6.0 * min_rim_backed_area_fraction
+            use_area
+            and use_rim
+            and area_fraction >= 6.0 * min_rim_backed_area_fraction
             and interior_contrast >= 0.75 * float(min_contrast)
             and rim_contrast >= 0.75 * required_rim_contrast
         )
-        is_dominant_component = area_fraction >= 50.0 * min_rim_backed_area_fraction
+        is_dominant_component = use_area and area_fraction >= 50.0 * min_rim_backed_area_fraction
         if is_large_rim_candidate or (
-            rim_contrast >= (2.0 / 3.0) * required_rim_contrast and is_dominant_component
+            use_rim
+            and rim_contrast >= (2.0 / 3.0) * required_rim_contrast and is_dominant_component
         ):
             kept_parent_ids.add(int(polygon.id))
 

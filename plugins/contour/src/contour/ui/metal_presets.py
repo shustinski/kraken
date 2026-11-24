@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..application.metal_filters import DEFAULT_ENABLED_METAL_FILTERS
 from ..vision.metal_recovery.strategy_registry import (
     IMPLEMENTED_NEW_STRATEGIES,
     MetalStrategyConfigs,
@@ -18,6 +19,7 @@ def _metal_keys() -> tuple[str, ...]:
         "metal_min_object_source_contrast",
         "metal_min_object_rim_contrast",
         "metal_min_object_rim_area_fraction",
+        "metal_enabled_filters",
         "metal_min_hole_source_contrast",
         "metal_min_hole_source_contrast_fraction",
         "metal_gap_bridge_px",
@@ -66,6 +68,7 @@ def _metal_keys() -> tuple[str, ...]:
 def standard_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "standard",
+        "metal_enabled_filters": list(DEFAULT_ENABLED_METAL_FILTERS),
         "metal_min_contrast": 50.0,
         "metal_min_object_source_contrast": 12.0,
         "metal_min_object_rim_contrast": 36.0,

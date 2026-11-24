@@ -11,8 +11,9 @@ class MetalRecoveryConfig:
 
     min_contrast: float = 50.0
     min_object_source_contrast: float = 12.0
-    min_object_rim_contrast: float = 36.0
-    min_object_rim_area_fraction: float = 0.001
+    # None switches the rim-contrast / area-fraction exemption of the contrast filter off.
+    min_object_rim_contrast: float | None = 36.0
+    min_object_rim_area_fraction: float | None = 0.001
     contrast_bias: float = 0.0  # Deprecated compatibility field; ignored by segmentation.
     min_hole_source_contrast: float = 8.0
     min_hole_source_contrast_fraction: float = 0.35

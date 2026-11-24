@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import Any
 
+from contour.application.metal_filters import normalize_enabled_metal_filters
+
 from contour.application.processing_parts.module_state import (
     ALGORITHM_BACKEND_LEGACY,
     RECOGNITION_MODE_CONDUCTORS,
@@ -452,6 +454,7 @@ class Dict2Mixin:
                 0.0,
                 min(255.0, float(payload.get("metal_min_object_source_contrast", 12.0))),
             ),
+            metal_enabled_filters=normalize_enabled_metal_filters(payload.get("metal_enabled_filters")),
             metal_min_object_rim_contrast=max(
                 0.0,
                 min(255.0, float(payload.get("metal_min_object_rim_contrast", 36.0))),

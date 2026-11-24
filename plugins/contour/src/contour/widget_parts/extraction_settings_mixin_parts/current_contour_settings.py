@@ -8,6 +8,7 @@ from contour.widget_parts._imports import (
     normalize_recognition_mode,
     normalize_via_search_mode,
 )
+from contour.ui.builders_parts.sync_metal_filter_controls import enabled_metal_filters
 
 
 class CurrentContourSettingsMixin:
@@ -244,6 +245,7 @@ class CurrentContourSettingsMixin:
             metal_min_object_rim_contrast=float(self.metal_min_object_rim_contrast_spin.value())
             if hasattr(self, "metal_min_object_rim_contrast_spin")
             else 36.0,
+            metal_enabled_filters=enabled_metal_filters(self),
             metal_min_object_rim_area_fraction=float(
                 self.metal_min_object_rim_area_fraction_spin.value()
             )

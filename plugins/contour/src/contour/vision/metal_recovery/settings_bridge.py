@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...application import metal_filters as mf
 from .detector import MetalRecoveryConfig
 from .gradient_watershed import clamped_gradient_watershed_config
 from .segmentation import normalize_metal_adaptive_method, resolve_metal_segmentation_strategy
@@ -64,6 +65,9 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         ),
     )
     external_only = _normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full"))
+    # A switched-off filter keeps its saved threshold but passes its neutral value on.
+    enabled = set(mf.normalize_enabled_metal_filters(getattr(settings, "metal_enabled_filters", None)))
+    min_area = max(0.0, float(getattr(settings, "metal_min_area", 60) or 0.0)) if mf.FILTER_MIN_AREA in enabled else 0.0
     return MetalRecoveryConfig(
         min_contrast=max(
             1.0,
@@ -81,15 +85,21 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         min_object_source_contrast=max(
             0.0,
             min(255.0, float(getattr(settings, "metal_min_object_source_contrast", 12.0))),
-        ),
+        )
+        if mf.FILTER_MIN_OBJECT_SOURCE_CONTRAST in enabled
+        else 0.0,
         min_object_rim_contrast=max(
             0.0,
             min(255.0, float(getattr(settings, "metal_min_object_rim_contrast", 36.0))),
-        ),
+        )
+        if mf.FILTER_MIN_OBJECT_RIM_CONTRAST in enabled
+        else None,
         min_object_rim_area_fraction=max(
             0.000001,
             min(1.0, float(getattr(settings, "metal_min_object_rim_area_fraction", 0.001))),
-        ),
+        )
+        if mf.FILTER_MIN_OBJECT_RIM_AREA_FRACTION in enabled
+        else None,
         min_hole_source_contrast=max(
             0.0,
             min(255.0, float(getattr(settings, "metal_min_hole_source_contrast", 8.0))),
@@ -129,16 +139,30 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         ),
         gap_bridge_px=_non_negative_int(gap_raw, default=2),
         speckle_removal_px=_non_negative_int(speckle_raw, default=0),
-        min_width_px=max(0.5, float(getattr(settings, "metal_min_trace_width_px", 8) or 8)),
-        max_width_px=_optional_positive_float(getattr(settings, "metal_max_trace_width_px", None)),
-        min_length_px=max(1.0, float(getattr(settings, "metal_min_trace_length_px", 8) or 8)),
-        min_area=max(0.0, float(getattr(settings, "metal_min_area", 60) or 60)),
-        max_area=_optional_positive_float(getattr(settings, "metal_max_area", None)),
-        min_perimeter=max(0.0, float(getattr(settings, "metal_min_perimeter", 32) or 32)),
-        max_perimeter=_optional_positive_float(getattr(settings, "metal_max_perimeter", None)),
+        min_width_px=max(0.5, float(getattr(settings, "metal_min_trace_width_px", 8) or 8))
+        if mf.FILTER_MIN_TRACE_WIDTH in enabled
+        else 0.0,
+        max_width_px=_optional_positive_float(getattr(settings, "metal_max_trace_width_px", None))
+        if mf.FILTER_MAX_TRACE_WIDTH in enabled
+        else None,
+        min_length_px=max(1.0, float(getattr(settings, "metal_min_trace_length_px", 8) or 8))
+        if mf.FILTER_MIN_TRACE_LENGTH in enabled
+        else 0.0,
+        min_area=min_area,
+        max_area=_optional_positive_float(getattr(settings, "metal_max_area", None))
+        if mf.FILTER_MAX_AREA in enabled
+        else None,
+        min_perimeter=max(0.0, float(getattr(settings, "metal_min_perimeter", 32) or 0.0))
+        if mf.FILTER_MIN_PERIMETER in enabled
+        else 0.0,
+        max_perimeter=_optional_positive_float(getattr(settings, "metal_max_perimeter", None))
+        if mf.FILTER_MAX_PERIMETER in enabled
+        else None,
         epsilon_simplify=max(0.0, float(getattr(settings, "epsilon", 2.0) or 2.0)),
-        min_points=max(3, int(getattr(settings, "min_points", 4) or 4)),
-        min_polygon_angle_deg=max(0.0, float(getattr(settings, "min_polygon_angle", 0.0) or 0.0)),
+        min_points=max(3, int(getattr(settings, "min_points", 4) or 4)) if mf.FILTER_MIN_POINTS in enabled else 3,
+        min_polygon_angle_deg=max(0.0, float(getattr(settings, "min_polygon_angle", 0.0) or 0.0))
+        if mf.FILTER_MIN_POLYGON_ANGLE in enabled
+        else 0.0,
         approximation_enabled=bool(getattr(settings, "metal_approximation_enabled", True)),
         retrieval_external_only=external_only,
         retrieval_mode="RETR_EXTERNAL" if external_only else "RETR_TREE",
@@ -148,7 +172,9 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         min_component_area=max(
             0.0,
             float(getattr(settings, "metal_min_object_area", getattr(settings, "metal_min_area", 60)) or 60),
-        ),
+        )
+        if mf.FILTER_MIN_AREA in enabled
+        else 0.0,
         preset_name=str(getattr(settings, "metal_preset", "standard") or "standard"),
         use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
         watershed_smoothing_sigma=watershed.smoothing_sigma,

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from ..domain import PolygonData
+from .metal_filters import DEFAULT_ENABLED_METAL_FILTERS
 
 from .processing_parts.module_state import (
     VIA_SIZE_MODE_RANGE,
@@ -209,6 +210,8 @@ class ContourExtractionSettings(DictMixin, Dict2Mixin):
     metal_min_object_source_contrast: float = 12.0
     metal_min_object_rim_contrast: float = 36.0
     metal_min_object_rim_area_fraction: float = 0.001
+    # Recognized-metal filters whose thresholds are applied; see application.metal_filters.
+    metal_enabled_filters: tuple[str, ...] = DEFAULT_ENABLED_METAL_FILTERS
     # Deprecated persisted setting; retained only for backward-compatible loading.
     metal_contrast_bias: float = 0.0
     metal_min_hole_source_contrast: float = 8.0

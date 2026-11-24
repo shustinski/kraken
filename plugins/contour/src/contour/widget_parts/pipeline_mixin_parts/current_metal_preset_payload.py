@@ -108,6 +108,7 @@ class CurrentMetalPresetPayloadMixin:
             "metal_min_object_source_contrast",
             "metal_min_object_rim_contrast",
             "metal_min_object_rim_area_fraction",
+            "metal_enabled_filters",
             "metal_min_hole_source_contrast",
             "metal_min_hole_source_contrast_fraction",
             "metal_segmentation_strategy",

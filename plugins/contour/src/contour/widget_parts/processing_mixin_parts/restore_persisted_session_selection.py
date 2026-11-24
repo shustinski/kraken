@@ -43,6 +43,11 @@ class RestorePersistedSessionSelectionMixin:
         )
 
     def _on_batch_progress(self: Any, current: int, total: int) -> None:
+        if getattr(self, "_managed_batch_resume", None) is not None:
+            from contour.managed_batch_ui import managed_progress
+
+            # Count finished CIFs out of all job frames, not of this run.
+            current, total = managed_progress(self, current, total)
         if self._batch_progress_enabled:
             self._apply_batch_progress_bar(current, total)
         self._set_progress_status("batch_progress_status", current=current, total=total)
@@ -51,6 +56,10 @@ class RestorePersistedSessionSelectionMixin:
     def _on_batch_finished(self: Any) -> None:
         self._finish_shared_progress_if_idle()
         self._set_progress_status("batch_finished_status")
+        if getattr(self, "_managed_batch_resume", None) is not None:
+            from contour.managed_batch_ui import on_managed_batch_finished
+
+            on_managed_batch_finished(self)
         self.batchFinished.emit()
 
     def _on_batch_error(self: Any, image_path: str, message: str) -> None:

@@ -572,6 +572,10 @@ class ServerAgentWorker:
                 transport = self._transport_manifest(manifest, workspace)
             transport = self._stage_model_input(transport, workspace)
             workspace.write_manifest(transport)
+            if isinstance(transport, PluginJobManifest) and transport.operation == "frames.vectorize.v1":
+                from .contour_recovery import recover_contour_attempt_safely
+
+                recover_contour_attempt_safely(workspace.root.parent, workspace, transport)
             # Holding the execution gate proves no live process owns an
             # earlier attempt, e.g. Kraken closed while Contour was open.
             self.store.retire_orphaned_execution(job_id, attempt_key=attempt_key)

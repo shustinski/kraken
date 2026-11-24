@@ -130,7 +130,18 @@ class StartBatchProcessingMixin:
                 )
             )
             return
-        paths = image_paths or list(self._workspace.image_paths)
+        resume = getattr(self, "_managed_batch_resume", None)
+        managed = image_paths is None and (resume is not None or getattr(self, "_managed_batch_resume_error", None))
+        if managed:
+            from contour.managed_batch_ui import managed_batch_paths
+
+            # A managed job continues only frames without a valid CIF.
+            paths = managed_batch_paths(self)
+            if not paths:
+                return
+        else:
+            resume = None
+            paths = image_paths or list(self._workspace.image_paths)
         if not paths:
             self._append_log(self._tr("batch_no_images_log"))
             return
@@ -149,8 +160,14 @@ class StartBatchProcessingMixin:
                 )
             )
         if not started:
+            if resume is not None:
+                resume.finish()
             return
-        self._show_batch_progress(len(paths))
+        if resume is not None:
+            self._show_batch_progress(resume.total)
+            self._apply_batch_progress_bar(*resume.overall_progress(0))
+        else:
+            self._show_batch_progress(len(paths))
         self._set_progress_status("batch_started_status")
 
     def stop_batch_processing(self: Any) -> None:

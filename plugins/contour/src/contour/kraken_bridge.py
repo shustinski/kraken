@@ -239,6 +239,12 @@ class ContourKrakenSession:
             resolved = output_path.resolve(strict=True)
             if resolved.parent != self.output_directory or not resolved.is_file():
                 raise KrakenBridgeError(f"Contour output escapes staging: {output_path.name}")
+            from .local_batch_resume import is_complete_cif
+
+            if not is_complete_cif(resolved):
+                # An interrupted write is not a result; the frame is recomputed.
+                missing.append(frame.frame_id)
+                continue
             outputs.append(
                 PluginFrameOutput(
                     output_id=f"{self.manifest.job_id}:contour:{index}",
@@ -349,16 +355,26 @@ class ContourKrakenSession:
             # manifest's pinned CIFs, not the host's persisted CIF directory.
             widget._pending_cif_directory_path_after_images = None
             widget._indexed_cif_directory = None
+            vector_paths = list(self.vector_paths)
+            if self.manifest.operation == PluginOperation.VECTORIZE_FRAMES.value:
+                from .managed_batch_ui import attach_managed_resume
+
+                resume = attach_managed_resume(widget, self)
+                if resume is not None:
+                    # Finished CIFs from an earlier run replace the job's input CIFs.
+                    finished = resume.completed_cifs()
+                    stems = {path.stem.casefold() for path in finished}
+                    vector_paths = [path for path in vector_paths if path.stem.casefold() not in stems] + finished
             if hasattr(widget, "replace_sources"):
                 from .application.sources import SOURCE_VECTORS, files_source
 
-                # The job's pinned CIFs are the only vector source.
+                # The job's pinned CIFs (and its own finished CIFs) are the only vector source.
                 widget.replace_sources(
                     SOURCE_VECTORS,
-                    files_source(SOURCE_VECTORS, self.vector_paths, locked=True) if self.vector_paths else None,
+                    files_source(SOURCE_VECTORS, vector_paths, locked=True) if vector_paths else None,
                 )
             elif hasattr(widget, "_workspace"):
-                widget._workspace.set_cif_index({path.stem.casefold(): str(path) for path in self.vector_paths})
+                widget._workspace.set_cif_index({path.stem.casefold(): str(path) for path in vector_paths})
             if self.server_source is not None:
                 loader = AssetImageLoader(self.server_source, self.staging_root)
                 widget._source_image_loader = loader
@@ -400,7 +416,21 @@ class ContourKrakenSession:
                 _ensure_processing_finished(window)
                 if not window._widget.confirm_ok_to_leave_current_vectors():
                     return
-                result = replace(self.build_result(), applied_parameters=recognition_parameters(window))
+                resume = getattr(window._widget, "_managed_batch_resume", None)
+                parameters = recognition_parameters(window)
+                built = self.build_result()
+                if resume is not None or getattr(window._widget, "_managed_batch_resume_error", None):
+                    from .local_batch_resume import result_parameters
+
+                    # Record which settings produced which returned frame; with
+                    # a damaged local state none of them is known.
+                    groups = (
+                        resume.groups()
+                        if resume is not None
+                        else [{"settings": None, "frame_ids": sorted(item.frame_id for item in built.outputs)}]
+                    )
+                    parameters = result_parameters(parameters, groups)
+                result = replace(built, applied_parameters=parameters)
                 if result.outcome == PluginJobOutcome.PARTIAL.value:
                     answer = QMessageBox.question(
                         window,
@@ -410,6 +440,11 @@ class ContourKrakenSession:
                     if answer != QMessageBox.StandardButton.Yes:
                         return
                 self.write_result(result)
+                if resume is not None and result.outcome == PluginJobOutcome.SUCCEEDED.value:
+                    try:
+                        resume.state.mark_complete()
+                    except OSError:
+                        _LOGGER.warning("Could not mark the local Contour run complete", exc_info=True)
             except Exception as exc:
                 _LOGGER.exception("Failed to return the interactive result to Kraken")
                 QMessageBox.critical(window, "Kraken", f"Не удалось вернуть результат:\n{exc}")

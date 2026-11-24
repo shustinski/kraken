@@ -122,6 +122,10 @@ def _retranslate_ui_section_1(self):
     ):
         button.setText(self._tr(text_key))
         button.setAccessibleName(self._tr(accessible_key))
+    if getattr(self, "_managed_batch_resume", None) is not None:
+        from contour.managed_batch_ui import refresh_managed_batch_labels
+
+        refresh_managed_batch_labels(self)
     self.run_section_launch_label.setText(self._tr("run_section_launch"))
     self.run_section_save_label.setText(self._tr("run_section_save"))
     self.run_section_dataset_label.setText(self._tr("run_section_dataset"))

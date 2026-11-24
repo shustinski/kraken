@@ -1,21 +1,21 @@
 """serializers: save polygons cif."""
 from __future__ import annotations
+
 import csv
+import os
 from pathlib import Path
+from uuid import uuid4
+
 from contour.domain import PolygonData, compute_polygon_metrics
-
-from contour.serializers_parts.module_state import CIF_CUTOUT_DISPLAY_MARKER
-
 from contour.serializers_parts.boundary_vertices_by_distance import _polygon_to_cif_line
-
 from contour.serializers_parts.connected_cif_families import _connected_cif_families
-
 from contour.serializers_parts.cv_object_polygon import (
     _cv_coord,
     invalidate_cif_parse_cache,
 )
-
 from contour.serializers_parts.encode_parent_holes_link import _encode_parent_with_holes_link_path
+from contour.serializers_parts.module_state import CIF_CUTOUT_DISPLAY_MARKER
+
 
 def save_polygons_cif(
     path: str | Path,
@@ -81,7 +81,14 @@ def save_polygons_cif(
         if line:
             lines.append(line)
     lines.extend(["DF;", "E"])
-    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Publish only a complete file: a worker terminated mid-write (batch
+    # pause) leaves the previous CIF, or none, never a truncated one.
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.part")
+    try:
+        temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     invalidate_cif_parse_cache([output])
     return output
 

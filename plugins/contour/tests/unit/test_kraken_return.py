@@ -34,6 +34,11 @@ pytestmark = pytest.mark.fast
 kraken_defect = "D13"
 
 
+# Complete CIFs: the return path ignores interrupted (malformed) outputs.
+OLD_CIF = b"DS 1 1 1;\nL NM;\n( S 2 2 );\nP 0 0 1 0 1 1;\nDF;\nE\n"
+EDITED_CIF = b"DS 1 1 1;\nL NM;\n( S 2 2 );\nP 0 0 2 0 2 2;\nDF;\nE\n"
+
+
 class _Editor(QWidget, TryLeaveCurrentFrameMixin):
     def __init__(self, output: Path, choice: TransitionPromptChoice, *, save_ok: bool = True):
         super().__init__()
@@ -58,7 +63,7 @@ class _Editor(QWidget, TryLeaveCurrentFrameMixin):
 
     def _persist_current_overlay_changes(self):
         if self.save_ok:
-            self.output.write_bytes(b"edited vectors")
+            self.output.write_bytes(EDITED_CIF)
             self.dirty = False
         return self.save_ok
 
@@ -154,7 +159,7 @@ def _dismiss_result_messages(monkeypatch):
 def test_cancel_or_failed_save_does_not_publish(tmp_path, workspace, choice, save_ok):
     session = _session(tmp_path)
     cif = session.output_directory / "a.cif"
-    cif.write_bytes(b"old vectors")
+    cif.write_bytes(OLD_CIF)
     editor = _Editor(cif, choice, save_ok=save_ok)
     window = _ReturnWindow(editor)
     bridge = _workspace_session(session) if workspace else session
@@ -162,7 +167,7 @@ def test_cancel_or_failed_save_does_not_publish(tmp_path, workspace, choice, sav
     window._kraken_return_action.trigger()
     assert not session.result_manifest_path.exists()
     assert editor.dirty
-    assert cif.read_bytes() == b"old vectors"
+    assert cif.read_bytes() == OLD_CIF
     editor.dirty = False
     window.close()
 
@@ -170,14 +175,14 @@ def test_cancel_or_failed_save_does_not_publish(tmp_path, workspace, choice, sav
 @pytest.mark.parametrize(
     "choice,expected",
     [
-        (TransitionPromptChoice.SAVE, b"edited vectors"),
-        (TransitionPromptChoice.DISCARD, b"old vectors"),
+        (TransitionPromptChoice.SAVE, EDITED_CIF),
+        (TransitionPromptChoice.DISCARD, OLD_CIF),
     ],
 )
 def test_cif_return_hashes_saved_or_discarded_edits(tmp_path, choice, expected):
     session = _session(tmp_path)
     cif = session.output_directory / "a.cif"
-    cif.write_bytes(b"old vectors")
+    cif.write_bytes(OLD_CIF)
     editor = _Editor(cif, choice)
     window = _ReturnWindow(editor)
     session.attach_return_action(window)
@@ -193,7 +198,7 @@ def _dataset_samples(session):
     (session.output_directory / "cif").mkdir()
     (session.output_directory / "images/a.png").write_bytes(b"image")
     label = session.output_directory / "cif/a.cif"
-    label.write_bytes(b"old vectors")
+    label.write_bytes(OLD_CIF)
     return label
 
 
@@ -204,7 +209,7 @@ def test_dataset_return_archives_saved_edits(tmp_path):
     session.attach_return_action(window)
     window._kraken_return_action.trigger()
     with ZipFile(session.output_directory / "dataset.zip") as archive:
-        assert archive.read("cif/a.cif") == b"edited vectors"
+        assert archive.read("cif/a.cif") == EDITED_CIF
     window.close()
 
 
@@ -351,7 +356,7 @@ def test_cli_workspace_launch_reaches_interactive_return(tmp_path, monkeypatch):
     workspace = _workspace_session(session)
     workspace.context.write(workspace.context_path)
     cif = session.output_directory / "a.cif"
-    cif.write_bytes(b"old vectors")
+    cif.write_bytes(OLD_CIF)
     window = _ReturnWindow(_Editor(cif, TransitionPromptChoice.SAVE))
     monkeypatch.setattr(window, "show", lambda: None)
     app = SimpleNamespace(
@@ -362,4 +367,67 @@ def test_cli_workspace_launch_reaches_interactive_return(tmp_path, monkeypatch):
     monkeypatch.setattr(process_lifetime, "bind_child_process_lifetime", lambda: None)
     cli.main(["--kraken-workspace-context", str(workspace.context_path)])
     assert session.result_manifest_path.exists()
-    assert cif.read_bytes() == b"edited vectors"
+    assert cif.read_bytes() == EDITED_CIF
+
+
+def test_reopened_job_shows_finished_cifs_restores_settings_and_records_history(tmp_path):
+    import json
+
+    session = _session(tmp_path)
+    settings = {"format": "contour-recognition-settings", "version": 2, "pipeline": {"steps": ["saved"]},
+                "recognition_settings": {}, "save_options": {"save_cif": True}}
+    (tmp_path / "contour-resume.json").write_text(json.dumps({
+        "version": 1, "snapshots": [{"id": "s1", "settings": settings}], "current": "s1", "frames": {},
+        "unknown_outputs": [], "complete": False}), encoding="utf-8")
+    cif = session.output_directory / "a.cif"
+    cif.write_bytes(OLD_CIF)
+    editor = _Editor(cif, TransitionPromptChoice.SAVE)
+    editor.dirty = False
+    indexed, restored = {}, []
+    editor._workspace.set_cif_index = indexed.update
+    editor.set_pipeline = restored.append
+    editor._set_extraction_settings = restored.append
+    window = _ReturnWindow(editor)
+    session.attach_return_action(window)
+
+    assert indexed == {"a": str(cif)}
+    assert restored[0] == {"steps": ["saved"]}
+    assert editor._managed_batch_resume.completed() == {"a"}
+    window._kraken_return_action.trigger()
+    result = json.loads(session.result_manifest_path.read_text(encoding="utf-8"))
+    assert result["applied_parameters"]["pipeline"] == {"steps": ["saved"]}
+    assert "settings_history" not in result["applied_parameters"]
+    assert json.loads((tmp_path / "contour-resume.json").read_text(encoding="utf-8"))["complete"] is True
+    window.close()
+
+
+def test_damaged_local_state_is_reported_and_preserved(tmp_path):
+    session = _session(tmp_path)
+    state = tmp_path / "contour-resume.json"
+    state.write_text("{broken", encoding="utf-8")
+    editor = _Editor(session.output_directory / "a.cif", TransitionPromptChoice.SAVE)
+    window = _ReturnWindow(editor)
+    session.attach_return_action(window)
+    assert editor._managed_batch_resume is None
+    assert "damaged" in editor._managed_batch_resume_error
+    assert state.read_text(encoding="utf-8") == "{broken"
+    editor.dirty = False
+    window.close()
+
+
+def test_return_with_damaged_state_marks_every_frame_unknown(tmp_path):
+    import json
+
+    session = _session(tmp_path)
+    (tmp_path / "contour-resume.json").write_text("{broken", encoding="utf-8")
+    cif = session.output_directory / "a.cif"
+    cif.write_bytes(OLD_CIF)
+    editor = _Editor(cif, TransitionPromptChoice.SAVE)
+    editor.dirty = False
+    window = _ReturnWindow(editor)
+    session.attach_return_action(window)
+    window._kraken_return_action.trigger()
+    result = json.loads(session.result_manifest_path.read_text(encoding="utf-8"))
+    assert result["applied_parameters"]["settings_history"] == [
+        {"settings": None, "provenance": "unknown", "frame_ids": ["frame"]}]
+    window.close()

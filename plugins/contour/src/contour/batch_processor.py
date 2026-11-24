@@ -212,9 +212,11 @@ class BatchQueueRunnable(QRunnable):
         chunk_size: int = 16,
         progress_interval_seconds: float = 0.05,
         image_loader: Callable[[str], np.ndarray] | None = None,
+        stop_grace_seconds: float = 10.0,
     ) -> None:
         super().__init__()
         self.image_paths = list(image_paths)
+        self.stop_grace_seconds = max(0.0, float(stop_grace_seconds))
         self.image_loader = image_loader
         self.pipeline_config = dict(pipeline_config)
         self.contour_settings = replace(contour_settings)
@@ -301,9 +303,19 @@ class BatchQueueRunnable(QRunnable):
                     )
                     futures[future] = request.chunk_id
 
+                stop_deadline: float | None = None
                 while futures:
                     done, _pending = wait(tuple(futures), timeout=0.05, return_when=FIRST_COMPLETED)
                     stopping = self._forward_stop()
+                    if stopping and stop_deadline is None:
+                        stop_deadline = perf_counter() + self.stop_grace_seconds
+                    if stopping and not done and stop_deadline is not None and perf_counter() >= stop_deadline:
+                        # Workers had their grace period; frames they still hold
+                        # have no published CIF and are recomputed on Continue.
+                        self.signals.log.emit(_diagnostic_line("batch_workers_terminated", active_chunks=len(futures)))
+                        _terminate_workers(executor)
+                        futures.clear()
+                        break
                     live_completed = max(completed, int(progress_counter.value))
                     if live_completed != last_emitted_completed:
                         self.signals.progress.emit(live_completed, total)
@@ -659,6 +671,20 @@ def run_sequential_benchmark(
         "degradation_ratio": (sum(second_half) / max(1, len(second_half)))
         / max(1e-6, (sum(first_half) / max(1, len(first_half)))),
     }
+
+
+def _terminate_workers(executor: ProcessPoolExecutor) -> None:
+    """Kill pool processes that ignored cancellation, without waiting on them."""
+    terminate = getattr(executor, "terminate_workers", None)  # Python 3.14+
+    if callable(terminate):
+        with contextlib.suppress(Exception):
+            terminate()
+            return
+    for process in list((getattr(executor, "_processes", None) or {}).values()):
+        with contextlib.suppress(Exception):
+            process.terminate()
+    with contextlib.suppress(Exception):
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _default_chunk_size() -> int:

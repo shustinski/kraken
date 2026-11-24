@@ -58,6 +58,15 @@ class SaveCurrentResultMixin:
         )
         if saved_files:
             saved_cif_path = saved_files.get("cif")
+            resume = getattr(self, "_managed_batch_resume", None)
+            if resume is not None and saved_cif_path:
+                from contour.managed_batch_ui import managed_settings_snapshot
+
+                # A managed job records which settings produced this frame.
+                try:
+                    resume.record_manual(saved_cif_path, managed_settings_snapshot(self))
+                except OSError:
+                    self._append_log(f"Could not record settings for {Path(saved_cif_path).name}")
             linked_cif_path = current_state.loaded_cif_path or self._find_matching_cif_path(current_image_path)
             if (
                 saved_cif_path

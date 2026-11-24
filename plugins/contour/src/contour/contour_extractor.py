@@ -163,10 +163,47 @@ def _raw_contour_for_epsilon_simplify(
     chain_flag: int,
     dense_list: Sequence[np.ndarray] | None,
     use_dense_for_epsilon: bool,
+    index_aligned: bool = False,
 ) -> np.ndarray:
     if not use_dense_for_epsilon or chain_flag != cv2.CHAIN_APPROX_SIMPLE or not dense_list:
         return chain_contour
+    if index_aligned and contour_index < len(dense_list):
+        # findContours traces the same borders in the same order for SIMPLE and NONE on one mask;
+        # only the stored points differ, so the dense twin sits at the same index.
+        dense = dense_list[contour_index]
+        if dense is not None and len(dense) >= 3:
+            return dense
     return _match_contour_to_dense_list(chain_contour, contour_index, dense_list)
+
+
+def _cannot_pass_size_filters(
+    contour: np.ndarray,
+    config: ContourExtractionSettings,
+    *,
+    is_hole: bool,
+) -> bool:
+    """Conservative early reject on the raw contour, before simplification and repair.
+
+    The final ring keeps a subset of contour vertices (or a raster retrace of its fill), so its
+    area stays within the convex hull and its bbox within the contour bbox. The margins cover the
+    one-pixel slack of the raster repair; anything rejected here would fail the exact filters later.
+    """
+    min_area = float(config.min_area) if config.min_area > 0.0 else 0.0
+    if is_hole:
+        min_area = max(min_area, float(getattr(config, "min_inner_hole_area", 100.0) or 0.0))
+    if min_area > 0.0:
+        hull = cv2.convexHull(contour)
+        upper_area = abs(float(cv2.contourArea(hull))) + float(cv2.arcLength(hull, True)) + 4.0
+        if upper_area < min_area:
+            return True
+    min_perimeter = float(config.min_perimeter)
+    if min_perimeter > 0.0 and float(cv2.arcLength(contour, True)) * 1.5 + 4.0 < min_perimeter:
+        return True
+    if config.min_bbox_width > 0 or config.min_bbox_height > 0:
+        _x, _y, width, height = cv2.boundingRect(contour)
+        if width + 2 < config.min_bbox_width or height + 2 < config.min_bbox_height:
+            return True
+    return False
 
 
 def _bbox_box_points(bbox: tuple[int, int, int, int]) -> list[tuple[float, float]]:
@@ -661,6 +698,8 @@ def _repair_invalid_ring_from_raster(
         )
     if repaired is None:
         return None
+    # repair_ring_from_filled_region only returns rings it has already validated.
+    validated_ring = list(repaired)
     if config.epsilon > 0:
         e0 = _contour_epsilon_value(np.asarray(repaired, dtype=np.float32).reshape(-1, 1, 2), config)
         if e0 > 0:
@@ -683,7 +722,9 @@ def _repair_invalid_ring_from_raster(
     cand = _dedupe_consecutive_polygon_vertices(integer_points(repaired))
     cand = _remove_acute_polygon_vertices(cand, config.min_polygon_angle)
     cand = _dedupe_consecutive_polygon_vertices(cand)
-    if len(cand) < 3 or not is_valid_closed_polygon_ring(cand):
+    if len(cand) < 3:
+        return None
+    if cand != validated_ring and not is_valid_closed_polygon_ring(cand):
         return None
     if not _meets_min_polygon_angle(cand, config.min_polygon_angle):
         return None
@@ -715,6 +756,7 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         )
         if not dense_list:
             dense_list = None
+    dense_index_aligned = dense_list is not None and len(dense_list) == len(contours)
 
     hierarchy_array = hierarchy[0] if hierarchy is not None else np.full((len(contours), 4), -1, dtype=np.int32)
     depth_cache: dict[int, int] = {}
@@ -727,12 +769,19 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         if contour is None or len(contour) < 3:
             continue
         contour_areas[contour_index] = abs(float(cv2.contourArea(contour)))
+        if _cannot_pass_size_filters(
+            contour,
+            config,
+            is_hole=bool(_depth(contour_index, hierarchy_array, depth_cache) % 2),
+        ):
+            continue
         raw = _raw_contour_for_epsilon_simplify(
             contour,
             contour_index,
             chain_flag=chain_flag,
             dense_list=dense_list,
             use_dense_for_epsilon=use_dense,
+            index_aligned=dense_index_aligned,
         )
         epsilon = float(config.epsilon)
         if config.epsilon_relative:

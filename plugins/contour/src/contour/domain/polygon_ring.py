@@ -15,10 +15,13 @@ _EDITOR_RING_SHAPELY_MIN_VERTICES = 16
 
 
 def _ring_validity_via_shapely(points: list[tuple[float, float]]) -> bool:
-    from shapely.geometry import Polygon
+    # Vectorized constructors skip the shapely.geometry.Polygon/LinearRing wrappers, which
+    # dominate the cost on rings checked thousands of times per frame.
+    import numpy as np
+    import shapely
 
-    polygon = Polygon(points)
-    return bool(polygon.is_valid and not polygon.is_empty and polygon.area > _SEG_EPS)
+    polygon = shapely.polygons(np.asarray(points, dtype=np.float64))
+    return bool(shapely.is_valid(polygon) and not shapely.is_empty(polygon) and shapely.area(polygon) > _SEG_EPS)
 
 
 def _point_equal(a: tuple[float, float], b: tuple[float, float]) -> bool:

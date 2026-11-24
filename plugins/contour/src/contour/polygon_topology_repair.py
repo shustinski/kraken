@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 
@@ -11,8 +13,11 @@ _TOPOLOGY_REPAIR_MIN_FILL_IOU = 0.995
 _COLLINEAR_ANGLE_EPS_DEG = 0.35
 
 
+_COLLINEAR_SIN_EPS = math.sin(math.radians(_COLLINEAR_ANGLE_EPS_DEG))
+
+
 def _dense_contour_points(contour: np.ndarray) -> list[tuple[float, float]]:
-    return [(float(p[0][0]), float(p[0][1])) for p in contour]
+    return [(x, y) for x, y in np.asarray(contour, dtype=np.float64).reshape(-1, 2).tolist()]
 
 
 def _is_collinear_continuation(
@@ -20,18 +25,19 @@ def _is_collinear_continuation(
     current_point: tuple[float, float],
     next_point: tuple[float, float],
 ) -> bool:
+    # Pure-Python math: this runs once per dense contour vertex, and NumPy scalar calls
+    # cost several times more than the arithmetic itself.
     v1x = current_point[0] - prev_point[0]
     v1y = current_point[1] - prev_point[1]
     v2x = next_point[0] - current_point[0]
     v2y = next_point[1] - current_point[1]
-    n1 = float(np.hypot(v1x, v1y))
-    n2 = float(np.hypot(v2x, v2y))
+    n1 = math.hypot(v1x, v1y)
+    n2 = math.hypot(v2x, v2y)
     if n1 < 1e-6 or n2 < 1e-6:
         return True
     cross = abs(v1x * v2y - v1y * v2x)
     dot = v1x * v2x + v1y * v2y
-    tolerance = float(np.sin(np.radians(_COLLINEAR_ANGLE_EPS_DEG))) * n1 * n2
-    return dot >= 0.0 and cross <= tolerance
+    return dot >= 0.0 and cross <= _COLLINEAR_SIN_EPS * n1 * n2
 
 
 def _remove_collinear_polygon_vertices(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -88,8 +94,8 @@ def _filled_points_iou(
     right_arr = np.array(localized[1], dtype=np.int32).reshape(-1, 1, 2)
     cv2.fillPoly(left_mask, [left_arr], 255)
     cv2.fillPoly(right_mask, [right_arr], 255)
-    inter = int(np.logical_and(left_mask > 0, right_mask > 0).sum())
-    union = int(np.logical_or(left_mask > 0, right_mask > 0).sum())
+    inter = int(cv2.countNonZero(cv2.bitwise_and(left_mask, right_mask)))
+    union = int(cv2.countNonZero(left_mask)) + int(cv2.countNonZero(right_mask)) - inter
     if union <= 0:
         return 0.0
     return float(inter / union)
@@ -100,11 +106,8 @@ def _candidate_from_contour(contour: np.ndarray) -> list[tuple[float, float]] | 
     if len(dense) < 3:
         return None
     compact = _remove_collinear_polygon_vertices(dense)
-    if len(compact) >= 3 and is_valid_closed_polygon_ring(compact):
-        return compact
-    if len(compact) >= 3:
-        return compact
-    return dense
+    # Validity is checked once by the caller.
+    return compact if len(compact) >= 3 else dense
 
 
 def _repair_ring_candidates_from_mask(mask: np.ndarray) -> list[tuple[float, float]] | None:

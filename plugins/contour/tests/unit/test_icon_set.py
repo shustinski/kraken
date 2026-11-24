@@ -45,7 +45,7 @@ class IconSetTests(unittest.TestCase):
 
     def test_every_editor_tool_has_a_visible_icon(self) -> None:
         for tool in EditorTool:
-            with self.subTest(tool=tool):
+            with self.subTest(tool=tool.name):
                 icon = create_editor_tool_icon(tool)
                 self.assertFalse(icon.isNull())
                 self.assertGreater(_stroke_color(icon).alpha(), 200)

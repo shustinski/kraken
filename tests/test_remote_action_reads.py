@@ -108,7 +108,10 @@ def test_history_requests_only_the_named_scope():
 def test_pipeline_snapshot_requests_the_layer_history():
     from types import SimpleNamespace
 
-    from kraken_hub.presentation.qt.parts.pipeline_snapshot import PipelineSnapshotMixin
+    from kraken_hub.presentation.qt.parts.pipeline_snapshot import (
+        PipelineSnapshotMixin,
+        _PIPELINE_HISTORY_TYPES,
+    )
 
     calls = []
 
@@ -124,7 +127,61 @@ def test_pipeline_snapshot_requests_the_layer_history():
         list_artifact_series=lambda *_args, **_kwargs: (),
     )
     snapshot._pipeline_snapshot("project", "layer-1")
-    assert calls == [("project", {"scope_id": "layer-1"})]
+    assert calls == [("project", {"scope_id": "layer-1", "event_types": _PIPELINE_HISTORY_TYPES})]
+    assert "ArtifactVersionCreated" not in _PIPELINE_HISTORY_TYPES
+    assert "ArtifactSeriesCreated" not in _PIPELINE_HISTORY_TYPES
+
+
+def test_pipeline_links_a_dataset_from_the_job_result_without_file_history():
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from kraken_hub.presentation.qt.parts.pipeline_snapshot import PipelineSnapshotMixin
+    from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
+
+    now = datetime.now(UTC)
+    source = SimpleNamespace(
+        id="source", name="Images", note="", kind=RepresentationKind.IMAGE,
+        purpose=RepresentationPurpose.SOURCE, active=True, source="managed-import", created_at=now,
+    )
+
+    def created(job_id, capability, **parameters):
+        return SimpleNamespace(
+            event_type="PluginJobCreated", event_id=f"created:{job_id}", recorded_at=now,
+            actor=SimpleNamespace(display_name="Owner"),
+            payload={
+                "plugin_job_id": job_id,
+                "job": {"layer_id": "layer", "state": "succeeded"},
+                "manifest": {
+                    "layer_id": "layer",
+                    "capability": capability,
+                    "target_representation_id": "source",
+                    "parameters": {"source_representation_id": "source", **parameters},
+                },
+            },
+        )
+
+    events = (
+        created("dataset-job", "frames.dataset.prepare.v1"),
+        SimpleNamespace(
+            event_type="PluginResultImported", event_id="imported:dataset-job", recorded_at=now,
+            actor=SimpleNamespace(display_name="Owner"),
+            payload={
+                "plugin_job_id": "dataset-job",
+                "job": {"layer_id": "layer", "state": "succeeded"},
+                "artifact_version_ids": ["dataset-version"],
+            },
+        ),
+        created("train-job", "dataset.model.train.v1", dataset_version_id="dataset-version"),
+    )
+    snapshot = PipelineSnapshotMixin()
+    snapshot.service = SimpleNamespace(
+        list_representations=lambda *_args: (source,),
+        history=lambda *_args, **_kwargs: events,
+        list_derived_runs=lambda *_args: (),
+    )
+    edges = snapshot._pipeline_snapshot("project", "layer").lanes[0].edges
+    assert ("dataset-job:dataset", "train-job") in edges
 
 
 def test_memory_history_returns_only_the_requested_scope():

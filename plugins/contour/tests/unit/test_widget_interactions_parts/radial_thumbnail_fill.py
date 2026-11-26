@@ -90,14 +90,14 @@ class RadialThumbnailFillMixin:
         self.widget._thumbnail_build_chunk_size = 100
         self.widget._rebuild_thumbnail_grid()
         self._wait_for_thumbnail_grid_count(1)
-        item = self.widget.thumbnail_grid.item(0)
-        self.widget.thumbnail_grid.refreshItems()
-        group = self.widget.thumbnail_grid._item_groups[id(item)]
-        before = group[3].pixmap().cacheKey()
+        self.assertIsNotNone(self.widget.thumbnail_grid.item(0))
+        self.widget.thumbnail_grid._publish_now()
+        before = self.widget.thumbnail_grid._matrix_data_source.entry(0).revision
 
         qimage = QImage(64, 48, QImage.Format.Format_RGB32)
         qimage.fill(Qt.GlobalColor.white)
         self.widget._on_thumbnail_loaded(self.widget._thumbnail_generation, path, 64, 48, qimage)
         self.widget._flush_thumbnail_icon_batch()
 
-        self.assertNotEqual(group[3].pixmap().cacheKey(), before)
+        self.widget.thumbnail_grid._publish_now()
+        self.assertNotEqual(self.widget.thumbnail_grid._matrix_data_source.entry(0).revision, before)

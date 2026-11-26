@@ -91,7 +91,10 @@ from test_hub_manager_app_parts.image_representation_source import (
     test_image_representation_source_picker_fills_selected_folder,
 )
 from test_hub_manager_app_parts.representation_files_are import test_representation_files_are_saved_without_blocking_qt
-from test_hub_manager_app_parts.missing_agent_inputs import test_missing_agent_inputs_are_prepared_in_background_and_retried
+from test_hub_manager_app_parts.missing_agent_inputs import (
+    test_image_preparation_dialog_writes_a_client_profile,
+    test_missing_agent_inputs_are_prepared_in_background_and_retried,
+)
 from test_hub_manager_app_parts.remote_project_can import (
     test_remote_project_can_create_logical_layer,
     test_external_cif_import_uses_source_from_clicked_pipeline_lane,
@@ -133,6 +136,7 @@ _FACADE_EXPORTS = (
     test_image_representation_source_picker_fills_selected_folder,
     test_representation_files_are_saved_without_blocking_qt,
     test_missing_agent_inputs_are_prepared_in_background_and_retried,
+    test_image_preparation_dialog_writes_a_client_profile,
     test_remote_project_can_create_logical_layer,
     test_external_cif_import_uses_source_from_clicked_pipeline_lane,
     test_created_layer_is_selected_and_its_pipeline_is_loaded,

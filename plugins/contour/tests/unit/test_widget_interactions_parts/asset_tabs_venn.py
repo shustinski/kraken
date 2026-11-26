@@ -26,7 +26,8 @@ class AssetTabsVennMixin:
 
         self.widget._configure_thumbnail_grid_geometry()
 
-        self.assertGreaterEqual(self.widget.thumbnail_grid.minimumHeight(), 3 * 48)
+        self.widget.thumbnail_grid._publish_now()
+        self.assertEqual(self.widget.thumbnail_grid.matrix_size(), (4, 3))
 
     def test_thumbnail_requeues_after_generation_bump_without_icon_apply(self) -> None:
         path = str(Path(r"d:\frames\frame_001.png"))

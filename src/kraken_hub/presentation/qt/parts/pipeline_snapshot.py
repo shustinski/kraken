@@ -1,5 +1,9 @@
 """manager_app: pipeline snapshot."""
 from __future__ import annotations
+
+from collections.abc import Mapping
+from uuid import UUID
+
 from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
 from kraken_manager.presentation.qt import (
     LayerPipelineSnapshot,
@@ -8,6 +12,20 @@ from kraken_manager.presentation.qt import (
 )
 from kraken_manager.workspace import DerivedRunKind
 from kraken_manager.domain.stitching import StitchingKind, stitching_series_id
+
+_PIPELINE_HISTORY_TYPES = (
+    "PluginJobCreated",
+    "PluginJobFailed",
+    "PluginJobCancelled",
+    "PluginJobRetried",
+    "PluginJobSynchronized",
+    "PluginResultImported",
+    "LayerPipelineActionRequested",
+    "LayerPipelineActionRemoved",
+    "LayerStitchingStatusChangedV1",
+    "LayerPipelineWorkflowV1",
+    "KarakalAnalysisPublished",
+)
 
 _OPERATION_TITLES = {
     "prepare_dataset": "Создание выборки",
@@ -38,7 +56,11 @@ _STATE_TITLES = {
 class PipelineSnapshotMixin:
     def _pipeline_snapshot(self, project_id, layer_id) -> LayerPipelineSnapshot:
         representations = self.service.list_representations(project_id, layer_id)
-        project_history = self.service.history(project_id, scope_id=str(layer_id))
+        project_history = self.service.history(
+            project_id,
+            scope_id=str(layer_id),
+            event_types=_PIPELINE_HISTORY_TYPES,
+        )
         histories = [
             event
             for event in project_history
@@ -80,13 +102,13 @@ class PipelineSnapshotMixin:
             for event in histories
             if event.payload.get("manifest", {}).get("capability") == "frames.dataset.prepare.v1"
         }
-        dataset_nodes_by_version = {
-            str(event.payload.get("version_id", event.payload.get("artifact_version_id", ""))):
-                f"{event.payload['plugin_job_id']}:dataset"
-            for event in project_history
-            if event.event_type == "ArtifactVersionCreated"
-            and str(event.payload.get("plugin_job_id", "")) in dataset_job_ids
-        }
+        dataset_nodes_by_version = {}
+        for event in project_history:
+            job_id = str(event.payload.get("plugin_job_id", ""))
+            if job_id not in dataset_job_ids:
+                continue
+            for version_id in _linked_version_ids(event):
+                dataset_nodes_by_version[version_id] = f"{job_id}:dataset"
         model_job_ids = {
             str(event.payload.get("plugin_job_id", ""))
             for event in histories
@@ -95,17 +117,13 @@ class PipelineSnapshotMixin:
         model_nodes_by_version: dict[str, str] = {}
         model_nodes_by_hash: dict[str, set[str]] = {}
         for event in project_history:
-            if event.event_type != "ArtifactVersionCreated":
-                continue
             job_id = str(event.payload.get("plugin_job_id", ""))
             if job_id not in model_job_ids:
                 continue
             model_node_id = f"{job_id}:model"
-            version_id = str(event.payload.get("version_id", event.payload.get("artifact_version_id", "")))
-            if version_id:
+            for version_id in _linked_version_ids(event):
                 model_nodes_by_version[version_id] = model_node_id
-            digest = str(event.payload.get("sha256", "")).lower()
-            if digest:
+            for digest in _linked_digests(event):
                 model_nodes_by_hash.setdefault(digest, set()).add(model_node_id)
         recorded_job_ids = {
             str(event.payload.get("plugin_job_id", ""))
@@ -144,28 +162,7 @@ class PipelineSnapshotMixin:
 
         karakal_run = latest_karakal_analysis(recorded_history, project_id, layer_id)
         workspace_runs = self.service.list_derived_runs(project_id, layer_id)
-        stitching_nodes = []
-        series_reader = getattr(self.service, "list_artifact_series", None)
-        series_items = () if not callable(series_reader) else series_reader(project_id, layer_id=layer_id)
-        if series_items:
-            by_id = {str(item.id): item for item in series_items if not item.archived}
-            statuses = {
-                str(event.payload.get("kind")): bool(event.payload.get("completed"))
-                for event in project_history if event.event_type == "LayerStitchingStatusChangedV1"
-                and str(event.payload.get("layer_id")) == str(layer_id)
-            }
-            for kind in StitchingKind:
-                series_id = stitching_series_id(layer_id, kind)
-                if str(series_id) not in by_id:
-                    continue
-                primary = self.service.active_artifact_version(project_id, series_id)
-                if primary is None:
-                    continue
-                stitching_nodes.append(PipelineNode(
-                    f"stitching:{kind.value}", kind.title, "stitching",
-                    "Слой сшит" if statuses.get(kind.value, False) else "Файл загружен",
-                    details={"файл": primary.filename, "сшит": statuses.get(kind.value, False)},
-                ))
+        stitching_nodes = _stitching_nodes(self.service, project_id, layer_id, project_history)
         if not sources and binaries:
             sources = binaries[:1]
         lanes: list[PipelineLane] = []
@@ -369,10 +366,10 @@ class PipelineSnapshotMixin:
                         lane_edges.append((model_node_id, job_id))
                 if output_kind and str(job.get("state", "")) == "succeeded":
                     output_versions = [
-                        str(item.payload.get("version_id", item.payload.get("artifact_version_id", "")))
+                        version_id
                         for item in project_history
-                        if item.event_type == "ArtifactVersionCreated"
-                        and str(item.payload.get("plugin_job_id", "")) == job_id
+                        if str(item.payload.get("plugin_job_id", "")) == job_id
+                        for version_id in _linked_version_ids(item)
                     ]
                     lane_nodes.append(
                         PipelineNode(
@@ -468,3 +465,69 @@ class PipelineSnapshotMixin:
                 edges.extend((dependency, operation["id"]) for dependency in operation["dependencies"])
             lanes.append(PipelineLane(f"workflow:{layer_id}", "Технологический процесс", tuple(nodes), tuple(edges)))
         return LayerPipelineSnapshot(str(project_id), str(layer_id), tuple(lanes))
+
+
+def _payload(event) -> Mapping:
+    payload = getattr(event, "payload", None)
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _linked_version_ids(event) -> tuple[str, ...]:
+    payload = _payload(event)
+    found = [
+        str(payload[key])
+        for key in ("version_id", "artifact_version_id")
+        if payload.get(key)
+    ]
+    found.extend(str(item) for item in payload.get("artifact_version_ids", ()) or () if item)
+    return tuple(found)
+
+
+def _linked_digests(event) -> tuple[str, ...]:
+    payload = _payload(event)
+    found = []
+    digest = str(payload.get("sha256", "")).lower()
+    if digest:
+        found.append(digest)
+    result = payload.get("result", {})
+    if isinstance(result, Mapping):
+        for item in result.get("results", ()) or ():
+            if not isinstance(item, Mapping):
+                continue
+            item_digest = str(item.get("sha256", "")).lower()
+            if item_digest:
+                found.append(item_digest)
+    return tuple(found)
+
+
+def _stitching_nodes(service, project_id, layer_id, project_history) -> list[PipelineNode]:
+    try:
+        UUID(str(layer_id))
+    except (TypeError, ValueError):
+        return []
+    reader = getattr(service, "active_artifact_version", None)
+    if not callable(reader):
+        return []
+    statuses = {
+        str(event.payload.get("kind")): bool(event.payload.get("completed"))
+        for event in project_history
+        if event.event_type == "LayerStitchingStatusChangedV1"
+        and str(event.payload.get("layer_id")) == str(layer_id)
+    }
+    nodes = []
+    for kind in StitchingKind:
+        series_id = stitching_series_id(layer_id, kind)
+        try:
+            primary = reader(project_id, series_id)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404 or exc.__class__.__name__ == "NotFoundError":
+                continue
+            raise
+        if primary is None:
+            continue
+        nodes.append(PipelineNode(
+            f"stitching:{kind.value}", kind.title, "stitching",
+            "Слой сшит" if statuses.get(kind.value, False) else "Файл загружен",
+            details={"файл": primary.filename, "сшит": statuses.get(kind.value, False)},
+        ))
+    return nodes

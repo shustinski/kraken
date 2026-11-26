@@ -230,10 +230,10 @@ class Construction2Mixin:
 
     def _visible_matrix_bounds(self) -> MatrixBounds:
         visible = self.visible_scene_rect()
-        first_column = max(0, int(math.floor(visible.left() / self.CELL_PITCH)) - 1)
-        last_column = min(self.matrix_width - 1, int(math.floor(visible.right() / self.CELL_PITCH)) + 1)
-        first_row = max(0, int(math.floor(visible.top() / self.CELL_PITCH)) - 1)
-        last_row = min(self.matrix_height - 1, int(math.floor(visible.bottom() / self.CELL_PITCH)) + 1)
+        first_column = max(0, int(math.floor(visible.left() / self._pitch_x)) - 1)
+        last_column = min(self.matrix_width - 1, int(math.floor(visible.right() / self._pitch_x)) + 1)
+        first_row = max(0, int(math.floor(visible.top() / self._pitch_y)) - 1)
+        last_row = min(self.matrix_height - 1, int(math.floor(visible.bottom() / self._pitch_y)) + 1)
         first_y = self._y_for_row(first_row)
         last_y = self._y_for_row(last_row)
         return MatrixBounds(
@@ -254,8 +254,8 @@ class Construction2Mixin:
             self._visible_matrix_bounds(),
             lod=self._request_lod(),
             generation=self._viewport_generation,
-            asset_width=max(1, int(self.CELL_SIZE)),
-            asset_height=max(1, int(self.CELL_SIZE)),
+            asset_width=max(1, int(self._cell_w)),
+            asset_height=max(1, int(self._cell_h)),
         )
 
     @staticmethod

@@ -38,6 +38,10 @@ class ConstructionMixin:
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._cell_w = float(self.CELL_SIZE)
+        self._cell_h = float(self.CELL_SIZE)
+        self._pitch_x = float(self.CELL_PITCH)
+        self._pitch_y = float(self.CELL_PITCH)
         self._graphics_scene = QGraphicsScene(self)
         self._graphics_scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
         self.setScene(self._graphics_scene)
@@ -132,16 +136,66 @@ class ConstructionMixin:
         self._selection = self._clamp_selection(self._selection)
         self._store_selection_paints()
         self._store_cell_visuals(None)
-        self._graphics_scene.setSceneRect(
-            0.0,
-            0.0,
-            self.matrix_width * self.CELL_PITCH,
-            self.matrix_height * self.CELL_PITCH,
-        )
+        self._apply_scene_extent()
         self._clear_tiles()
         self._indexed_tile_cells = 0
         self._update_visible_tiles()
         self.viewport().update()
+
+    def cell_size(self) -> tuple[float, float]:
+        return self._cell_w, self._cell_h
+
+    def cell_pitch(self) -> tuple[float, float]:
+        return self._pitch_x, self._pitch_y
+
+    def set_cell_geometry(
+        self,
+        width: float,
+        height: float,
+        overlap_x: float = 0.0,
+        overlap_y: float = 0.0,
+    ) -> None:
+        """Set the cell size and how far neighbouring cells overlap.
+
+        An overlap is clamped below the cell size, so every cell keeps a
+        positive step and later cells never collapse onto earlier ones.
+        """
+
+        cell_w = max(1.0, float(width))
+        cell_h = max(1.0, float(height))
+        overlap_x = min(max(0.0, float(overlap_x)), cell_w - 1.0)
+        overlap_y = min(max(0.0, float(overlap_y)), cell_h - 1.0)
+        pitch_x = max(1.0, cell_w + self.CELL_GAP - overlap_x)
+        pitch_y = max(1.0, cell_h + self.CELL_GAP - overlap_y)
+        if (cell_w, cell_h, pitch_x, pitch_y) == (self._cell_w, self._cell_h, self._pitch_x, self._pitch_y):
+            return
+        overlay = getattr(self, "_selection_overlay", None)
+        if overlay is not None:
+            overlay.prepareGeometryChange()
+        self._cell_w, self._cell_h = cell_w, cell_h
+        self._pitch_x, self._pitch_y = pitch_x, pitch_y
+        self._apply_scene_extent()
+        self._store_selection_paints()
+        self._clear_tiles()
+        self._indexed_tile_cells = 0
+        self._update_visible_tiles()
+        self.viewport().update()
+
+    def _cell_rect(self, column: int, row: int) -> QRectF:
+        """Scene rectangle of a zero-based column and row."""
+
+        return QRectF(column * self._pitch_x, row * self._pitch_y, self._cell_w, self._cell_h)
+
+    def _scene_extent(self, columns: int, rows: int) -> tuple[float, float]:
+        """Scene size covered by ``columns`` x ``rows`` cells, overlap included."""
+
+        width = 0.0 if columns <= 0 else (columns - 1) * self._pitch_x + max(self._cell_w, self._pitch_x)
+        height = 0.0 if rows <= 0 else (rows - 1) * self._pitch_y + max(self._cell_h, self._pitch_y)
+        return width, height
+
+    def _apply_scene_extent(self) -> None:
+        width, height = self._scene_extent(self.matrix_width, self.matrix_height)
+        self._graphics_scene.setSceneRect(0.0, 0.0, width, height)
 
     def matrix_size(self) -> tuple[int, int]:
         return self.matrix_width, self.matrix_height
@@ -195,12 +249,7 @@ class ConstructionMixin:
                         column = cell.x - 1
                         row = self._row_for_y(cell.y)
                         tile.update(
-                            QRectF(
-                                column * self.CELL_PITCH,
-                                row * self.CELL_PITCH,
-                                self.CELL_SIZE,
-                                self.CELL_SIZE,
-                            ).adjusted(-4.0, -4.0, 4.0, 4.0)
+                            self._cell_rect(column, row).adjusted(-4.0, -4.0, 4.0, 4.0)
                         )
         else:
             self._invalidate_tiles()
@@ -318,12 +367,7 @@ class ConstructionMixin:
                 selected[(x, y)] = None
                 column = x - 1
                 row = self._row_for_y(y)
-                rect = QRectF(
-                    column * self.CELL_PITCH,
-                    row * self.CELL_PITCH,
-                    self.CELL_SIZE,
-                    self.CELL_SIZE,
-                )
+                rect = self._cell_rect(column, row)
                 border = QRectF(rect)
                 fills.append(rect)
                 borders.append(border)
@@ -340,23 +384,16 @@ class ConstructionMixin:
         self._ensure_inside(x, y)
         column = int(x) - 1
         row = self._row_for_y(int(y))
-        return QRectF(
-            column * self.CELL_PITCH,
-            row * self.CELL_PITCH,
-            self.CELL_SIZE,
-            self.CELL_SIZE,
-        )
+        return self._cell_rect(column, row)
 
     def frame_at_scene_pos(self, position: QPointF) -> tuple[int, int] | None:
         if position.x() < 0.0 or position.y() < 0.0:
             return None
-        column = int(position.x() // self.CELL_PITCH)
-        row = int(position.y() // self.CELL_PITCH)
-        if column >= self.matrix_width or row >= self.matrix_height:
+        column = min(int(position.x() // self._pitch_x), self.matrix_width - 1)
+        row = min(int(position.y() // self._pitch_y), self.matrix_height - 1)
+        if position.x() - column * self._pitch_x >= self._cell_w:
             return None
-        if position.x() - column * self.CELL_PITCH > self.CELL_SIZE:
-            return None
-        if position.y() - row * self.CELL_PITCH > self.CELL_SIZE:
+        if position.y() - row * self._pitch_y >= self._cell_h:
             return None
         return column + 1, self._y_for_row(row)
 

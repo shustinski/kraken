@@ -26,8 +26,7 @@ class ThumbnailGridUsesMixin:
             self.widget._configure_thumbnail_grid_geometry()
 
             self.assertEqual(self.widget._thumbnail_columns(), 4)
-            frame = 2 * self.widget.thumbnail_grid.frameWidth()
-            self.assertEqual(self.widget.thumbnail_grid.width(), 4 * 64 + 1 + frame)
+            self.assertEqual(self.widget.thumbnail_grid.columns(), 4)
 
             first_row_y = [
                 self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(index)).y()
@@ -55,11 +54,10 @@ class ThumbnailGridUsesMixin:
             self.widget._thumbnail_thread_pool.waitForDone(1000)
             self.widget._configure_thumbnail_grid_geometry()
 
-            frame = 2 * self.widget.thumbnail_grid.frameWidth()
             overlap_x, overlap_y = self.widget._thumbnail_overlap_pixels_for_full_frame_overlap(
                 12, self.widget._thumbnail_icon_size
             )
-            self.assertEqual(self.widget.thumbnail_grid.width(), 4 * 64 - 3 * overlap_x + 1 + frame)
+            self.assertEqual(self.widget.thumbnail_grid.cell_pitch(), (64 - overlap_x, 48 - overlap_y))
             self.assertEqual(
                 self.widget.thumbnail_grid.visualItemRect(self.widget.thumbnail_grid.item(1)).x(), 64 - overlap_x
             )

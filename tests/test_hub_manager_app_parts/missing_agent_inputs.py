@@ -65,6 +65,67 @@ def test_missing_agent_inputs_are_prepared_in_background_and_retried(qapp) -> No
     assert not controller._source_preparation_keys
 
 
+def test_image_preparation_dialog_writes_a_client_profile(qapp, tmp_path, monkeypatch) -> None:
+    from kraken_core.frame_matrix import profiling
+
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text(
+        "[profiling]\nimage_preparation = true\ntop_lines = 20\n",
+        encoding="utf-8",
+    )
+    profiling.configure(tmp_path)
+    project = SimpleNamespace(id="project-1")
+    layer = SimpleNamespace(id="layer-1")
+    representation = SimpleNamespace(id="representation-1")
+    prepared_cells = []
+
+    class ServiceStub:
+        @staticmethod
+        def get_project(_project_id):
+            return project
+
+        @staticmethod
+        def frame_cells(*_args):
+            return tuple(prepared_cells)
+
+        @staticmethod
+        def list_layers(_project_id):
+            return (layer,)
+
+        @staticmethod
+        def list_representations(_project_id, _layer_id):
+            return (representation,)
+
+        @staticmethod
+        def materialize_representation_inputs(**_kwargs):
+            prepared_cells.append(SimpleNamespace(x=1, y=1))
+            return tuple(prepared_cells)
+
+    shell = QMainWindow()
+    controller = object.__new__(DesktopController)
+    controller.shell = shell
+    controller.service = ServiceStub()
+    controller.session = SimpleNamespace(principal=object())
+    controller._project_id = project.id
+    controller._background_workers = set()
+    controller._source_preparation_keys = set()
+    retried = []
+
+    assert controller._ensure_agent_source_ready(
+        layer_id=layer.id,
+        source_representation_id=representation.id,
+        retry=lambda: retried.append(True),
+    ) is False
+    deadline = monotonic() + 3
+    while not retried and monotonic() < deadline:
+        qapp.processEvents()
+        sleep(0.01)
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[image_preparation] client" in report
+    assert "materialize_representation_inputs" in report
+
+
 def test_partial_binary_result_is_ready_without_directory_import(qapp) -> None:
     from kraken_manager.domain.project import RepresentationPurpose
 

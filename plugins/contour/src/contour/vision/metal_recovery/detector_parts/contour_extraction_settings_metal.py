@@ -1,6 +1,7 @@
 """detector: contour extraction settings metal."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
@@ -36,6 +37,21 @@ class MetalDetectionResult:
     border: list[MetalPolygonRecord] = field(default_factory=list)
     debug_images: dict[str, np.ndarray] = field(default_factory=dict)
     params_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Builds the full debug dict for a candidate run with ``defer_debug=True``;
+    # until then ``debug_images`` holds only the masks Auto compares.
+    deferred_debug: Callable[[], dict[str, np.ndarray]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+def materialize_debug_images(result: MetalDetectionResult) -> MetalDetectionResult:
+    """Replace a deferred candidate's minimal debug dict with the full one."""
+    factory = result.deferred_debug
+    if factory is not None:
+        result.deferred_debug = None
+        result.debug_images = factory()
+    return result
 
 @dataclass(slots=True)
 class _ContourStageCache:

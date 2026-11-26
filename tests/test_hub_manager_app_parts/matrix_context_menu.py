@@ -3,10 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 from PyQt6.QtWidgets import (
-    QMenu,
     QWidget,
 )
-from kraken_core.frame_matrix.qt import FrameRect
+from kraken_core.frame_matrix.qt import FrameContext, FrameRect
+from kraken_hub.presentation.qt.layer_matrix import LayerFrameMatrixWidget
 from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
@@ -15,10 +15,15 @@ from kraken_manager.presentation.qt import (
     FrameSelection,
 )
 
-def test_matrix_context_menu_exports_and_opens_vector_properties(
-    qapp,
-    monkeypatch,
-) -> None:
+
+def _titles(controller, selection: FrameSelection) -> tuple[str, ...]:
+    matrix = LayerFrameMatrixWidget(4, 4)
+    matrix.set_action_host(controller)
+    context = FrameContext(2, 3, matrix.cell_data(2, 3), selection)
+    return tuple(title for _action, title in matrix.visible_frame_actions(context))
+
+
+def test_matrix_context_menu_exports_and_opens_vector_properties(qapp) -> None:
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
     series = SimpleNamespace(name="frame.cif", representation_id="vector-1")
@@ -41,30 +46,15 @@ def test_matrix_context_menu_exports_and_opens_vector_properties(
         selection=FrameSelection.single(2, 3),
     )
 
-    monkeypatch.setattr(
-        QMenu,
-        "exec",
-        lambda menu, *_args: next(
-            action
-            for action in menu.actions()
-            if action.text().startswith("Выгрузить файлы")
-        ),
-    )
-    controller._show_matrix_context_menu(context, controller.shell.pos())
+    assert "Свойства вектора…" in _titles(controller, context.selection)
+    controller._on_matrix_frame_action("export_files", context)
     assert exported == [context]
 
-    def select_vector_properties(menu: QMenu, *_args):
-        return next(
-            action
-            for action in menu.actions()
-            if action.text() == "Свойства вектора…"
-        )
-
-    monkeypatch.setattr(QMenu, "exec", select_vector_properties)
-    controller._show_matrix_context_menu(context, controller.shell.pos())
+    controller._on_matrix_frame_action("vector_properties", context)
     assert opened == [("CIF", series, version)]
 
-def test_matrix_context_menu_hides_properties_for_multiple_frames(qapp, monkeypatch) -> None:
+
+def test_matrix_context_menu_hides_properties_for_multiple_frames(qapp) -> None:
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
     controller._project_id = "project-1"
@@ -75,22 +65,14 @@ def test_matrix_context_menu_hides_properties_for_multiple_frames(qapp, monkeypa
     controller._active_frame_files = lambda _x, _y: pytest.fail(
         "properties must not inspect one frame when several frames are selected"
     )
-    context = SimpleNamespace(
-        x=2,
-        y=3,
-        selection=FrameSelection((FrameRect(2, 3, 3, 3),)),
-    )
 
-    def inspect_menu(menu: QMenu, *_args):
-        labels = tuple(action.text() for action in menu.actions())
-        assert "Свойства вектора…" not in labels
-        assert "Свойства кадра…" not in labels
+    labels = _titles(controller, FrameSelection((FrameRect(2, 3, 3, 3),)))
 
-    monkeypatch.setattr(QMenu, "exec", inspect_menu)
+    assert "Свойства вектора…" not in labels
+    assert "Свойства кадра…" not in labels
 
-    controller._show_matrix_context_menu(context, controller.shell.pos())
 
-def test_matrix_context_menu_preserves_review_action(qapp, monkeypatch) -> None:
+def test_matrix_context_menu_preserves_review_action(qapp) -> None:
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
     controller._project_id = "project-1"
@@ -103,21 +85,8 @@ def test_matrix_context_menu_preserves_review_action(qapp, monkeypatch) -> None:
         y=3,
         selection=FrameSelection.single(2, 3),
     )
-    monkeypatch.setattr(
-        QMenu,
-        "exec",
-        lambda menu, *_args: next(
-            action
-            for action in menu.actions()
-            if action.text() == "Выдать работу…"
-        ),
-    )
 
-    controller._show_matrix_context_menu(context, controller.shell.pos())
+    assert "Выдать работу…" in _titles(controller, context.selection)
+    controller._on_matrix_frame_action("assign_work", context)
 
     assert requested == [True]
-
-    requested.clear()
-    monkeypatch.setattr(QMenu, "exec", lambda *_args: None)
-    controller._show_matrix_context_menu(context, controller.shell.pos())
-    assert requested == []

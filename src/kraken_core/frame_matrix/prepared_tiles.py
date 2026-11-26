@@ -18,9 +18,11 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from time import perf_counter
 
 from PIL import Image, UnidentifiedImageError
 
+from kraken_core.frame_matrix import profiling
 from kraken_core.frame_matrix.mosaic import MOSAIC_EDGE, compose_mosaic, mosaic_slot
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ _PREVIEW_EDGE = MOSAIC_EDGE
 # Bump when tile pixels change so tiles written by older code are not served.
 TILE_FORMAT = 2
 _BUILDING = threading.local()
+_TIMING = "matrix_tile_timing"
 
 
 class MatrixTileNotReady(LookupError):
@@ -187,6 +190,7 @@ class PreparedTilePyramid:
         self._run_lock = threading.Lock()
         self._urgent: queue.SimpleQueue[tuple[str, int, int, int, int]] = queue.SimpleQueue()
         self._urgent_pending: set[tuple[str, int, int, int, int]] = set()
+        self._urgent_since: dict[tuple[str, int, int, int, int], float] = {}
         self._thread: threading.Thread | None = None
         self._generation = 0
         self._stamp = ""
@@ -213,7 +217,10 @@ class PreparedTilePyramid:
         path = None if token is None else self._tile_path(token, orientation, x1, y1, x2, y2)
         if path is not None and path.is_file():
             return path.read_bytes()
-        self._urgent.put((str(orientation), int(x1), int(y1), int(x2), int(y2)))
+        request = (str(orientation), int(x1), int(y1), int(x2), int(y2))
+        if profiling.enabled(_TIMING):
+            self._urgent_since.setdefault(request, perf_counter())
+        self._urgent.put(request)
         self.ensure_started(force=True)
         raise MatrixTileNotReady("matrix tile is not prepared")
 
@@ -265,14 +272,25 @@ class PreparedTilePyramid:
         self._drain_urgent()
         if self._marker().is_file() and self._urgent.empty():
             return
+        build_started = perf_counter()
         for tile_cells in pyramid_cell_sizes(width, height):
+            level_started = perf_counter()
+            written = 0
             for orientation in ("y_down", "y_up"):
                 for rect in iter_tile_rects(width, height, tile_cells, orientation):
                     if generation != self._generation:
                         return
                     self._drain_urgent()
-                    self._write_tile(orientation, *rect, cells=cells)
+                    if self._write_tile(orientation, *rect, cells=cells) is not None:
+                        written += 1
+            profiling.timing(
+                _TIMING, "level_built", side="server", cells=tile_cells, tiles_written=written,
+                ms=(perf_counter() - level_started) * 1000,
+            )
         self._drain_urgent()
+        profiling.timing(
+            _TIMING, "build_done", side="server", frames=len(cells), ms=(perf_counter() - build_started) * 1000,
+        )
         if generation != self._generation:
             return
         _atomic_write(self._marker(), b"ok")
@@ -299,8 +317,19 @@ class PreparedTilePyramid:
             request = min(pending, key=_urgent_area)
             pending.discard(request)
             orientation, x1, y1, x2, y2 = request
-            self._write_tile(orientation, x1, y1, x2, y2, cells=self._cells)
+            started = perf_counter()
+            stats = self._write_tile(orientation, x1, y1, x2, y2, cells=self._cells)
+            built = perf_counter()
             self._notify_ready()
+            if profiling.enabled(_TIMING):
+                queued = self._urgent_since.pop(request, None)
+                profiling.timing(
+                    _TIMING, "urgent_tile", side="server", rect=f"{x1}:{y1}:{x2}:{y2}", orientation=orientation,
+                    queue_wait_ms=0.0 if queued is None else (started - queued) * 1000,
+                    build_ms=(built - started) * 1000, notify_ms=(perf_counter() - built) * 1000,
+                    already_on_disk=stats is None, pending=len(pending),
+                    **({} if stats is None else stats),
+                )
 
     def _notify_ready(self) -> None:
         if self._on_ready is not None:
@@ -318,20 +347,31 @@ class PreparedTilePyramid:
         y2: int,
         *,
         cells: tuple[Mapping[str, object], ...] | None = None,
-    ) -> None:
+    ) -> dict[str, object] | None:
+        """Write one tile; return what it took, or ``None`` if it was already on disk."""
+
         token = self._published_token() or self._token()
         path = self._tile_path(token, orientation, x1, y1, x2, y2)
         if path.is_file():
-            return
+            return None
+        stats: dict[str, object] = {
+            "frames": 0, "previews_cached": 0, "previews_read": 0, "read_ms": 0.0, "source_ms": 0.0, "shrink_ms": 0.0,
+        }
         images: dict[tuple[int, int], bytes] = {}
         for cell in self._cells if cells is None else cells:
             x = int(cell["x"])
             y = int(cell["y"])
             if not (int(x1) <= x <= int(x2) and int(y1) <= y <= int(y2)):
                 continue
-            preview = self._preview(cell)
+            stats["frames"] = int(stats["frames"]) + 1
+            started = perf_counter()
+            preview, cached = self._preview_with_source(cell, stats)
+            stats["read_ms"] = float(stats["read_ms"]) + (perf_counter() - started) * 1000
+            key = "previews_cached" if cached else "previews_read"
+            stats[key] = int(stats[key]) + 1
             if preview:
                 images[mosaic_slot(x, y, x1=x1, y1=y1, x2=x2, y2=y2, orientation=orientation)] = preview
+        compose_started = perf_counter()
         _atomic_write(
             path,
             compose_mosaic(
@@ -340,19 +380,33 @@ class PreparedTilePyramid:
                 images=images,
             ),
         )
+        stats["compose_ms"] = (perf_counter() - compose_started) * 1000
+        return stats
 
     def _preview(self, cell: Mapping[str, object]) -> bytes | None:
+        return self._preview_with_source(cell)[0]
+
+    def _preview_with_source(
+        self, cell: Mapping[str, object], stats: dict[str, object] | None = None
+    ) -> tuple[bytes | None, bool]:
+        """The frame preview, and whether it came from the preview cache."""
+
         digest = str(cell.get("asset_sha256") or cell.get("sha256") or "")
         path = self._preview_path(digest) if digest else None
         if path is not None and path.is_file():
-            return path.read_bytes()
+            return path.read_bytes(), True
+        started = perf_counter()
         raw = self._read_image(cell)
+        read = perf_counter()
         if not raw:
-            return None
+            return None, False
         small = preview_png(raw)
+        if stats is not None:
+            stats["source_ms"] = float(stats["source_ms"]) + (read - started) * 1000
+            stats["shrink_ms"] = float(stats["shrink_ms"]) + (perf_counter() - read) * 1000
         if small and path is not None:
             _atomic_write(path, small)
-        return small
+        return small, False
 
     def _preview_path(self, digest: str) -> Path:
         safe = "".join(character for character in digest.lower() if character in "0123456789abcdef")

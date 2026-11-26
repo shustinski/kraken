@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -220,6 +221,8 @@ class MetalSegmentationResult:
     confidence_map: np.ndarray | None = None
     debug_data: dict[str, Any] = field(default_factory=dict)
     timings_ms: dict[str, float] = field(default_factory=dict)
+    # Set instead of ``debug_images`` when the caller asked to defer debug output.
+    debug_factory: Callable[[], dict[str, np.ndarray]] | None = None
 
 
 def otsu_segmentation_mask(gray: np.ndarray, *, otsu_offset: float, dark_foreground: bool) -> np.ndarray:
@@ -274,12 +277,11 @@ def apply_topology_repair(raw_mask: np.ndarray, config: MetalSegmentationConfig)
 
 def filter_mask_components(mask: np.ndarray, min_area: int) -> np.ndarray:
     m = (ensure_uint8(mask) > 0).astype(np.uint8) * 255
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    out = np.zeros_like(m)
-    for i in range(1, n):
-        if int(stats[i, cv2.CC_STAT_AREA]) >= min_area:
-            out[labels == i] = 255
-    return out
+    _n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    # One lookup over the label image instead of a full-frame ``labels == i`` pass per component.
+    keep = stats[:, cv2.CC_STAT_AREA] >= min_area
+    keep[0] = False
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
 def build_metal_segmentation_mask(gray: np.ndarray, config: MetalSegmentationConfig) -> MetalSegmentationResult:

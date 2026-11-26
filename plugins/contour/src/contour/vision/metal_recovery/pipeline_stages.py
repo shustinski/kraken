@@ -60,8 +60,12 @@ class _SegmentationStageCache:
     mask: np.ndarray | None = None
 
 
-_SEGMENTATION_CACHE: dict[str, _SegmentationStageCache] = {}
-_SEGMENTATION_CACHE_MAX_ITEMS = 8
+# One entry per (image, requested strategy): Auto runs legacy, watershed and local
+# candidates on the same frame, and a single per-image entry made each strategy
+# evict the previous one, recomputing the raw segmentation on every switch.
+_SegmentationCacheKey = tuple[str, str]
+_SEGMENTATION_CACHE: dict[_SegmentationCacheKey, _SegmentationStageCache] = {}
+_SEGMENTATION_CACHE_MAX_ITEMS = 16
 _SEGMENTATION_CACHE_MAX_BYTES = 256 * 1024 * 1024
 
 
@@ -69,15 +73,23 @@ def clear_metal_segmentation_cache() -> None:
     _SEGMENTATION_CACHE.clear()
 
 
-def _store_cache_entry(image_sig: str, entry: _SegmentationStageCache) -> None:
-    _SEGMENTATION_CACHE.pop(image_sig, None)
+def _store_cache_entry(key: _SegmentationCacheKey, entry: _SegmentationStageCache) -> None:
+    _SEGMENTATION_CACHE.pop(key, None)
     while len(_SEGMENTATION_CACHE) >= _SEGMENTATION_CACHE_MAX_ITEMS:
         oldest = next(iter(_SEGMENTATION_CACHE))
         _SEGMENTATION_CACHE.pop(oldest, None)
-    _SEGMENTATION_CACHE[image_sig] = entry
+    _SEGMENTATION_CACHE[key] = entry
     while len(_SEGMENTATION_CACHE) > 1 and _segmentation_cache_bytes() > _SEGMENTATION_CACHE_MAX_BYTES:
         oldest = next(iter(_SEGMENTATION_CACHE))
         _SEGMENTATION_CACHE.pop(oldest, None)
+
+
+def _cached_gray_for_signature(image_sig: str) -> np.ndarray | None:
+    """Share one gray copy between the strategy entries of the same image."""
+    for (cached_sig, _strategy), cached in _SEGMENTATION_CACHE.items():
+        if cached_sig == image_sig and cached.gray is not None:
+            return cached.gray
+    return None
 
 
 def _segmentation_cache_bytes() -> int:
@@ -351,8 +363,14 @@ def _retain_seeded_contrast_components(
 def build_metal_segmentation_mask_staged(
     gray: np.ndarray,
     config: MetalSegmentationConfig,
+    *,
+    include_debug: bool = True,
 ) -> MetalSegmentationResult:
-    """Run segmentation stages with per-image cache (later stages reuse earlier work)."""
+    """Run segmentation stages with per-image cache (later stages reuse earlier work).
+
+    ``include_debug=False`` skips building the debug images and returns a
+    ``debug_factory`` that builds the same dict on demand instead.
+    """
     g0 = ensure_uint8(gray)
     if g0.size == 0:
         z = np.zeros_like(g0)
@@ -421,10 +439,15 @@ def build_metal_segmentation_mask_staged(
         )
 
     sig = image_signature(g0)
-    entry = _SEGMENTATION_CACHE.get(sig)
+    cache_key = (sig, requested_strategy)
+    entry = _SEGMENTATION_CACHE.get(cache_key)
     if entry is None or entry.image_sig != sig:
-        entry = _SegmentationStageCache(image_sig=sig, gray=g0.copy())
-        _store_cache_entry(sig, entry)
+        shared_gray = _cached_gray_for_signature(sig)
+        entry = _SegmentationStageCache(
+            image_sig=sig,
+            gray=shared_gray if shared_gray is not None else g0.copy(),
+        )
+        _store_cache_entry(cache_key, entry)
     elif entry.gray is None:
         entry.gray = g0.copy()
 
@@ -545,15 +568,24 @@ def build_metal_segmentation_mask_staged(
     assert entry.mask is not None
     assert entry.polarity is not None
 
-    debug = {
-        "metal_source_gray": entry.gray,
-        "metal_preprocessed": entry.gray,
-        "metal_raw_segmentation": ensure_binary_mask(entry.raw_segmentation),
-        "metal_after_topology": ensure_binary_mask(entry.after_topology),
-        "metal_threshold_mask": ensure_binary_mask(entry.contrast_filtered),
-        **axis_gradient_debug_images(entry.gray),
-        **(entry.extra_debug or {}),
-    }
+    # Capture the stage arrays now: a later call may replace them on the entry.
+    stage_gray = entry.gray
+    stage_raw = entry.raw_segmentation
+    stage_after_topology = entry.after_topology
+    stage_threshold = entry.contrast_filtered
+    stage_extra = dict(entry.extra_debug or {})
+
+    def build_debug() -> dict[str, np.ndarray]:
+        return {
+            "metal_source_gray": stage_gray,
+            "metal_preprocessed": stage_gray,
+            "metal_raw_segmentation": ensure_binary_mask(stage_raw),
+            "metal_after_topology": ensure_binary_mask(stage_after_topology),
+            "metal_threshold_mask": ensure_binary_mask(stage_threshold),
+            **axis_gradient_debug_images(stage_gray),
+            **stage_extra,
+        }
+
     return MetalSegmentationResult(
         mask=ensure_binary_mask(entry.mask),
         preprocessed=entry.gray,
@@ -561,6 +593,7 @@ def build_metal_segmentation_mask_staged(
         after_topology=ensure_binary_mask(entry.after_topology),
         strategy=entry.strategy or requested_strategy,
         polarity=entry.polarity,
-        debug_images=debug,
+        debug_images=build_debug() if include_debug else {},
         instance_labels=entry.instance_labels,
+        debug_factory=None if include_debug else build_debug,
     )

@@ -89,7 +89,8 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
-    self.thumbnail_grid.frameContextMenuRequested.connect(self._on_frame_matrix_context_menu)
+    self.thumbnail_grid.set_action_translator(self._tr)
+    self.thumbnail_grid.frameActionTriggered.connect(self._on_frame_matrix_action)
     self.thumbnail_grid.installEventFilter(self)
     self.thumbnail_grid.viewport().installEventFilter(self)
     self.thumbnail_grid_scroll_area = self.thumbnail_grid

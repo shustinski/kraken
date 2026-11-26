@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QStyleOptionGraphicsItem,
     QWidget,
 )
+from .actions import FrameMatrixAction
 from .cache import ThumbnailCacheCoordinator
 from .models import (
     LodBand,
@@ -75,6 +76,7 @@ class FrameMatrixView(
     selectionChanged = pyqtSignal(object)
     frameActivated = pyqtSignal(int, int)
     contextMenuRequested = pyqtSignal(object, object)
+    frameActionTriggered = pyqtSignal(str, object)
     viewportChanged = pyqtSignal(object)
     lodChanged = pyqtSignal(str)
     cellsChanged = pyqtSignal()
@@ -119,6 +121,7 @@ _FACADE_EXPORTS = (
 __all__ = [
     "FrameCellData",
     "FrameContext",
+    "FrameMatrixAction",
     "FrameMatrixMinimap",
     "FrameMatrixView",
     "FrameMatrixWidget",

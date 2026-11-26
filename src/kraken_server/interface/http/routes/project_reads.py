@@ -12,6 +12,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kraken_server.interface.http.context import HttpContext
 from kraken_server.interface.http.prefix import API_PREFIX
+from kraken_server.interface.http.tile_timing import TIMING
+from kraken_core.frame_matrix import profiling
+from time import perf_counter
 from kraken_server.interface.session import SessionPrincipal
 from kraken_server.services import ValidationError
 
@@ -64,16 +67,30 @@ def register(ctx: HttpContext) -> None:
         representation_id: list[str] = Query(default=[]),
         _: SessionPrincipal = Depends(project_reader),
     ) -> Response:
-        payload = backend.matrix_mosaic(
-            project_id,
-            layer_id=layer_id,
-            representation_ids=representation_id,
-            x1=x1,
-            y1=y1,
-            x2=x2,
-            y2=y2,
-            orientation=orientation,
-        )
+        started = perf_counter()
+        outcome = "error"
+        size = 0
+        try:
+            payload = backend.matrix_mosaic(
+                project_id,
+                layer_id=layer_id,
+                representation_ids=representation_id,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                orientation=orientation,
+            )
+            outcome, size = "ready", len(payload)
+        except Exception as exc:
+            if "not prepared" in str(exc):
+                outcome = "not_ready"
+            raise
+        finally:
+            profiling.timing(
+                TIMING, "tile_read", side="server", rect=f"{x1}:{y1}:{x2}:{y2}", orientation=orientation,
+                result=outcome, bytes=size, ms=(perf_counter() - started) * 1000,
+            )
         return Response(content=payload, media_type="image/png")
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/frames")

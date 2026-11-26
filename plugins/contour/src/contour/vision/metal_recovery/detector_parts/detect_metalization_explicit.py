@@ -38,7 +38,14 @@ def _detect_metalization_explicit(
     source_image: np.ndarray | None = None,
     mask_override: np.ndarray | None = None,
     include_axis_debug: bool = True,
+    defer_debug: bool = False,
 ) -> MetalDetectionResult:
+    """Detect conductors with one segmentation strategy.
+
+    ``defer_debug=True`` keeps only ``metal_binary_mask`` and
+    ``metal_filtered_mask`` in ``debug_images`` and stores the builder of the
+    full dict in ``deferred_debug`` (see ``materialize_debug_images``).
+    """
     if image.ndim == 3:
         gray = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_BGR2GRAY)
     else:
@@ -50,15 +57,18 @@ def _detect_metalization_explicit(
         segmentation = build_metal_segmentation_mask_staged(
             gray,
             _segmentation_config_from_recovery(config),
+            include_debug=not defer_debug,
         )
         mask = ensure_binary_mask(segmentation.mask)
         pre_dbg = dict(segmentation.debug_images)
+        pre_dbg_factory = segmentation.debug_factory
         instance_labels = segmentation.instance_labels
         strategy_timings = dict(segmentation.timings_ms)
         strategy_debug_data = dict(segmentation.debug_data)
     else:
         mask = ensure_binary_mask(mask_override)
         pre_dbg = {}
+        pre_dbg_factory = None
         instance_labels = None
         strategy_timings = {}
         strategy_debug_data = {}
@@ -138,27 +148,38 @@ def _detect_metalization_explicit(
     ]
     accepted_mask = _rasterize_accepted_conductors(accepted, mask.shape[:2])
 
-    raw_contours, _hierarchy = cv2.findContours(
-        ensure_binary_mask(mask),
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
-    dbg: dict[str, np.ndarray] = {
-        "metal_source_gray": gray,
-        "metal_binary_mask": mask,
-        "metal_filtered_mask": accepted_mask,
-        "metal_contour_extraction_mask": mask,
-    }
-    for key, value in pre_dbg.items():
-        if isinstance(value, np.ndarray):
-            dbg[key] = value
-    if include_axis_debug:
-        dbg.update(axis_gradient_debug_images(gray))
-    vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    if raw_contours:
-        cv2.drawContours(vis, raw_contours, -1, (0, 255, 0), 1)
-    dbg["metal_contours_raw"] = vis
-    dbg["metal_width_check"] = cv2.cvtColor(accepted_mask, cv2.COLOR_GRAY2BGR)
+    def build_debug() -> dict[str, np.ndarray]:
+        stage_dbg = pre_dbg_factory() if pre_dbg_factory is not None else pre_dbg
+        raw_contours, _hierarchy = cv2.findContours(
+            ensure_binary_mask(mask),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        dbg: dict[str, np.ndarray] = {
+            "metal_source_gray": gray,
+            "metal_binary_mask": mask,
+            "metal_filtered_mask": accepted_mask,
+            "metal_contour_extraction_mask": mask,
+        }
+        for key, value in stage_dbg.items():
+            if isinstance(value, np.ndarray):
+                dbg[key] = value
+        if include_axis_debug:
+            dbg.update(axis_gradient_debug_images(gray))
+        vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        if raw_contours:
+            cv2.drawContours(vis, raw_contours, -1, (0, 255, 0), 1)
+        dbg["metal_contours_raw"] = vis
+        dbg["metal_width_check"] = cv2.cvtColor(accepted_mask, cv2.COLOR_GRAY2BGR)
+        return dbg
+
+    if defer_debug:
+        dbg: dict[str, np.ndarray] = {
+            "metal_binary_mask": mask,
+            "metal_filtered_mask": accepted_mask,
+        }
+    else:
+        dbg = build_debug()
 
     params_snapshot = config.to_snapshot()
     if strategy_timings:
@@ -173,6 +194,7 @@ def _detect_metalization_explicit(
         border=border,
         debug_images=dbg,
         params_snapshot=params_snapshot,
+        deferred_debug=build_debug if defer_debug else None,
     )
 
 if TYPE_CHECKING:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt
-from PyQt6.QtGui import QMouseEvent, QPixmap
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QListWidgetItem
 
 import contour.application.frame_lod as frame_lod_module
@@ -76,8 +76,11 @@ def test_frame_matrix_uses_only_three_most_zoomed_out_lods(_qt_application) -> N
 
 def test_frame_matrix_middle_mouse_drag_pans_without_selecting(_qt_application) -> None:
     view = FrameMatrixGraphicsView()
+    view.setColumns(40)
+    for _index in range(40 * 40):
+        view.addItem(QListWidgetItem(""))
+    view._publish_now()
     view.resize(200, 160)
-    view.scene().setSceneRect(0.0, 0.0, 1200.0, 900.0)
     view.show()
     _qt_application.processEvents()
     view.horizontalScrollBar().setValue(400)
@@ -113,7 +116,7 @@ def test_frame_matrix_middle_mouse_drag_pans_without_selecting(_qt_application) 
 
     assert view.horizontalScrollBar().value() == 430
     assert view.verticalScrollBar().value() == 330
-    assert view._middle_pan_active is False
+    assert view._panning is False
     assert clicked == []
 
 
@@ -167,16 +170,14 @@ def test_pyramid_store_reuses_decoded_source_and_lod_frames(monkeypatch) -> None
     assert calls == ["frame_000.png"]
 
 
-def test_frame_matrix_keeps_pixmap_cache_when_store_instance_is_unchanged(
+def test_frame_matrix_keeps_thumbnails_when_store_instance_is_unchanged(
     _qt_application,
 ) -> None:
     view = FrameMatrixGraphicsView()
     store = FakePyramidStore()
     view.setPyramidFrameStore(store)
-    pixmap = QPixmap(2, 2)
-    pixmap.fill()
-    view._pixmap_lod_cache[("cached",)] = pixmap
+    generation = view._pyramid_generation
 
     view.setPyramidFrameStore(store)
 
-    assert ("cached",) in view._pixmap_lod_cache
+    assert view._pyramid_generation == generation

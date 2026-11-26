@@ -323,3 +323,52 @@ def test_concurrent_thumbnail_profiles_keep_the_loaded_bytes(tmp_path, monkeypat
 
     assert failures == []
     assert loaded == [8] * 24
+
+
+def test_profile_call_reports_the_worker_function(tmp_path, monkeypatch):
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text(
+        "[profiling]\nenabled = false\nimage_preparation = true\ntop_lines = 15\n",
+        encoding="utf-8",
+    )
+    profiling.configure(tmp_path)
+
+    def prepare_images():
+        return "cells"
+
+    assert profiling.profile_call("image_preparation", prepare_images, label="client") == "cells"
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[image_preparation] client started_at=" in report
+    assert "elapsed_ms=" in report
+    assert "prepare_images" in report
+
+
+def test_profile_call_reports_a_failed_preparation(tmp_path, monkeypatch):
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text(
+        "[profiling]\nenabled = false\nimage_preparation = true\ntop_lines = 15\n",
+        encoding="utf-8",
+    )
+    profiling.configure(tmp_path)
+
+    def prepare_images():
+        raise ValueError("нет кадров")
+
+    with pytest.raises(ValueError, match="нет кадров"):
+        profiling.profile_call("image_preparation", prepare_images, label="server")
+
+    report = (tmp_path / "profiling.log").read_text(encoding="utf-8")
+    assert "[image_preparation] server" in report
+    assert "prepare_images" in report
+
+
+def test_profile_call_skips_the_log_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(profiling, "_config", None)
+    (tmp_path / "kraken.ini").write_text(
+        "[profiling]\nenabled = false\nimage_preparation = false\n",
+        encoding="utf-8",
+    )
+    profiling.configure(tmp_path)
+
+    assert profiling.profile_call("image_preparation", lambda: "ok") == "ok"
+    assert not (tmp_path / "profiling.log").exists()

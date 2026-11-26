@@ -1,5 +1,6 @@
 """Universal virtualized frame matrix and pluggable thumbnail cache."""
 
+from .actions import FrameMatrixAction
 from .cache import ThumbnailCacheCoordinator
 from .factory import ThumbnailStoreFactory
 from .models import (
@@ -35,6 +36,7 @@ from .storage import (
 
 __all__ = [
     "CorruptEntry",
+    "FrameMatrixAction",
     "InvalidationSelector",
     "LodBand",
     "LodPolicy",

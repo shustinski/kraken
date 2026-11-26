@@ -47,15 +47,12 @@ class ActivateFramePathMatrixMixin:
         global_pos = viewport.mapToGlobal(position)
         self._show_frame_context_menu(path, global_pos)
 
-    def _on_frame_matrix_context_menu(self: Any, frame_id: object, global_pos: QPoint) -> None:
-        try:
-            index = to_int(frame_id)
-        except (TypeError, ValueError):
-            return
+    def _on_frame_matrix_action(self: Any, action_id: str, context: object) -> None:
+        index = self.thumbnail_grid.frame_id_for_coordinate(context.x, context.y)
         image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
         if index < 0 or index >= len(image_paths):
             return
-        self._show_frame_context_menu(image_paths[index], global_pos)
+        self._apply_frame_action(action_id, image_paths[index])
 
     def _show_frame_context_menu(self: Any, image_path: str, global_pos: QPoint) -> None:
         menu = QMenu(self)
@@ -63,8 +60,14 @@ class ActivateFramePathMatrixMixin:
         clear_action = menu.addAction(self._tr("clear_frame_action"))
         chosen = menu.exec(global_pos)
         if chosen is delete_action:
-            self.remove_images([image_path])
+            self._apply_frame_action("delete_frame", image_path)
         elif chosen is clear_action:
+            self._apply_frame_action("clear_frame", image_path)
+
+    def _apply_frame_action(self: Any, action_id: str, image_path: str) -> None:
+        if action_id == "delete_frame":
+            self.remove_images([image_path])
+        elif action_id == "clear_frame":
             self.clear_frame_vectors(image_path)
 
     def _ingest_dropped_paths(self: Any, paths: list[str]) -> None:

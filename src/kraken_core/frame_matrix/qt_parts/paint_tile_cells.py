@@ -19,13 +19,17 @@ from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData
 
 class PaintTileCellsMixin:
     def _paint_tile_cells(self, painter: QPainter, tile: _ViewportTileItem, lod: MatrixLod, exposed: QRectF) -> None:
-        start_column = max(tile.tile_x * tile.tile_cells, int(math.floor(exposed.left() / self.CELL_PITCH)))
-        start_row = max(tile.tile_y * tile.tile_cells, int(math.floor(exposed.top() / self.CELL_PITCH)))
+        pitch_x, pitch_y = self._pitch_x, self._pitch_y
+        # With overlap a cell reaches past its step, so look one step back.
+        reach_x = max(0.0, self._cell_w - pitch_x)
+        reach_y = max(0.0, self._cell_h - pitch_y)
+        start_column = max(tile.tile_x * tile.tile_cells, int(math.floor((exposed.left() - reach_x) / pitch_x)))
+        start_row = max(tile.tile_y * tile.tile_cells, int(math.floor((exposed.top() - reach_y) / pitch_y)))
         end_column = min(
-            self.matrix_width, (tile.tile_x + 1) * tile.tile_cells, int(math.ceil(exposed.right() / self.CELL_PITCH))
+            self.matrix_width, (tile.tile_x + 1) * tile.tile_cells, int(math.ceil(exposed.right() / pitch_x))
         )
         end_row = min(
-            self.matrix_height, (tile.tile_y + 1) * tile.tile_cells, int(math.ceil(exposed.bottom() / self.CELL_PITCH))
+            self.matrix_height, (tile.tile_y + 1) * tile.tile_cells, int(math.ceil(exposed.bottom() / pitch_y))
         )
         from kraken_core.theme import scene_color
 
@@ -41,12 +45,7 @@ class PaintTileCellsMixin:
                 x = column + 1
                 cell = self._cells.get((x, y), FrameCellData(x, y))
                 prepared = self._prepared_by_cell.get((x, y))
-                rect = QRectF(
-                    column * self.CELL_PITCH,
-                    row * self.CELL_PITCH,
-                    self.CELL_SIZE,
-                    self.CELL_SIZE,
-                )
+                rect = self._cell_rect(column, row)
                 painter.fillRect(rect, self._empty_fill if prepared is None else prepared.fill)
         mosaic = self._paint_loaded_mosaic(painter, tile)
         for row in range(start_row, end_row):
@@ -55,12 +54,7 @@ class PaintTileCellsMixin:
                 x = column + 1
                 cell = self._cells.get((x, y), FrameCellData(x, y))
                 payload = cell.payload if isinstance(cell.payload, Mapping) else {}
-                rect = QRectF(
-                    column * self.CELL_PITCH,
-                    row * self.CELL_PITCH,
-                    self.CELL_SIZE,
-                    self.CELL_SIZE,
-                )
+                rect = self._cell_rect(column, row)
                 if (
                     not mosaic
                     and self._fill_mode == "thumbnail"

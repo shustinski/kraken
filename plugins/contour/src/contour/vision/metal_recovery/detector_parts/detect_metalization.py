@@ -13,6 +13,7 @@ from contour.vision.metal_recovery.pipeline_stages import axis_gradient_debug_im
 from contour.vision.metal_recovery.detector_parts.contour_extraction_settings_metal import (
     MetalDetectionResult,
     _requested_segmentation_strategy,
+    materialize_debug_images,
 )
 
 from contour.vision.metal_recovery.detector_parts.detect_metalization_explicit import _detect_metalization_explicit
@@ -54,8 +55,13 @@ def detect_metalization(
         segmentation_strategy="gradient_watershed",
         use_wide_conductor_gradient=True,
     )
-    legacy = _detect_metalization_explicit(gray, legacy_config, source_image=source_image)
-    watershed = _detect_metalization_explicit(gray, watershed_config, source_image=source_image)
+    # Candidates skip their debug images; only the selected one builds them below.
+    legacy = _detect_metalization_explicit(
+        gray, legacy_config, source_image=source_image, defer_debug=True
+    )
+    watershed = _detect_metalization_explicit(
+        gray, watershed_config, source_image=source_image, defer_debug=True
+    )
     legacy_count = _non_hole_count(legacy)
     watershed_count = _non_hole_count(watershed)
     presence = analyze_metal_presence(
@@ -104,6 +110,7 @@ def detect_metalization(
                         legacy_config,
                         source_image=source_image,
                         mask_override=hybrid_mask,
+                        defer_debug=True,
                     )
                     hybrid_count = _non_hole_count(hybrid)
                     if legacy_count < hybrid_count <= round(1.05 * watershed_count):
@@ -121,6 +128,7 @@ def detect_metalization(
                 gray,
                 refined_config,
                 source_image=source_image,
+                defer_debug=True,
             )
             contrast_refined_count = _non_hole_count(refined)
             if _prefer_contrast_refined_legacy(
@@ -137,6 +145,7 @@ def detect_metalization(
         config,
         source_image=source_image,
         reference=selected,
+        defer_debug=True,
     )
     if local_refined is not None:
         assert local_source_contrast is not None
@@ -152,10 +161,13 @@ def detect_metalization(
             source_image=source_image,
             candidate=local_refined,
             reference=selected,
+            defer_debug=True,
         )
-        selected = local_refined
+        selected = materialize_debug_images(local_refined)
         selected_strategy = "local_adaptive_source_refined"
         selected.debug_images.update(axis_gradient_debug_images(gray))
+    else:
+        materialize_debug_images(selected)
 
     selected.params_snapshot = {
         **config.to_snapshot(),

@@ -193,6 +193,13 @@ class PollBackgroundResultsMixin:
             self._mosaic_retry_delay_ms = min(_MOSAIC_RETRY_MAX_MS, delay * 2)
         if getattr(self, "_mosaic_retry_scheduled", False):
             return
+        if profiling.enabled("matrix_tile_timing"):
+            futures = getattr(self, "_mosaic_futures", {})
+            profiling.timing(
+                "matrix_tile_timing", "retry_scheduled", side="client", delay_ms=delay,
+                next_delay_ms=int(getattr(self, "_mosaic_retry_delay_ms", delay)),
+                waiting=sum(1 for _generation, future in futures.values() if not future.done()),
+            )
         self._mosaic_retry_scheduled = True
         generation = getattr(self, "_mosaic_retry_generation", 0) + 1
         self._mosaic_retry_generation = generation
@@ -203,6 +210,10 @@ class PollBackgroundResultsMixin:
             self._retry_mosaics()
 
     def _retry_mosaics_now(self) -> None:
+        profiling.timing(
+            "matrix_tile_timing", "retry_now", side="client", reason="tiles_ready_wake",
+            backoff_ms=int(getattr(self, "_mosaic_retry_delay_ms", _MOSAIC_RETRY_MS)),
+        )
         self._mosaic_retry_generation = getattr(self, "_mosaic_retry_generation", 0) + 1
         self._mosaic_retry_scheduled = False
         self._retry_mosaics()
@@ -212,6 +223,7 @@ class PollBackgroundResultsMixin:
         items = getattr(self, "_mosaic_source_items", ())
         if not items or self._mosaic_loader() is None:
             return
+        profiling.timing("matrix_tile_timing", "retry_sent", side="client", frames=len(items))
 
         class _Pending:
             def __init__(self, pending, revision: str) -> None:

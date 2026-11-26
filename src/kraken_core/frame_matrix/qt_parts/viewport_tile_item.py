@@ -94,12 +94,13 @@ class _ViewportTileItem(QGraphicsItem):
         self.tile_x = tile_x
         self.tile_y = tile_y
         self.tile_cells = tile_cells
-        pitch = owner.CELL_PITCH
-        left = tile_x * tile_cells * pitch
-        top = tile_y * tile_cells * pitch
+        pitch_x, pitch_y = owner.cell_pitch()
+        left = tile_x * tile_cells * pitch_x
+        top = tile_y * tile_cells * pitch_y
         columns = min(tile_cells, owner.matrix_width - tile_x * tile_cells)
         rows = min(tile_cells, owner.matrix_height - tile_y * tile_cells)
-        self._bounds = QRectF(left, top, columns * pitch, rows * pitch)
+        width, height = owner._scene_extent(columns, rows)
+        self._bounds = QRectF(left, top, width, height)
         self._zoom_snapshot: QPixmap | None = None
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
@@ -155,7 +156,8 @@ class _SelectionOverlayItem(QGraphicsItem):
         owner = self._owner()
         if owner is None or sip.isdeleted(owner):
             return QRectF()
-        return QRectF(0.0, 0.0, owner.matrix_width * owner.CELL_PITCH, owner.matrix_height * owner.CELL_PITCH)
+        width, height = owner._scene_extent(owner.matrix_width, owner.matrix_height)
+        return QRectF(0.0, 0.0, width, height)
 
     def paint(  # type: ignore[override]
         self,

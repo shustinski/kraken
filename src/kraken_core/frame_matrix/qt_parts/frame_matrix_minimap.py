@@ -149,15 +149,15 @@ class FrameMatrixMinimap(QWidget):
             if slot not in chosen or key[3] == revision:
                 chosen[slot] = pixmap
         tiles: list[tuple[QRectF, QPixmap]] = []
-        pitch = view.CELL_PITCH
+        pitch_x, pitch_y = view.cell_pitch()
         for tile_x, tile_y, cells in sorted(chosen, key=lambda slot: slot[2], reverse=True):
-            left = tile_x * cells * pitch
-            top = tile_y * cells * pitch
+            left = tile_x * cells * pitch_x
+            top = tile_y * cells * pitch_y
             columns = min(cells, view.matrix_width - tile_x * cells)
             rows = min(cells, view.matrix_height - tile_y * cells)
             if columns <= 0 or rows <= 0:
                 continue
-            tiles.append((QRectF(left, top, columns * pitch, rows * pitch), chosen[(tile_x, tile_y, cells)]))
+            tiles.append((QRectF(left, top, columns * pitch_x, rows * pitch_y), chosen[(tile_x, tile_y, cells)]))
         return tuple(tiles)
 
     def _navigate(self, position: QPointF) -> None:

@@ -49,6 +49,8 @@ class ConfigureThumbnailGridGeometryMixin:
         self.thumbnail_grid.setIconSize(icon_size)
         self.thumbnail_grid.setGridSize(QSize(cell_w, cell_h))
         self.thumbnail_grid.setSpacing(0)
+        if hasattr(self.thumbnail_grid, "setColumns"):
+            self.thumbnail_grid.setColumns(columns)
         full_overlap = 0
         if hasattr(self, "neighbor_overlap_spin"):
             try:

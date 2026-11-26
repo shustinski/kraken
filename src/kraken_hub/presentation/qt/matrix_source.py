@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from time import perf_counter
 
 from PyQt6.QtCore import QBuffer, QIODevice, Qt
 from PyQt6.QtGui import QImage
@@ -152,16 +153,31 @@ class KrakenMatrixDataSource:
         with self._lock:
             layer_id = self._layer_id
             representation_ids = self._representation_ids
-        return self.service.matrix_mosaic(
-            self.project_id,
-            layer_id=layer_id,
-            representation_ids=representation_ids,
-            x1=int(x1),
-            y1=int(y1),
-            x2=int(x2),
-            y2=int(y2),
-            orientation=str(orientation),
-        )
+        started = perf_counter()
+        outcome = "error"
+        size = 0
+        try:
+            payload = self.service.matrix_mosaic(
+                self.project_id,
+                layer_id=layer_id,
+                representation_ids=representation_ids,
+                x1=int(x1),
+                y1=int(y1),
+                x2=int(x2),
+                y2=int(y2),
+                orientation=str(orientation),
+            )
+            outcome, size = "ready", len(payload)
+            return payload
+        except Exception as exc:
+            if "not prepared" in str(exc).lower():
+                outcome = "not_ready"
+            raise
+        finally:
+            profiling.timing(
+                "matrix_tile_timing", "tile_call", side="client", rect=f"{x1}:{y1}:{x2}:{y2}",
+                orientation=orientation, result=outcome, bytes=size, ms=(perf_counter() - started) * 1000,
+            )
 
 
 class KrakenMatrixAssetSource:

@@ -90,11 +90,17 @@ class EnsureAgentSourceReadyMixin:
         progress_dialog.setAutoReset(False)
 
         def perform_preparation():
-            return prepare(
-                principal=self.session.principal,
-                project=project,
-                layer=layer,
-                representation=representation,
+            from kraken_core.frame_matrix import profiling
+
+            return profiling.profile_call(
+                "image_preparation",
+                lambda: prepare(
+                    principal=self.session.principal,
+                    project=project,
+                    layer=layer,
+                    representation=representation,
+                ),
+                label="client",
             )
 
         worker = _BackgroundCallThread(perform_preparation, parent=self.shell)

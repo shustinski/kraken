@@ -35,6 +35,8 @@ _KINDS = (
     "layer_selection",
     "matrix_zoom",
     "pipeline_step_removal",
+    "image_preparation",
+    "matrix_tile_timing",
 )
 _DEFAULT_INI = """; Kraken profiling. Restart Kraken after editing.
 [profiling]
@@ -60,6 +62,12 @@ layer_selection =
 matrix_zoom =
 ; Removing one pipeline step: cancel a running job, record the removal, and refresh the graph.
 pipeline_step_removal =
+; Preparing images for viewing and processing, on the desktop worker and on the server.
+; The server writes its report to profiling-server.log next to this file.
+image_preparation =
+; One line per matrix tile event: HTTP request, server tile build, client retry wait.
+; The server writes its lines to profiling-server.log next to this file.
+matrix_tile_timing =
 top_lines = 25
 log_file = profiling.log
 """
@@ -108,8 +116,12 @@ def project_directory() -> Path:
     return package_runtime_root(__file__)
 
 
-def configure(project_dir: str | Path) -> Path:
-    """Create the editable INI on first start and load its settings for this process."""
+def configure(project_dir: str | Path, *, log_file: str | None = None) -> Path:
+    """Create the editable INI on first start and load its settings for this process.
+
+    ``log_file`` replaces the INI's log file, so a second process (the server)
+    does not share one rotating file with the desktop.
+    """
     global _config, _handler
     directory = Path(project_dir).expanduser().resolve()
     explicit = os.environ.get("KRAKEN_CONFIG", "").strip()
@@ -137,7 +149,8 @@ def configure(project_dir: str | Path) -> Path:
     top_lines = parser.getint(section, "top_lines", fallback=25)
     if not 1 <= top_lines <= 200:
         raise ValueError("Kraken profiling top_lines must be between 1 and 200")
-    log_file = parser.get(section, "log_file", fallback="profiling.log").strip()
+    if log_file is None:
+        log_file = parser.get(section, "log_file", fallback="profiling.log").strip()
     if not log_file:
         raise ValueError("Kraken profiling log_file must not be empty")
     log_path = Path(log_file).expanduser()
@@ -151,9 +164,26 @@ def configure(project_dir: str | Path) -> Path:
     return ini_path
 
 
+def configured() -> bool:
+    return _config is not None
+
+
 def enabled(kind: str) -> bool:
     config = _config
     return config is not None and config.flags.get(kind, False)
+
+
+def timing(kind: str, event: str, **fields: object) -> None:
+    """Write one ``key=value`` line for ``event`` when ``kind`` is enabled."""
+    config = _config
+    if config is None or not config.flags.get(kind, False):
+        return
+    now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    values = " ".join(
+        f"{key}={value:.3f}" if isinstance(value, float) else f"{key}={value}" for key, value in fields.items()
+    )
+    # The log handler ends the record with its own newline.
+    _write_report(config.log_path, f"[{kind}] at={now} event={event} {values}".rstrip())
 
 
 @dataclass
@@ -233,6 +263,35 @@ def region(kind: str) -> Iterator[None]:
     finally:
         if session is not None:
             session.finish()
+
+
+def profile_call(kind: str, call: Callable[[], _Result], *, label: str = "") -> _Result:
+    """Profile one call on a worker that reads sockets or files.
+
+    ``cProfile`` aborts such a call when a C return does not match its stack.
+    This uses the same tolerant profiler as thumbnail workers.
+    """
+    config = _config
+    if config is None or not config.flags.get(kind, False):
+        return call()
+    profiler = _WorkerCallProfile(timer=perf_counter)
+    started = perf_counter()
+    started_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    try:
+        return profiler.runcall(call)
+    finally:
+        report = io.StringIO()
+        suffix = f" {label}" if label else ""
+        report.write(
+            f"[{kind}]{suffix} started_at={started_at} elapsed_ms={(perf_counter() - started) * 1000:.3f}\n"
+        )
+        try:
+            pstats.Stats(profiler, stream=report).strip_dirs().sort_stats("cumulative").print_stats(
+                config.top_lines
+            )
+        except (AssertionError, TypeError, ValueError):
+            report.write("cprofile_skipped=yes reason=worker_profile_unreadable\n")
+        _write_report(config.log_path, report.getvalue())
 
 
 class ThumbnailBatchProfile:

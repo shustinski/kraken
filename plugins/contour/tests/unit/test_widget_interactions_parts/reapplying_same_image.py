@@ -29,8 +29,8 @@ class ReapplyingSameImageMixin:
 
         self.assertEqual(self.widget.thumbnail_grid.count(), 10_000)
         self.assertEqual(self.widget._thumbnail_path_to_row[str(Path(paths[5_005]))], 5_005)
-        self.assertGreaterEqual(self.widget.thumbnail_grid.minimumWidth(), 10 * 64)
-        self.assertGreaterEqual(self.widget.thumbnail_grid.minimumHeight(), 1_000 * 48)
+        self.widget.thumbnail_grid._publish_now()
+        self.assertEqual(self.widget.thumbnail_grid.matrix_size(), (10, 1_000))
         self.widget._workspace._current_image_path = "sample.png"
 
     def test_thumbnail_matrix_rebuild_reuses_cached_icons(self) -> None:

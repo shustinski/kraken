@@ -27,6 +27,7 @@ from kraken_server.interface.http.routes.session import register as register_ses
 from kraken_server.interface.http.routes.work_orders import register as register_work_orders
 from kraken_server.interface.http.routes.work_planning import register_work_planning_routes
 from kraken_server.interface.http.routes.updates import register as register_updates
+from kraken_server.interface.http.tile_timing import configure_server_profiling, register_tile_timing
 from kraken_server.interface.session import SessionPrincipal
 from kraken_server.services import ServerServices
 
@@ -66,6 +67,8 @@ def create_app(
         client_ip,
         identities,
     )
+    configure_server_profiling()
+    register_tile_timing(context.app)
     register_session(context)
     register_auth(context)
     register_updates(context.app)

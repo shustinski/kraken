@@ -2,10 +2,9 @@
 from __future__ import annotations
 from pathlib import Path
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QImage, QPainter
+from PyQt6.QtGui import QImage
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
-    QGraphicsView,
     QListWidgetItem,
 )
 
@@ -59,33 +58,19 @@ class ThumbnailLodChangeMixin:
         self.assertEqual(self.widget.thumbnail_grid.currentRow(), 1)
 
     def test_thumbnail_request_size_follows_matrix_lod(self) -> None:
-        self.widget.thumbnail_grid._matrix_zoom = 4.0
+        self.widget.thumbnail_grid.set_zoom_factor(4.0)
 
         self.assertEqual(self.widget._thumbnail_request_size(), (256, 192))
 
     def test_thumbnail_request_size_scales_to_max_matrix_lod(self) -> None:
-        self.widget.thumbnail_grid._matrix_zoom = 32.0
+        self.widget.thumbnail_grid.set_zoom_factor(self.widget.thumbnail_grid.MAX_ZOOM)
 
         self.assertEqual(self.widget._thumbnail_request_size(), (512, 384))
 
-    def test_frame_matrix_uses_editor_view_render_optimizations(self) -> None:
-        matrix = self.widget.thumbnail_grid
+    def test_frame_matrix_runs_on_the_kraken_matrix_engine(self) -> None:
+        from kraken_core.frame_matrix.qt import FrameMatrixWidget
 
-        self.assertEqual(matrix.viewportUpdateMode(), QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
-        self.assertTrue(matrix.cacheMode() & QGraphicsView.CacheModeFlag.CacheBackground)
-        self.assertTrue(matrix.optimizationFlags() & QGraphicsView.OptimizationFlag.DontSavePainterState)
-        self.assertFalse(matrix.optimizationFlags() & QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing)
-        self.assertTrue(matrix.renderHints() & QPainter.RenderHint.SmoothPixmapTransform)
-
-        matrix._enter_zoom_render_mode()
-
-        self.assertFalse(matrix.renderHints() & QPainter.RenderHint.SmoothPixmapTransform)
-        self.assertTrue(matrix.optimizationFlags() & QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing)
-
-        matrix._leave_zoom_render_mode()
-
-        self.assertTrue(matrix.renderHints() & QPainter.RenderHint.SmoothPixmapTransform)
-        self.assertFalse(matrix.optimizationFlags() & QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing)
+        self.assertIsInstance(self.widget.thumbnail_grid, FrameMatrixWidget)
 
     def test_thumbnail_lod_change_requeues_visible_frames_at_new_size(self) -> None:
         path = str(Path(r"d:\frames\frame_001.png"))
@@ -103,9 +88,8 @@ class ThumbnailLodChangeMixin:
             queued.append((generation, queued_path, self.widget._thumbnail_request_size()))
 
         self.widget._queue_thumbnail_load = _capture_queue  # type: ignore[method-assign]
-        self.widget.thumbnail_grid._matrix_zoom = 4.0
-
-        self.widget._on_thumbnail_lod_changed()
+        # Zooming the matrix reports the new thumbnail size by itself.
+        self.widget.thumbnail_grid.set_zoom_factor(4.0)
 
         self.assertEqual(queued, [(self.widget._thumbnail_generation, path, (256, 192))])
 
@@ -122,13 +106,11 @@ class ThumbnailLodChangeMixin:
         qimage.fill(Qt.GlobalColor.white)
         self.widget._on_thumbnail_loaded(self.widget._thumbnail_generation, path, 256, 192, qimage)
         self.widget._flush_thumbnail_icon_batch()
-        self.widget.thumbnail_grid._matrix_zoom = 4.0
-        self.widget.thumbnail_grid.refreshItems()
-        group = self.widget.thumbnail_grid._item_groups[id(item)]
-        pixmap_item = group[3]
+        self.widget.thumbnail_grid._publish_now()
+        entry = self.widget.thumbnail_grid._matrix_data_source.entry(0)
 
-        self.assertEqual(pixmap_item.pixmap().size(), QSize(256, 192))
-        self.assertAlmostEqual(pixmap_item.scale(), 0.25)
+        self.assertIsNotNone(item)
+        self.assertEqual(entry.image.size(), QSize(256, 192))
 
     def test_graphics_matrix_cover_crops_square_thumbnail_to_fill_cell(self) -> None:
         path = str(Path(r"d:\frames\frame_001.png"))
@@ -143,10 +125,8 @@ class ThumbnailLodChangeMixin:
         qimage.fill(Qt.GlobalColor.white)
         self.widget._on_thumbnail_loaded(self.widget._thumbnail_generation, path, 256, 192, qimage)
         self.widget._flush_thumbnail_icon_batch()
-        self.widget.thumbnail_grid._matrix_zoom = 4.0
-        self.widget.thumbnail_grid.refreshItems()
-        group = self.widget.thumbnail_grid._item_groups[id(item)]
-        pixmap_item = group[3]
+        self.widget.thumbnail_grid._publish_now()
+        entry = self.widget.thumbnail_grid._matrix_data_source.entry(0)
 
-        self.assertEqual(pixmap_item.pixmap().size(), QSize(256, 192))
-        self.assertAlmostEqual(pixmap_item.scale(), 0.25)
+        self.assertIsNotNone(item)
+        self.assertEqual(entry.image.size(), QSize(256, 192))

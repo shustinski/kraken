@@ -613,6 +613,75 @@ def test_topology_stage_reuses_otsu_cache() -> None:
     assert entry.gap_bridge_px == 5
 
 
+def test_strategy_switch_keeps_other_strategy_segmentation_cached() -> None:
+    from contour.vision.metal_recovery.pipeline_stages import (
+        _SEGMENTATION_CACHE,
+        clear_metal_segmentation_cache,
+    )
+
+    clear_metal_segmentation_cache()
+    img = _noisy_sem_synthetic()
+    legacy = MetalRecoveryConfig(segmentation_strategy="legacy_otsu", use_wide_conductor_gradient=False)
+    watershed = MetalRecoveryConfig(
+        segmentation_strategy="gradient_watershed",
+        use_wide_conductor_gradient=True,
+    )
+    build_metal_extraction_mask(img, legacy)
+    legacy_raw = next(iter(_SEGMENTATION_CACHE.values())).raw_segmentation
+    build_metal_extraction_mask(img, watershed)
+    build_metal_extraction_mask(img, legacy)
+
+    assert len(_SEGMENTATION_CACHE) == 2
+    legacy_entries = [entry for entry in _SEGMENTATION_CACHE.values() if entry.requested_strategy == "legacy_otsu"]
+    assert len(legacy_entries) == 1
+    assert legacy_entries[0].raw_segmentation is legacy_raw
+    grays = {id(entry.gray) for entry in _SEGMENTATION_CACHE.values()}
+    assert len(grays) == 1
+
+
+def test_auto_detection_builds_full_debug_images_only_for_selected_result() -> None:
+    from contour.vision.metal_recovery.detector_parts.detect_metalization_explicit import (
+        _detect_metalization_explicit,
+    )
+    from contour.vision.metal_recovery.detector_parts.contour_extraction_settings_metal import (
+        materialize_debug_images,
+    )
+
+    img = _noisy_sem_synthetic()
+    config = MetalRecoveryConfig(segmentation_strategy="legacy_otsu", use_wide_conductor_gradient=False)
+    eager = _detect_metalization_explicit(img, config)
+    deferred = _detect_metalization_explicit(img, config, defer_debug=True)
+
+    assert set(deferred.debug_images) == {"metal_binary_mask", "metal_filtered_mask"}
+    materialize_debug_images(deferred)
+    assert deferred.deferred_debug is None
+    assert list(deferred.debug_images) == list(eager.debug_images)
+    for key, value in eager.debug_images.items():
+        assert np.array_equal(deferred.debug_images[key], value), key
+
+    auto = detect_metalization(img, MetalRecoveryConfig())
+    assert auto.deferred_debug is None
+    assert "metal_contours_raw" in auto.debug_images
+    assert "metal_gradient_field" in auto.debug_images
+
+
+def test_filter_mask_components_drops_only_small_components() -> None:
+    from contour.vision.metal_recovery.segmentation import filter_mask_components
+
+    mask = np.zeros((40, 40), dtype=np.uint8)
+    mask[2:4, 2:4] = 255
+    mask[10:20, 10:20] = 1
+    mask[30:32, 5:35] = 255
+
+    filtered = filter_mask_components(mask, 50)
+
+    assert filtered.dtype == np.uint8
+    assert not filtered[2:4, 2:4].any()
+    assert (filtered[10:20, 10:20] == 255).all()
+    assert (filtered[30:32, 5:35] == 255).all()
+    assert int(np.count_nonzero(filtered)) == 100 + 60
+
+
 def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
     settings = ContourExtractionSettings.from_dict(noisy_sem_metal_preset_payload())
     cfg = metal_recovery_config_from_settings(settings)

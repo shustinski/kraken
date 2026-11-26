@@ -16,6 +16,7 @@ def _stable_local_refinement(
     *,
     source_image: np.ndarray | None,
     reference: MetalDetectionResult,
+    defer_debug: bool = False,
 ) -> tuple[MetalDetectionResult | None, float | None, list[int]]:
     """Find a source-filter-stable local mask that still agrees with Auto."""
     # Keep the facade's documented injection point after splitting this module.
@@ -43,6 +44,7 @@ def _stable_local_refinement(
             replace(local_config, min_object_source_contrast=source_contrast),
             source_image=source_image,
             include_axis_debug=False,
+            defer_debug=defer_debug,
         )
         candidate_count = _non_hole_count(candidate)
         variants.append((source_contrast, candidate, candidate_count))

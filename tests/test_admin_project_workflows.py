@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -11,6 +12,7 @@ import sqlalchemy as sa
 from kraken_admin.infrastructure.composition import open_project_services
 from kraken_admin.application.project_deletion import (
     ProjectDeletion,
+    _finish_open_work,
     directories_outside_project,
     project_storage_paths,
     safe_path,
@@ -88,6 +90,108 @@ def test_full_deletion_retains_audit_and_other_project(database):
     assert [row["project_id"] for row in services.list_projects()] == [other["project_id"]]
     assert DeletionRequests(services.engine).list(target["project_id"])[0]["state"] == "deleted"
     assert any(row["action"] == "project.deleted" for row in accounts.administration_audit())
+
+
+def test_open_work_is_cancelled_before_the_project_is_removed():
+    engine = sa.create_engine("sqlite://")
+    metadata = sa.MetaData()
+    jobs = sa.Table(
+        "background_jobs", metadata,
+        sa.Column("job_id", sa.String, primary_key=True),
+        sa.Column("project_id", sa.String, nullable=False),
+        sa.Column("state", sa.String, nullable=False),
+        sa.Column("lease_owner", sa.String),
+        sa.Column("lease_claim", sa.String),
+        sa.Column("lease_until", sa.DateTime),
+        sa.Column("updated_at", sa.DateTime),
+    )
+    runs = sa.Table(
+        "analysis_runs", metadata,
+        sa.Column("run_id", sa.String, primary_key=True),
+        sa.Column("project_id", sa.String, nullable=False),
+        sa.Column("state", sa.String, nullable=False),
+        sa.Column("updated_at", sa.DateTime),
+    )
+    partitions = sa.Table(
+        "analysis_partitions", metadata,
+        sa.Column("partition_id", sa.String, primary_key=True),
+        sa.Column("run_id", sa.String, nullable=False),
+        sa.Column("state", sa.String, nullable=False),
+        sa.Column("updated_at", sa.DateTime),
+    )
+    metadata.create_all(engine)
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(jobs.insert(), [
+            {"job_id": "open", "project_id": "target", "state": "leased", "lease_owner": "worker",
+             "lease_claim": "claim", "lease_until": now, "updated_at": now},
+            {"job_id": "done", "project_id": "target", "state": "completed", "lease_owner": None,
+             "lease_claim": None, "lease_until": None, "updated_at": now},
+            {"job_id": "other", "project_id": "other", "state": "queued", "lease_owner": None,
+             "lease_claim": None, "lease_until": None, "updated_at": now},
+        ])
+        connection.execute(runs.insert(), [
+            {"run_id": "running", "project_id": "target", "state": "running", "updated_at": now},
+            {"run_id": "finished", "project_id": "target", "state": "completed", "updated_at": now},
+        ])
+        connection.execute(partitions.insert(), [
+            {"partition_id": "active", "run_id": "running", "state": "running", "updated_at": now},
+            {"partition_id": "kept", "run_id": "running", "state": "imported", "updated_at": now},
+            {"partition_id": "closed", "run_id": "finished", "state": "running", "updated_at": now},
+        ])
+        _finish_open_work(connection, metadata, "target")
+        job_states = {row.job_id: row for row in connection.execute(sa.select(jobs)).all()}
+        run_states = {row.run_id: row.state for row in connection.execute(sa.select(runs)).all()}
+        partition_states = {row.partition_id: row.state for row in connection.execute(sa.select(partitions)).all()}
+    assert job_states["open"].state == "cancelled"
+    assert job_states["open"].lease_owner is None
+    assert job_states["open"].lease_claim is None
+    assert job_states["open"].lease_until is None
+    assert job_states["done"].state == "completed"
+    assert job_states["other"].state == "queued"
+    assert run_states == {"running": "cancelled", "finished": "completed"}
+    assert partition_states == {"active": "cancelled", "kept": "imported", "closed": "running"}
+
+
+def test_deletion_finishes_open_jobs_and_keeps_other_projects(database):
+    services, accounts, person, config = database
+    target = project(services, person)
+    other = project(services, person, "Other")
+    now = datetime.now(UTC)
+    with services.engine.begin() as connection:
+        connection.execute(sa.text("""
+            INSERT INTO background_jobs (
+                job_id, project_id, state, payload, lease_owner, lease_until, created_at, updated_at
+            ) VALUES
+                (:open_job, :target, 'leased', CAST(:payload AS json), 'worker', :now, :now, :now),
+                (:other_job, :other, 'queued', CAST(:payload AS json), NULL, NULL, :now, :now)
+        """), {
+            "open_job": str(uuid4()), "other_job": str(uuid4()),
+            "target": target["project_id"], "other": other["project_id"],
+            "payload": "{}", "now": now,
+        })
+        connection.execute(sa.text("""
+            INSERT INTO analysis_runs (
+                run_id, project_id, fingerprint, manifest, state, total_frames,
+                completed_frames, failed_frames, created_at, updated_at
+            ) VALUES (
+                :run, :target, :fingerprint, CAST(:manifest AS json), 'running', 1, 0, 0, :now, :now
+            )
+        """), {
+            "run": "run-" + uuid4().hex, "target": target["project_id"],
+            "fingerprint": "a" * 64, "manifest": "{}", "now": now,
+        })
+    request = services.request_project_deletion(target["project_id"], str(person.id))
+    cleaner = ProjectDeletion(services, accounts, config)
+    cleaner.execute(request["request_id"], target["name"], cleaner.preview(request["request_id"]))
+    assert [row["project_id"] for row in services.list_projects()] == [other["project_id"]]
+    with services.engine.connect() as connection:
+        remaining = connection.execute(sa.text(
+            "SELECT project_id, state FROM background_jobs"
+        )).mappings().all()
+    assert [(str(row["project_id"]), row["state"]) for row in remaining] == [
+        (other["project_id"], "queued"),
+    ]
 
 
 def test_deletion_without_workspace_registry_removes_project_folders(database):

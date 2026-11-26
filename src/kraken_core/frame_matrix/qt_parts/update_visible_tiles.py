@@ -124,7 +124,7 @@ class UpdateVisibleTilesMixin:
 
     def _effective_tile_cells(self) -> int:
         zoom = max(self.MIN_ZOOM, self.zoom_factor())
-        required = max(self.BASE_TILE_CELLS, math.ceil(self.TILE_DEVICE_TARGET / (self.CELL_PITCH * zoom)))
+        required = max(self.BASE_TILE_CELLS, math.ceil(self.TILE_DEVICE_TARGET / (min(self._pitch_x, self._pitch_y) * zoom)))
         return 1 << (required - 1).bit_length()
 
     def _mosaic_tile_cells(self) -> int:
@@ -140,7 +140,7 @@ class UpdateVisibleTilesMixin:
             ratio = float(self.viewport().devicePixelRatioF())
         except (AttributeError, RuntimeError):
             ratio = 1.0
-        device_cell = self.CELL_PITCH * max(self.MIN_ZOOM, self.zoom_factor()) * max(ratio, 1.0)
+        device_cell = min(self._pitch_x, self._pitch_y) * max(self.MIN_ZOOM, self.zoom_factor()) * max(ratio, 1.0)
         fit = MOSAIC_EDGE / max(device_cell, 1.0e-9)
         cells = self.FINEST_MOSAIC_CELLS
         while cells * 2 <= fit and cells * 2 <= view_cells:
@@ -179,13 +179,14 @@ class UpdateVisibleTilesMixin:
         visible = self.visible_scene_rect()
         if visible.isEmpty():
             return
-        tile_span = tile_cells * self.CELL_PITCH
+        span_x = tile_cells * self._pitch_x
+        span_y = tile_cells * self._pitch_y
         max_tile_x = (self.matrix_width - 1) // tile_cells
         max_tile_y = (self.matrix_height - 1) // tile_cells
-        first_x = max(0, int(math.floor(visible.left() / tile_span)) - 1)
-        last_x = min(max_tile_x, int(math.floor(visible.right() / tile_span)) + 1)
-        first_y = max(0, int(math.floor(visible.top() / tile_span)) - 1)
-        last_y = min(max_tile_y, int(math.floor(visible.bottom() / tile_span)) + 1)
+        first_x = max(0, int(math.floor(visible.left() / span_x)) - 1)
+        last_x = min(max_tile_x, int(math.floor(visible.right() / span_x)) + 1)
+        first_y = max(0, int(math.floor(visible.top() / span_y)) - 1)
+        last_y = min(max_tile_y, int(math.floor(visible.bottom() / span_y)) + 1)
         desired = {
             (tile_x, tile_y)
             for tile_y in range(first_y, last_y + 1)

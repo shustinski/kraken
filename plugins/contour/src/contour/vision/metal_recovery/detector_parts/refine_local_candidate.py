@@ -18,6 +18,7 @@ def _refine_local_candidate(
     source_image: np.ndarray | None,
     candidate: MetalDetectionResult,
     reference: MetalDetectionResult,
+    defer_debug: bool = False,
 ) -> MetalDetectionResult:
     candidate_count = _non_hole_count(candidate)
     if source_image is None or candidate_count <= 0:
@@ -66,6 +67,7 @@ def _refine_local_candidate(
         source_image=source_image,
         mask_override=refined_mask,
         include_axis_debug=False,
+        defer_debug=defer_debug,
     )
 
 if TYPE_CHECKING:

@@ -102,14 +102,19 @@ def register(ctx: HttpContext) -> None:
         operation = getattr(backend, "materialize_representation_inputs", None)
         if operation is None:
             raise HTTPException(status_code=503, detail="Сервер не поддерживает подготовку изображений")
-        async with heavy_operations:
-            return await run_in_threadpool(
-                operation,
-                project_id,
-                layer_id,
-                representation_id,
-                command_context(actor, idempotency_key, None, revision_required=False),
+        context = command_context(actor, idempotency_key, None, revision_required=False)
+
+        def prepare_inputs():
+            from kraken_core.frame_matrix import profiling
+
+            return profiling.profile_call(
+                "image_preparation",
+                lambda: operation(project_id, layer_id, representation_id, context),
+                label="server",
             )
+
+        async with heavy_operations:
+            return await run_in_threadpool(prepare_inputs)
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations/{{representation_id}}")
     def update_representation(

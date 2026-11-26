@@ -6,7 +6,7 @@ from kraken_core.frame_matrix import (
     MatrixSession,
     ThumbnailStoreFactory,
 )
-from kraken_core.frame_matrix.qt import FrameMatrixWidget
+from kraken_hub.presentation.qt.layer_matrix import LayerFrameMatrixWidget
 from kraken_manager.domain.identity import Permission
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.presentation.qt import (
@@ -77,7 +77,7 @@ class OpenProjectMixin:
             matrix_width=project.width,
         )
         asset_source = KrakenMatrixAssetSource(self.service, project_id=str(project.id))
-        matrix_view = FrameMatrixWidget(
+        matrix_view = LayerFrameMatrixWidget(
             project.width,
             project.height,
             project.orientation.value,
@@ -125,9 +125,8 @@ class OpenProjectMixin:
         workspace.vectorRepresentationChanged.connect(
             lambda identifier: self._activate_representation(workspace, project.id, identifier)
         )
-        workspace.matrix_view.contextMenuRequested.connect(
-            self._show_matrix_context_menu
-        )
+        matrix_view.set_action_host(self)
+        matrix_view.frameActionTriggered.connect(self._on_matrix_frame_action)
         layers = self.service.list_layers(project.id)
         if layers:
             first = workspace.layer_model.layer_by_id(str(layers[0].id))

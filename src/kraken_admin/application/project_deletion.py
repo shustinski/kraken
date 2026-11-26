@@ -234,6 +234,51 @@ def _workspace_manifest(registry, project_id: str, layer_directories: list[str])
     return payload
 
 
+_OPEN_WORK = (
+    ("background_jobs", ("succeeded", "completed", "failed", "cancelled")),
+    ("analysis_runs", ("completed", "partial", "failed", "cancelled")),
+)
+_TERMINAL_PARTITIONS = ("completed", "partial", "failed", "cancelled", "succeeded", "imported")
+
+
+def _finish_open_work(connection, schema, project_id: str) -> None:
+    """Stop queued and running work so project removal is not blocked on it.
+
+    Cancellation is the terminal state agents already honor: a leased worker
+    loses the lease and cannot publish into a project that is going away.
+    """
+
+    now = datetime.now(UTC)
+    for name, terminal in _OPEN_WORK:
+        table = schema.tables.get(name)
+        if table is None or "state" not in table.c or "project_id" not in table.c:
+            continue
+        pending = table.c.state.not_in(terminal)
+        if name == "analysis_runs":
+            _cancel_open_partitions(connection, schema, table, project_id, pending, now)
+        values = {"state": "cancelled"}
+        if "updated_at" in table.c:
+            values["updated_at"] = now
+        for column in ("lease_owner", "lease_claim", "lease_until"):
+            if column in table.c:
+                values[column] = None
+        connection.execute(table.update().where(table.c.project_id == project_id, pending).values(**values))
+
+
+def _cancel_open_partitions(connection, schema, runs, project_id: str, pending, now: datetime) -> None:
+    partitions = schema.tables.get("analysis_partitions")
+    if partitions is None or "state" not in partitions.c or "run_id" not in partitions.c:
+        return
+    open_runs = sa.select(runs.c.run_id).where(runs.c.project_id == project_id, pending)
+    values = {"state": "cancelled"}
+    if "updated_at" in partitions.c:
+        values["updated_at"] = now
+    connection.execute(partitions.update().where(
+        partitions.c.run_id.in_(open_runs),
+        partitions.c.state.not_in(_TERMINAL_PARTITIONS),
+    ).values(**values))
+
+
 def assert_unshared(registry, project_id: str, paths: list[Path]) -> None:
     for manifest in (registry.catalog_root / "projects").glob("*/workspace.json"):
         other = json.loads(manifest.read_text(encoding="utf-8"))
@@ -392,13 +437,7 @@ class ProjectDeletion:
             if not lock(connection, f"project:{project_id}", attempt=True):
                 raise ConflictError("В проекте выполняется операция. Повторите после её завершения.")
             schema = self._schema(connection)
-            for name, terminal in (("background_jobs", ("succeeded", "completed", "failed", "cancelled")),
-                                   ("analysis_runs", ("completed", "partial", "failed", "cancelled"))):
-                table = schema.tables.get(name)
-                if table is not None and connection.execute(sa.select(table.c.project_id).where(
-                    table.c.project_id == project_id, table.c.state.not_in(terminal),
-                )).first():
-                    raise ConflictError("В проекте есть незавершённые задания. Завершите или отмените их.")
+            _finish_open_work(connection, schema, project_id)
             plan = self.preview(request_id)
             if plan != expected_plan:
                 raise ConflictError("Проект изменился. Повторно просмотрите и подтвердите удаление.")
